@@ -22,7 +22,7 @@
 
 const DEFAULT_BASE_URL = "https://api.deepseek.com";
 const DEFAULT_MODEL = "deepseek-v4-flash";
-const DEFAULT_MAX_INPUT_CHARS = 1500;
+const DEFAULT_MAX_INPUT_CHARS = 1000;
 const DEFAULT_MAX_TOKENS = 2000;
 const DEFAULT_TEMPERATURE = 0.7;
 
