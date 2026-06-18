@@ -200,6 +200,10 @@ export default function App() {
     if (window.electronAPI && window.electronAPI.setRecorderState) {
       window.electronAPI.setRecorderState(isRecording);
     }
+    // 录音一开始就预热 LLM 连接，与说话时间重叠，省去后续请求的握手
+    if (isRecording) {
+      window.electronAPI?.prewarmLLM?.();
+    }
   }, [isRecording]);
 
   // 唤起/结束提示音：每次播放都从设置读取最新音色/音量，

@@ -122,6 +122,12 @@ class IPCHandlers {
       return await this.aiService.checkAIStatus(testConfig);
     });
 
+    // 录音开始时预热 LLM 连接（fire-and-forget，失败无妨）
+    ipcMain.handle("prewarm-llm", () => {
+      this.aiService.prewarm();
+      return { success: true };
+    });
+
     // 音频转录相关
     ipcMain.handle("transcribe-audio", async (event, audioData, options) => {
       return await this.funasrManager.transcribeAudio(audioData, options);

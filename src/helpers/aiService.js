@@ -50,6 +50,24 @@ class AiService {
     this.logger = logger;
   }
 
+  // 录音开始时预热到中转/直连的网络连接（TLS+TCP），与说话时间重叠，
+  // 之后真正的润色请求复用同一连接，省去握手（短句场景收益最明显）。
+  async prewarm() {
+    try {
+      const relayEnabled = await this.databaseManager.getSetting('llm_relay_enabled', false);
+      const relayUrl = await this.databaseManager.getSetting('llm_relay_url', '');
+      if (relayEnabled && relayUrl) {
+        // 中转支持 OPTIONS→204，最轻量地建连
+        await fetchWithTimeout(relayUrl, { method: 'OPTIONS' }, 5000);
+      } else {
+        const baseUrl = await this.databaseManager.getSetting('ai_base_url', 'https://api.deepseek.com');
+        await fetchWithTimeout(baseUrl, { method: 'HEAD' }, 5000);
+      }
+    } catch (e) {
+      // 预热失败无所谓，正常请求会自行建连
+    }
+  }
+
   async processTextViaRelay(text, mode, relayUrl) {
     try {
       const token = await this.databaseManager.getSetting('llm_relay_token', '');

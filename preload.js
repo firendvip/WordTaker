@@ -71,6 +71,9 @@ contextBridge.exposeInMainWorld("electronAPI", {
     return () => ipcRenderer.removeListener("cancel-recording", callback);
   },
 
+  // 录音开始时预热 LLM 连接（与说话时间重叠，省握手）
+  prewarmLLM: () => ipcRenderer.invoke("prewarm-llm"),
+
   // 监听"不走 API 的结束键"（默认左 Ctrl）：结束录音但只贴原始识别、不调用大模型
   onRawStop: (callback) => {
     ipcRenderer.on("raw-stop", callback);
