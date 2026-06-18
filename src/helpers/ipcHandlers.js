@@ -7,7 +7,7 @@ const ALLOWED_SETTING_KEYS = new Set([
   "copywriting_mode_enabled", "llm_prompt_template", "llm_temperature",
   "llm_max_tokens", "llm_extra_body", "llm_fallback_paste_raw",
   "recording_trigger", "cancel_key", "raw_stop_key", "sound_scheme", "sound_volume",
-  "asr_engine",
+  "asr_engine", "skip_polish_max_chars",
   // 文案优化中转（key 留在服务器端，客户端只存中转地址与令牌）
   "llm_relay_enabled", "llm_relay_url", "llm_relay_token",
 ]);

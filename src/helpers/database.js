@@ -156,6 +156,8 @@ class DatabaseManager {
       cancel_key: 'Escape',
       // "不走 API 的结束键"（裸修饰键，录音时生效）：按它结束=只贴原始识别、不调用大模型
       raw_stop_key: 'LeftCtrl',
+      // 短句优化：识别结果 ≤ 该字数且干净时，跳过润色直接贴原文（0=关闭）
+      skip_polish_max_chars: 6,
       // 提示音：唤起/结束的合成音方案与音量（none 为无声）
       sound_scheme: 'soft',
       sound_volume: 0.3,

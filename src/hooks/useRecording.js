@@ -1,5 +1,6 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
 import { useModelStatus } from './useModelStatus';
+import { shouldSkipPolish } from '../utils/skipPolish';
 
 /**
  * 录音功能Hook
@@ -222,6 +223,14 @@ export const useRecording = ({ onTranscriptionCompleteRef, onAIOptimizationCompl
                 copywriting = false;
                 useAI = false;
                 log('info', 'raw 结束键：跳过大模型，直接贴原始识别');
+              } else {
+                // 短句优化：很短且干净的识别结果直接贴原文，省去一次 LLM 往返
+                const maxChars = Number(await window.electronAPI.getSetting('skip_polish_max_chars', 6)) || 6;
+                if (shouldSkipPolish(raw_text, maxChars)) {
+                  copywriting = false;
+                  useAI = false;
+                  log('info', `短句(≤${maxChars}字且干净)：跳过润色，直接贴原文`);
+                }
               }
 
               let finalData = { ...transcriptionData };
