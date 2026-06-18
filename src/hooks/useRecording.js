@@ -18,6 +18,10 @@ export const useRecording = () => {
   
   // 添加防重复处理机制
   const processingRef = useRef({ isProcessingAudio: false, lastProcessTime: 0 });
+  // 取消标记：为 true 时停止录音不进行识别（用于 Esc 取消）
+  const cancelledRef = useRef(false);
+  // 代次：每段音频处理自增；异步 LLM 完成时若代次已变，说明有更新的录音，作废本次粘贴
+  const generationRef = useRef(0);
 
   // 使用模型状态Hook
   const modelStatus = useModelStatus();
@@ -26,6 +30,7 @@ export const useRecording = () => {
   const startRecording = useCallback(async () => {
     try {
       setError(null);
+      cancelledRef.current = false;
 
       // 检查FunASR是否就绪
       if (!modelStatus.isReady) {
@@ -73,6 +78,14 @@ export const useRecording = () => {
 
       mediaRecorder.onstop = async () => {
         setIsRecording(false);
+
+        // 已取消（Esc）：丢弃音频，不识别、不粘贴
+        if (cancelledRef.current) {
+          audioChunksRef.current = [];
+          setIsProcessing(false);
+          return;
+        }
+
         setIsProcessing(true);
 
         try {
@@ -123,20 +136,49 @@ export const useRecording = () => {
 
   // 处理音频
   const processAudio = useCallback(async (audioBlob) => {
+    // 并发守卫：上一段还在处理时忽略本次，避免重复识别/重复粘贴/重复入库
+    if (processingRef.current.isProcessingAudio) {
+      if (window.electronAPI && window.electronAPI.log) {
+        window.electronAPI.log('warn', '上一段音频仍在处理中，忽略本次重复处理');
+      }
+      return;
+    }
     processingRef.current.isProcessingAudio = true;
-    
+    // 本次处理的代次；后面异步粘贴前会校验它是否仍是最新
+    const myGen = ++generationRef.current;
+
+    const tlog = (msg) => {
+      if (window.electronAPI && window.electronAPI.log) window.electronAPI.log('info', msg);
+    };
+
     try {
+      const _cT0 = Date.now();
       const wavBlob = await convertToWav(audioBlob);
+      tlog(`[计时] WAV转换: ${Date.now() - _cT0}ms`);
 
       if (window.electronAPI) {
         const arrayBuffer = await wavBlob.arrayBuffer();
         const uint8Array = new Uint8Array(arrayBuffer);
 
-        const transcriptionResult = await window.electronAPI.transcribeAudio(uint8Array);
+        // 识别引擎：默认 SenseVoice（快），可在设置切回 Paraformer
+        let engine = 'sensevoice';
+        try { engine = await window.electronAPI.getSetting('asr_engine', 'sensevoice'); } catch (e) {}
+        const _tT0 = Date.now();
+        const transcriptionResult = await window.electronAPI.transcribeAudio(uint8Array, { engine });
+        tlog(`[计时] 转写往返(WAV→识别, ${engine}): ${Date.now() - _tT0}ms`);
 
         if (transcriptionResult.success) {
           const raw_text = transcriptionResult.text;
-          
+
+          // 未识别到有效语音：不提交大模型、不粘贴、不入库，直接收起胶囊
+          if (!raw_text || !raw_text.trim()) {
+            tlog('[计时] 未识别到有效语音，跳过LLM与粘贴');
+            if (window.electronAPI && window.electronAPI.hideRecorder) {
+              try { await window.electronAPI.hideRecorder(); } catch (e) {}
+            }
+            return { success: true, text: '', skipped: true };
+          }
+
           // 准备转录数据
           const transcriptionData = {
             raw_text: raw_text,
@@ -152,87 +194,121 @@ export const useRecording = () => {
             window.onTranscriptionComplete({ ...transcriptionResult, enhanced_by_ai: false });
           }
 
-          // 异步处理AI优化和保存（只保存一次）
+          // 异步处理 LLM 与保存（只保存一次）
           setIsOptimizing(true);
           setTimeout(async () => {
+            const log = (level, ...args) => {
+              if (window.electronAPI && window.electronAPI.log) {
+                window.electronAPI.log(level, ...args);
+              }
+            };
             try {
-              // 从设置中读取是否启用AI优化
+              // 文案模式：识别后必走 LLM，贴"模型结果"；旧版优化模式作为兼容回退
+              const copywriting = await window.electronAPI.getSetting('copywriting_mode_enabled', true);
               const useAI = await window.electronAPI.getSetting('enable_ai_optimization', true);
 
               let finalData = { ...transcriptionData };
+              let emit;
 
-              if (useAI) {
+              if (copywriting) {
+                // —— 文案模式（主路径）——
+                log('info', '开始生成文案(LLM):', raw_text.substring(0, 50) + '...');
+                let result = null;
                 try {
-                  if (window.electronAPI && window.electronAPI.log) {
-                    window.electronAPI.log('info', '开始AI文本优化:', raw_text.substring(0, 50) + '...');
-                  }
-                  
-                  const result = await window.electronAPI.processText(raw_text, 'optimize');
-
-                  if (result && result.success) {
-                    const processed_text = result.text;
-                    finalData.processed_text = processed_text;
-                    // 如果AI优化后的文本与原始文本不同，则将优化后的文本作为主文本
-                    if (processed_text && processed_text.trim() !== raw_text.trim()) {
-                      finalData.text = processed_text;
-                    }
-                    if (window.electronAPI && window.electronAPI.log) {
-                      window.electronAPI.log('info', 'AI文本优化成功', processed_text.substring(0, 50) + '...');
-                    }
-                  } else {
-                    if (window.electronAPI && window.electronAPI.log) {
-                      window.electronAPI.log('error', 'AI文本优化失败:', result);
-                    }
-                  }
+                  const _lT0 = Date.now();
+                  result = await window.electronAPI.processText(raw_text, 'copywriting');
+                  log('info', `[计时] DeepSeek文案: ${Date.now() - _lT0}ms`);
                 } catch (err) {
-                  if (window.electronAPI && window.electronAPI.log) {
-                    window.electronAPI.log('error', 'AI文本优化捕获到错误:', err);
-                  }
+                  log('error', '文案生成调用异常:', err);
                 }
+
+                if (result && result.success && result.text) {
+                  finalData.processed_text = result.text;
+                  finalData.text = result.text;
+                  emit = {
+                    ...transcriptionResult,
+                    text: result.text,
+                    processed_text: result.text,
+                    enhanced_by_ai: true,
+                    paste: true,
+                  };
+                } else {
+                  // LLM 失败：
+                  //  - 未配置 API Key → 视为"纯听写"，照常粘贴识别原文（保证开箱可用）
+                  //  - 已配置但调用失败 → 由 llm_fallback_paste_raw 决定是否回退贴原文（默认是）
+                  const fallback = await window.electronAPI.getSetting('llm_fallback_paste_raw', true);
+                  const errMsg = (result && result.error) || 'AI 文案生成失败';
+                  const noKey = /API\s*密钥|API\s*Key|api[_\s]?key/i.test(errMsg);
+                  log('error', '文案生成失败:', errMsg);
+                  emit = {
+                    ...transcriptionResult,
+                    text: raw_text,
+                    enhanced_by_ai: false,
+                    paste: noKey ? true : !!fallback,
+                    llm_failed: true,
+                    no_key: noKey,
+                    error: errMsg,
+                  };
+                }
+              } else if (useAI) {
+                // —— 兼容：旧版可选润色 ——
+                let result = null;
+                try {
+                  result = await window.electronAPI.processText(raw_text, 'optimize');
+                } catch (err) {
+                  log('error', 'AI文本优化捕获到错误:', err);
+                }
+                if (result && result.success) {
+                  const processed_text = result.text;
+                  finalData.processed_text = processed_text;
+                  const changed = processed_text && processed_text.trim() !== raw_text.trim();
+                  if (changed) finalData.text = processed_text;
+                  emit = {
+                    ...transcriptionResult,
+                    text: finalData.text,
+                    processed_text,
+                    enhanced_by_ai: !!changed,
+                    paste: true,
+                  };
+                } else {
+                  emit = { ...transcriptionResult, text: raw_text, enhanced_by_ai: false, paste: true };
+                }
+              } else {
+                // —— 不优化：直接贴原文 ——
+                emit = { ...transcriptionResult, text: raw_text, enhanced_by_ai: false, paste: true };
               }
 
               // 保存转录数据（只保存一次）
               if (window.electronAPI) {
-                if (window.electronAPI && window.electronAPI.log) {
-                  window.electronAPI.log('info', '准备保存转录数据:', finalData);
-                }
-                const savedResult = await window.electronAPI.saveTranscription(finalData);
-                if (window.electronAPI && window.electronAPI.log) {
-                  window.electronAPI.log('info', '转录数据保存成功:', savedResult);
-                }
-
-                // 通知UI更新并触发复制操作
-                if (useAI && finalData.processed_text && finalData.processed_text !== raw_text) {
-                  // 有AI优化结果时
-                  const enhancedResult = {
-                    ...transcriptionResult,
-                    text: finalData.processed_text,
-                    processed_text: finalData.processed_text,
-                    enhanced_by_ai: true,
-                  };
-                  if (window.onAIOptimizationComplete) {
-                    window.onAIOptimizationComplete(enhancedResult);
-                  }
-                } else {
-                  // 没有AI优化或AI优化失败时，使用原始文本
-                  const finalResult = {
-                    ...transcriptionResult,
-                    text: raw_text,
-                    enhanced_by_ai: false,
-                  };
-                  if (window.onAIOptimizationComplete) {
-                    window.onAIOptimizationComplete(finalResult);
-                  }
+                try {
+                  await window.electronAPI.saveTranscription(finalData);
+                } catch (err) {
+                  log('error', '保存转录失败:', err);
                 }
               }
+
+              // 若期间已有更新的录音，作废本次粘贴（入库仍保留），避免贴出过期内容
+              if (myGen !== generationRef.current) {
+                log('info', '已被更新的录音取代，跳过本次粘贴');
+              } else if (window.onAIOptimizationComplete) {
+                window.onAIOptimizationComplete(emit);
+              }
             } catch (err) {
-              if (window.electronAPI && window.electronAPI.log) {
-                window.electronAPI.log('error', '处理和保存转录时出错:', err);
+              log('error', '处理和保存转录时出错:', err);
+              if (window.onAIOptimizationComplete) {
+                window.onAIOptimizationComplete({
+                  ...transcriptionResult,
+                  text: raw_text,
+                  enhanced_by_ai: false,
+                  paste: false,
+                  llm_failed: true,
+                  error: err.message,
+                });
               }
             } finally {
               setIsOptimizing(false);
             }
-          }, 100);
+          }, 0);
 
           return { ...transcriptionResult, enhanced_by_ai: false };
         } else {
@@ -337,10 +413,15 @@ export const useRecording = () => {
     return buffer;
   };
 
-  // 取消录音
+  // 取消录音（Esc）：丢弃本次音频，不识别不粘贴
   const cancelRecording = useCallback(() => {
+    cancelledRef.current = true;
     if (mediaRecorderRef.current) {
-      mediaRecorderRef.current.stop();
+      try {
+        mediaRecorderRef.current.stop();
+      } catch (e) {
+        // 忽略
+      }
     }
 
     if (streamRef.current) {

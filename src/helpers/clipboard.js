@@ -1,10 +1,18 @@
 const { clipboard } = require("electron");
 const { spawn } = require("child_process");
 
+// 模拟 Cmd+V 前，等待剪贴板写入稳定的时间
+const PASTE_SETTLE_MS = 120;
+// 模拟 Cmd+V 后，等待目标 App 真正消费完粘贴、再恢复原始剪贴板的时间。
+// 必须足够长：太短会导致目标 App 读到“被恢复的旧内容”，从而粘贴上一次的结果。
+const CLIPBOARD_RESTORE_MS = 700;
+
 class ClipboardManager {
   constructor(logger) {
     // 初始化剪贴板管理器
     this.logger = logger;
+    // 串行锁：保证任意时刻只有一个粘贴在执行，杜绝多次粘贴交叠互相污染剪贴板
+    this._pasteChain = Promise.resolve();
     
     // 尝试加载 osascript 模块（仅在 macOS 上）
     this.osascript = null;
@@ -78,7 +86,19 @@ class ClipboardManager {
     return await this.pasteText(text);
   }
 
+  // 对外入口：串行化每一次粘贴，避免并发粘贴互相覆盖剪贴板
   async pasteText(text) {
+    const run = () => this._pasteTextImpl(text);
+    const resultPromise = this._pasteChain.then(run, run);
+    // 无论本次成功失败，都让链继续，下一次粘贴排在其后
+    this._pasteChain = resultPromise.then(
+      () => undefined,
+      () => undefined
+    );
+    return resultPromise;
+  }
+
+  async _pasteTextImpl(text) {
     try {
       // 首先保存原始剪贴板内容
       const originalClipboard = clipboard.readText();
@@ -87,12 +107,16 @@ class ClipboardManager {
         originalClipboard.substring(0, 50) + "..."
       );
 
-      // 将文本复制到剪贴板 - 这总是有效的
+      // 将文本复制到剪贴板，并回读校验（移植自 zuiti 的剪贴板写入校验，保证粘贴内容正确）
       clipboard.writeText(text);
-      this.safeLog(
-        "📋 文本已复制到剪贴板",
-        text.substring(0, 50) + "..."
-      );
+      const written = clipboard.readText();
+      if (written !== text) {
+        // 校验不一致时重写一次
+        clipboard.writeText(text);
+        this.safeLog("⚠️ 剪贴板写入校验失败，已重写");
+      } else {
+        this.safeLog("✅ 剪贴板写入校验通过", text.substring(0, 50) + "...");
+      }
 
       if (process.platform === "darwin") {
         // 简化权限检查，直接尝试粘贴
@@ -107,18 +131,35 @@ class ClipboardManager {
         }
 
         this.safeLog("✅ 权限已授予，尝试粘贴");
-        return await this.pasteMacOS(originalClipboard);
+        return await this.pasteMacOS(originalClipboard, text);
       } else if (process.platform === "win32") {
-        return await this.pasteWindows(originalClipboard);
+        return await this.pasteWindows(originalClipboard, text);
       } else {
-        return await this.pasteLinux(originalClipboard);
+        return await this.pasteLinux(originalClipboard, text);
       }
     } catch (error) {
       throw error;
     }
   }
 
-  async pasteMacOS(originalClipboard) {
+  // 仅当剪贴板仍是“本次粘贴写入的文本”时才恢复原始内容，
+  // 避免把过期内容写回、或覆盖掉更晚一次粘贴写入的内容。
+  restoreClipboardLater(originalClipboard, pastedText) {
+    setTimeout(() => {
+      try {
+        if (clipboard.readText() === pastedText) {
+          clipboard.writeText(originalClipboard);
+          this.safeLog("🔄 原始剪贴板内容已恢复");
+        } else {
+          this.safeLog("↩️ 剪贴板已被更新内容占用，跳过恢复");
+        }
+      } catch (e) {
+        // 忽略恢复失败
+      }
+    }, CLIPBOARD_RESTORE_MS);
+  }
+
+  async pasteMacOS(originalClipboard, pastedText) {
     return new Promise((resolve, reject) => {
       setTimeout(() => {
         const pasteProcess = spawn("osascript", [
@@ -144,10 +185,7 @@ class ClipboardManager {
 
           if (code === 0) {
             this.safeLog("✅ 通过 Cmd+V 模拟成功粘贴文本");
-            setTimeout(() => {
-              clipboard.writeText(originalClipboard);
-              this.safeLog("🔄 原始剪贴板内容已恢复");
-            }, 100);
+            this.restoreClipboardLater(originalClipboard, pastedText);
             resolve();
           } else {
             const errorMsg = `粘贴失败 (代码 ${code})。文本已复制到剪贴板 - 请手动使用 Cmd+V 粘贴。`;
@@ -171,11 +209,11 @@ class ClipboardManager {
             "粘贴操作超时。文本已复制到剪贴板 - 请手动使用 Cmd+V 粘贴。";
           reject(new Error(errorMsg));
         }, 3000);
-      }, 100);
+      }, PASTE_SETTLE_MS);
     });
   }
 
-  async pasteWindows(originalClipboard) {
+  async pasteWindows(originalClipboard, pastedText) {
     return new Promise((resolve, reject) => {
       const pasteProcess = spawn("powershell", [
         "-Command",
@@ -184,10 +222,8 @@ class ClipboardManager {
 
       pasteProcess.on("close", (code) => {
         if (code === 0) {
-          // 文本粘贴成功
-          setTimeout(() => {
-            clipboard.writeText(originalClipboard);
-          }, 100);
+          // 文本粘贴成功，延迟并校验后恢复
+          this.restoreClipboardLater(originalClipboard, pastedText);
           resolve();
         } else {
           reject(
@@ -208,16 +244,14 @@ class ClipboardManager {
     });
   }
 
-  async pasteLinux(originalClipboard) {
+  async pasteLinux(originalClipboard, pastedText) {
     return new Promise((resolve, reject) => {
       const pasteProcess = spawn("xdotool", ["key", "ctrl+v"]);
 
       pasteProcess.on("close", (code) => {
         if (code === 0) {
-          // 文本粘贴成功
-          setTimeout(() => {
-            clipboard.writeText(originalClipboard);
-          }, 100);
+          // 文本粘贴成功，延迟并校验后恢复
+          this.restoreClipboardLater(originalClipboard, pastedText);
           resolve();
         } else {
           reject(
@@ -263,7 +297,8 @@ class ClipboardManager {
         if (code === 0) {
           resolve(true);
         } else {
-          this.showAccessibilityDialog(testError);
+          // 不弹系统对话框（按需在设置里引导授权），仅记录日志
+          this.safeLog("⚠️ 辅助功能权限不足，请在设置 → 权限中授权");
           resolve(false);
         }
       });

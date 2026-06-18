@@ -29,6 +29,7 @@ const ClipboardManager = require("./src/helpers/clipboard");
 const FunASRManager = require("./src/helpers/funasrManager");
 const TrayManager = require("./src/helpers/tray");
 const HotkeyManager = require("./src/helpers/hotkeyManager");
+const TriggerManager = require("./src/helpers/triggerManager");
 const IPCHandlers = require("./src/helpers/ipcHandlers");
 
 // 设置生产环境PATH
@@ -120,6 +121,109 @@ const clipboardManager = new ClipboardManager(logger); // 传递logger实例
 const funasrManager = new FunASRManager(logger); // 传递logger实例
 const trayManager = new TrayManager();
 const hotkeyManager = new HotkeyManager();
+const triggerManager = new TriggerManager(logger);
+
+// 校验 recording_trigger，非法字段一律回退默认（防止渲染层写入异常对象）
+function validateRecordingTrigger(t, fallback) {
+  if (!t || typeof t !== 'object') return fallback;
+  if (t.type === 'modifier-tap') {
+    if (!TriggerManager.VALID_KEYS.has(t.key)) return fallback;
+    if (t.taps !== 1 && t.taps !== 2) return fallback;
+    return { type: 'modifier-tap', key: t.key, taps: t.taps };
+  }
+  if (t.type === 'accelerator') {
+    if (typeof t.accelerator !== 'string' || !t.accelerator) return fallback;
+    return { type: 'accelerator', accelerator: t.accelerator };
+  }
+  return fallback;
+}
+
+// 设置录音触发（默认：mac 单击左 Option / Windows 双击左 Alt；裸修饰键经 uiohook 监听）
+function setupRecordingTrigger() {
+  try {
+    const platformDefault = process.platform === 'win32'
+      ? { type: 'modifier-tap', key: 'LeftAlt', taps: 2 }
+      : { type: 'modifier-tap', key: 'LeftOption', taps: 1 };
+    const stored = databaseManager.getSetting('recording_trigger', platformDefault);
+    const trigger = validateRecordingTrigger(stored, platformDefault);
+    if (trigger !== stored) {
+      logger.warn('recording_trigger 非法或缺失，已回退默认', { stored });
+    }
+
+    const fire = () => {
+      // 每次触发把胶囊定位到"光标所在屏幕底部"并显示（不抢焦点）
+      windowManager.showRecorderAtBottom();
+      const win = windowManager.mainWindow;
+      if (win && !win.isDestroyed()) {
+        win.webContents.send('hotkey-triggered', { trigger });
+        logger.info('录音触发 → 已发送 hotkey-triggered', trigger);
+      }
+    };
+
+    // 先清掉旧的触发（便于设置变更后重载）
+    triggerManager.stop();
+
+    if (trigger.type === 'accelerator' && trigger.accelerator) {
+      // 普通组合键走 Electron globalShortcut
+      hotkeyManager.registerHotkey(trigger.accelerator, fire);
+      logger.info('录音触发使用组合键', trigger.accelerator);
+    } else {
+      // 裸修饰键走 uiohook
+      const ok = triggerManager.start(trigger, fire);
+      if (!ok) {
+        logger.warn('裸修饰键触发启动失败，请确认已授予“辅助功能”权限');
+      }
+    }
+  } catch (error) {
+    logger.error('设置录音触发失败:', error);
+  }
+}
+
+// 设置变更后重载触发键（自定义快捷键时调用）
+ipcMain.handle('reload-recording-trigger', () => {
+  setupRecordingTrigger();
+  return { success: true };
+});
+
+// 隐藏胶囊（粘贴完成 / 取消后由渲染层调用）
+ipcMain.handle('hide-recorder', () => {
+  windowManager.hideMainWindow();
+  return { success: true };
+});
+
+// Esc（可自定义）取消录音：仅在录音期间注册全局快捷键，避免平时吞掉 Esc
+let cancelKeyRegistered = null;
+function registerCancelKey() {
+  try {
+    const key = databaseManager.getSetting('cancel_key', 'Escape') || 'Escape';
+    if (cancelKeyRegistered === key) return;
+    if (cancelKeyRegistered) globalShortcut.unregister(cancelKeyRegistered);
+    const ok = globalShortcut.register(key, () => {
+      const win = windowManager.mainWindow;
+      if (win && !win.isDestroyed()) win.webContents.send('cancel-recording');
+      windowManager.hideMainWindow();
+    });
+    cancelKeyRegistered = ok ? key : null;
+  } catch (error) {
+    logger.error('注册取消键失败:', error);
+  }
+}
+function unregisterCancelKey() {
+  try {
+    if (cancelKeyRegistered) {
+      globalShortcut.unregister(cancelKeyRegistered);
+      cancelKeyRegistered = null;
+    }
+  } catch (error) {
+    // 忽略
+  }
+}
+
+// 渲染层在录音开始/结束时通知主进程，用于按需注册/注销 Esc 取消键
+ipcMain.on('recorder-state', (event, recording) => {
+  if (recording) registerCancelKey();
+  else unregisterCancelKey();
+});
 
 // 初始化数据库
 const dataDirectory = environmentManager.ensureDataDirectory();
@@ -163,10 +267,10 @@ async function startApp() {
     await new Promise((resolve) => setTimeout(resolve, 2000));
   }
 
-  // 确保macOS上dock可见
+  // 后台常驻：macOS 隐藏 Dock 图标，做成纯菜单栏应用（只在托盘可见，胶囊按触发键才出现）
   if (process.platform === 'darwin' && app.dock) {
-    app.dock.show();
-    logger.info('macOS Dock已显示');
+    app.dock.hide();
+    logger.info('macOS Dock已隐藏（后台菜单栏模式）');
   }
 
   // 在启动时初始化FunASR管理器（不等待以避免阻塞）
@@ -184,32 +288,50 @@ async function startApp() {
     logger.error("创建主窗口时出错:", error);
   }
 
-  // 创建控制面板窗口
-  try {
-    logger.info('创建控制面板窗口...');
-    await windowManager.createControlPanelWindow();
-    logger.info('控制面板窗口创建成功');
-  } catch (error) {
-    logger.error("创建控制面板窗口时出错:", error);
-  }
+  // 控制面板窗口已废弃：新架构只用悬浮胶囊（主窗口），后台常驻仅靠托盘图标。
 
-  // 设置托盘
+  // 设置托盘（应用后台常驻，设置/历史从托盘进入）
   logger.info('设置系统托盘...');
-  trayManager.setWindows(
-    windowManager.mainWindow,
-    windowManager.controlPanelWindow
-  );
-  trayManager.setCreateControlPanelCallback(() =>
-    windowManager.createControlPanelWindow()
-  );
+  trayManager.setWindows(windowManager.mainWindow, null);
+  trayManager.setOpenSettings(() => windowManager.showSettingsWindow());
+  trayManager.setOpenHistory(() => windowManager.showHistoryWindow());
   await trayManager.createTray();
   logger.info('系统托盘设置完成');
+
+  // 设置全局录音触发键
+  logger.info('设置录音触发键...');
+  setupRecordingTrigger();
 
   logger.info('应用启动完成');
 }
 
+// 单实例锁：保证同一时间只运行一个实例，避免重复启动
+// （重复会造成快捷键重复注册、双托盘图标、两个 FunASR 进程抢端口等问题）
+const gotTheLock = app.requestSingleInstanceLock();
+if (!gotTheLock) {
+  // 已有实例在运行：本次启动直接退出
+  logger.info("检测到已有实例在运行，本次启动退出");
+  app.quit();
+} else {
+  // 用户再次尝试启动时，把已有窗口带到前台（后台常驻应用通常无常显窗口，尽力聚焦）
+  app.on("second-instance", () => {
+    try {
+      const win = BrowserWindow.getAllWindows().find((w) => w && !w.isDestroyed());
+      if (win) {
+        if (win.isMinimized()) win.restore();
+        win.show();
+        win.focus();
+      }
+    } catch (error) {
+      logger.error("处理 second-instance 失败:", error);
+    }
+  });
+}
+
 // 应用事件处理器
 app.whenReady().then(() => {
+  // 第二实例不会拿到锁：直接不启动（app.quit 已触发）
+  if (!gotTheLock) return;
   startApp();
 });
 
@@ -227,6 +349,11 @@ app.on("activate", () => {
 
 app.on("will-quit", () => {
   globalShortcut.unregisterAll();
+  try {
+    triggerManager.shutdown();
+  } catch (error) {
+    logger.error('关闭 triggerManager 失败:', error);
+  }
 });
 
 // 导出管理器供其他模块使用

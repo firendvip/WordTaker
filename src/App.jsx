@@ -9,8 +9,8 @@ import { useTextProcessing } from "./hooks/useTextProcessing";
 import { useModelStatus } from "./hooks/useModelStatus";
 import { usePermissions } from "./hooks/usePermissions";
 import { Mic, MicOff, Settings, History, Copy, Download } from "lucide-react";
-import SettingsPanel from "./components/SettingsPanel";
-import { ModelDownloadProgress } from "./components/ui/model-status-indicator";
+import RecorderPill from "./components/RecorderPill";
+import { playWake, playEnd, warmupAudio } from "./utils/sounds";
 
 // 动态导入设置页面组件
 const SettingsPage = React.lazy(() => import('./settings.jsx').then(module => ({ default: module.SettingsPage })));
@@ -219,7 +219,51 @@ export default function App() {
   const [processedText, setProcessedText] = useState("");
   const [showTextArea, setShowTextArea] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
-  
+
+  // 触发键标签（真实触发由主进程的 recording_trigger 决定，如"左 Option"/"双击左 Alt"）
+  const [triggerLabel, setTriggerLabel] = useState("左 Option");
+  useEffect(() => {
+    let active = true;
+    (async () => {
+      try {
+        if (!window.electronAPI) return;
+        const t = await window.electronAPI.getSetting("recording_trigger", null);
+        if (!active || !t || !t.key) return;
+        const names = {
+          LeftOption: "左 Option", RightOption: "右 Option",
+          LeftAlt: "左 Alt", RightAlt: "右 Alt",
+          LeftMeta: "左 ⌘", RightMeta: "右 ⌘",
+          LeftCtrl: "左 Ctrl", LeftShift: "左 Shift",
+        };
+        const base = names[t.key] || t.key;
+        setTriggerLabel(t.taps === 2 ? `双击 ${base}` : base);
+      } catch (e) {
+        // 读取失败时使用默认标签
+      }
+    })();
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  // 提示音设置（唤起/结束）
+  const soundCfgRef = useRef({ scheme: "soft", volume: 0.3 });
+  const prevRecordingRef = useRef(false);
+  useEffect(() => {
+    (async () => {
+      try {
+        if (!window.electronAPI) return;
+        const scheme = await window.electronAPI.getSetting("sound_scheme", "soft");
+        const volume = await window.electronAPI.getSetting("sound_volume", 0.3);
+        soundCfgRef.current = { scheme, volume };
+      } catch (e) {
+        // 读取失败用默认
+      }
+    })();
+    // 预热音频上下文，避免首次唤起提示音被丢弃
+    warmupAudio();
+  }, []);
+
   const { isDragging, handleMouseDown, handleMouseMove, handleMouseUp, handleClick } = useWindowDrag();
   const modelStatus = useModelStatus();
   
@@ -229,6 +273,7 @@ export default function App() {
     isOptimizing,
     startRecording,
     stopRecording,
+    cancelRecording,
     error: recordingError
   } = useRecording();
   
@@ -256,24 +301,14 @@ export default function App() {
     // 更新最后粘贴记录
     lastPasteRef.current = { text, timestamp: now };
     
-    console.log("🔄 safePaste 被调用，文本:", text.substring(0, 50) + "...");
     try {
       if (window.electronAPI) {
-        console.log("📱 使用 Electron API 进行粘贴");
         await window.electronAPI.pasteText(text);
-        console.log("✅ 粘贴成功");
-        toast.success("文本已自动粘贴到当前输入框");
       } else {
-        // Web环境下只能复制到剪贴板
-        console.log("🌐 Web环境，仅复制到剪贴板");
         await navigator.clipboard.writeText(text);
-        toast.info("文本已复制到剪贴板，请手动粘贴");
       }
     } catch (error) {
-      console.error("❌ 粘贴文本失败:", error);
-      toast.error("粘贴失败", {
-        description: "请检查辅助功能权限。文本已复制到剪贴板 - 请手动使用 Cmd+V 粘贴。"
-      });
+      console.error("粘贴文本失败:", error);
     }
   }, []);
 
@@ -289,41 +324,78 @@ export default function App() {
       // 清空之前的处理结果，等待AI优化
       setProcessedText("");
 
-      // 不立即粘贴，等待AI优化完成后再粘贴
-      console.log("⏳ 等待AI优化完成后再进行粘贴...");
-      
+      // 不立即粘贴，等待AI处理完成后再粘贴；不弹任何提示
       // 注意：不在这里保存到数据库，由 useRecording.js 统一处理保存逻辑
-
-      toast.success("🎤 语音识别完成，AI正在优化文本...");
     } else {
-      console.log("❌ 转录失败或无文本:", transcriptionResult);
+      console.log("转录失败或无文本:", transcriptionResult);
     }
   }, []);
 
-  // 处理AI优化完成
-  const handleAIOptimizationComplete = useCallback(async (optimizedResult) => {
-    console.log('AI优化完成回调被触发:', optimizedResult);
-    if (optimizedResult.success && optimizedResult.enhanced_by_ai && optimizedResult.text) {
-      // 显示AI优化后的文本
-      setProcessedText(optimizedResult.text);
-      
-      // 自动粘贴AI优化后的文本
-      console.log("📋 准备粘贴AI优化后的文本:", optimizedResult.text);
-      await safePaste(optimizedResult.text);
-      console.log("✅ AI优化文本粘贴完成");
-      
-      toast.success("🤖 AI文本优化完成并已自动粘贴！");
-      console.log('AI优化文本已设置:', optimizedResult.text);
-    } else {
-      console.warn('AI优化结果无效，使用原始文本:', optimizedResult);
-      // 如果AI优化失败，则粘贴原始文本
-      if (originalText) {
-        console.log("📋 AI优化失败，粘贴原始文本:", originalText);
-        await safePaste(originalText);
-        toast.info("AI优化失败，已粘贴原始识别文本");
+  // 处理 LLM 处理完成（含文案模式）。按 result.paste 决定是否粘贴；全程不弹任何提示；完成后隐藏胶囊。
+  const handleAIOptimizationComplete = useCallback(async (result) => {
+    try {
+      if (result && result.enhanced_by_ai && result.text) {
+        setProcessedText(result.text);
+      }
+      if (result && result.llm_failed) {
+        if (result.paste && result.text) {
+          await safePaste(result.text);
+        } else {
+          // 不回退粘贴：仅把识别原文放进剪贴板（统一经主进程，避免与粘贴恢复抢剪贴板）
+          try {
+            if (window.electronAPI && window.electronAPI.writeClipboard) {
+              await window.electronAPI.writeClipboard(result.text || "");
+            } else {
+              await navigator.clipboard.writeText(result.text || "");
+            }
+          } catch (e) {
+            console.warn("写入剪贴板失败:", e);
+          }
+        }
+      } else if (result && result.paste && result.text) {
+        await safePaste(result.text);
+      }
+    } finally {
+      // 粘贴完成后隐藏胶囊（不再常驻前台）
+      try {
+        if (window.electronAPI && window.electronAPI.hideRecorder) {
+          await window.electronAPI.hideRecorder();
+        }
+      } catch (e) {
+        // 忽略
       }
     }
-  }, [safePaste, originalText]);
+  }, [safePaste]);
+
+  // 录音状态上报主进程（用于按需注册 Esc 取消键）
+  useEffect(() => {
+    if (window.electronAPI && window.electronAPI.setRecorderState) {
+      window.electronAPI.setRecorderState(isRecording);
+    }
+  }, [isRecording]);
+
+  // 唤起/结束提示音（录音开始 → 唤起音；录音结束 → 结束音）
+  useEffect(() => {
+    const prev = prevRecordingRef.current;
+    if (!prev && isRecording) {
+      playWake(soundCfgRef.current.scheme, soundCfgRef.current.volume);
+    } else if (prev && !isRecording) {
+      playEnd(soundCfgRef.current.scheme, soundCfgRef.current.volume);
+    }
+    prevRecordingRef.current = isRecording;
+  }, [isRecording]);
+
+  // 监听 Esc 取消事件：取消录音并隐藏胶囊
+  useEffect(() => {
+    if (!window.electronAPI || !window.electronAPI.onCancelRecording) return;
+    const off = window.electronAPI.onCancelRecording(() => {
+      cancelRecording();
+      if (window.electronAPI.hideRecorder) window.electronAPI.hideRecorder();
+    });
+    return () => {
+      if (typeof off === "function") off();
+    };
+  }, [cancelRecording]);
 
   // 设置转录完成回调
   useEffect(() => {
@@ -377,7 +449,7 @@ export default function App() {
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
         a.href = url;
-        a.download = `蛐蛐转录_${new Date().toISOString().slice(0, 19).replace(/:/g, '-')}.txt`;
+        a.download = `语音转录_${new Date().toISOString().slice(0, 19).replace(/:/g, '-')}.txt`;
         a.click();
         URL.revokeObjectURL(url);
       }
@@ -454,24 +526,12 @@ export default function App() {
       return;
     }
 
-    const initializeHotkey = async () => {
-      try {
-        // 注册默认热键 CommandOrControl+Shift+Space
-        const success = await registerHotkey('CommandOrControl+Shift+Space');
-        if (success) {
-          console.log('主窗口热键注册成功');
-        } else {
-          console.error('主窗口热键注册失败');
-        }
-      } catch (error) {
-        console.error('主窗口热键注册异常:', error);
-      }
-    };
-
-    if (registerHotkey) {
-      initializeHotkey();
-    }
-  }, [registerHotkey]);
+    // 录音触发键现由主进程统一管理：
+    //  - 裸修饰键（如单击左 Option / 双击 Alt）经 uiohook 监听
+    //  - 普通组合键经 Electron globalShortcut
+    // 渲染层只需监听 'hotkey-triggered' 事件并 toggle 录音，避免重复注册造成冲突。
+    console.log('录音触发键由主进程管理，渲染层仅监听 hotkey-triggered');
+  }, []);
 
   // 处理关闭窗口
   const handleClose = () => {
@@ -630,129 +690,15 @@ export default function App() {
   const micProps = getMicButtonProps();
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-50 to-gray-100 dark:from-gray-900 dark:to-gray-800 p-4 pb-4">
-      {/* 主界面 */}
-      <div className="max-w-2xl mx-auto min-h-screen flex flex-col">
-        {/* 标题栏 */}
-        <div
-          className="flex items-center justify-between mb-8 draggable"
-          onMouseDown={handleMouseDown}
-          onMouseMove={handleMouseMove}
-          onMouseUp={handleMouseUp}
-        >
-          <h1 className="text-3xl font-bold text-gray-900 dark:text-gray-100 chinese-title">
-            蛐蛐
-          </h1>
-          <div className="flex items-center space-x-3 non-draggable">
-            <Tooltip content="历史记录" position="bottom">
-              <button
-                onClick={handleOpenHistory}
-                className="p-3 hover:bg-white/70 dark:hover:bg-gray-700/70 rounded-xl transition-colors shadow-sm"
-              >
-                <History className="w-6 h-6 text-gray-700 dark:text-gray-300" />
-              </button>
-            </Tooltip>
-            <Tooltip content="设置" position="bottom">
-              <button
-                onClick={handleOpenSettings}
-                className="p-3 hover:bg-white/70 dark:hover:bg-gray-700/70 rounded-xl transition-colors shadow-sm"
-              >
-                <Settings className="w-6 h-6 text-gray-700 dark:text-gray-300" />
-              </button>
-            </Tooltip>
-          </div>
-        </div>
-
-        {/* 录音控制区域 */}
-        <div className="text-center mb-8 flex-shrink-0">
-          <Tooltip content={micProps.tooltip}>
-            <button
-              onClick={(e) => {
-                if (handleClick(e) && !micProps.disabled) {
-                  toggleRecording();
-                }
-              }}
-              onMouseEnter={() => {
-                if (!micProps.disabled) {
-                  setIsHovered(true);
-                }
-              }}
-              onMouseLeave={() => setIsHovered(false)}
-              className={`${micProps.className} non-draggable shadow-lg`}
-              disabled={micProps.disabled}
-            >
-              {/* 动态内容基于状态 */}
-              {modelStatus.stage === 'downloading' ? (
-                <LoadingIndicator size={20} />
-              ) : modelStatus.stage === 'loading' || !modelStatus.isReady ? (
-                <LoadingIndicator size={20} />
-              ) : micState === "idle" ? (
-                <SoundWaveIcon size={20} isActive={false} />
-              ) : micState === "hover" ? (
-                <SoundWaveIcon size={20} isActive={false} />
-              ) : micState === "recording" ? (
-                <SoundWaveIcon size={20} isActive={true} />
-              ) : micState === "processing" ? (
-                <VoiceWaveIndicator isListening={true} />
-              ) : micState === "optimizing" ? (
-                <LoadingIndicator size={20} />
-              ) : null}
-
-              {/* 移除所有状态指示环，保持简洁 */}
-            </button>
-          </Tooltip>
-          
-          <p className="mt-4 status-text text-gray-700 dark:text-gray-300">
-            {modelStatus.stage === 'need_download' ? (
-              "需要下载AI模型文件才能开始使用"
-            ) : modelStatus.stage === 'downloading' ? (
-              `正在下载模型文件... ${modelStatus.downloadProgress || 0}%`
-            ) : modelStatus.stage === 'loading' ? (
-              "模型加载中，请稍候..."
-            ) : modelStatus.stage === 'error' ? (
-              `模型错误: ${modelStatus.error}`
-            ) : !modelStatus.isReady ? (
-              "模型未就绪，请稍候..."
-            ) : micState === "recording" ? (
-              "正在录音，再次点击停止"
-            ) : micState === "processing" ? (
-              "正在识别语音..."
-            ) : micState === "optimizing" ? (
-              "AI正在优化文本，请稍候..."
-            ) : (
-              `点击麦克风或按 ${hotkey} 开始录音`
-            )}
-          </p>
-        </div>
-
-        {/* 模型下载进度显示 */}
-        {(modelStatus.stage === 'need_download' || modelStatus.stage === 'downloading') && (
-          <div className="mb-6">
-            <ModelDownloadProgress
-              modelStatus={modelStatus}
-              onDownload={handleDownloadModels}
-            />
-          </div>
-        )}
-
-        {/* 文本显示区域 - 可滚动 */}
-        <div className="flex-1 text-area-scroll">
-          <TextDisplay
-            originalText={originalText}
-            processedText={processedText}
-            isProcessing={isTextProcessing || isOptimizing}
-            onCopy={handleCopyText}
-            onExport={handleExportText}
-            onPaste={safePaste}
-          />
-        </div>
-      </div>
-
-      {/* 设置面板 */}
-      {showSettings && (
-        <SettingsPanel onClose={() => setShowSettings(false)} />
-      )}
-
-    </div>
+    <RecorderPill
+      micState={micState}
+      modelStatus={modelStatus}
+      hotkeyLabel={triggerLabel}
+      disabled={micProps.disabled}
+      onToggle={toggleRecording}
+      onOpenSettings={handleOpenSettings}
+      onOpenHistory={handleOpenHistory}
+      onDownloadModels={handleDownloadModels}
+    />
   );
 }

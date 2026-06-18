@@ -17,7 +17,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
   },
 
   // FunASR语音识别
-  transcribeAudio: (audioData) => ipcRenderer.invoke("transcribe-audio", audioData),
+  transcribeAudio: (audioData, options) => ipcRenderer.invoke("transcribe-audio", audioData, options),
   checkFunASRStatus: () => ipcRenderer.invoke("check-funasr-status"),
   installFunASR: () => ipcRenderer.invoke("install-funasr"),
   restartFunasrServer: () => ipcRenderer.invoke("restart-funasr-server"),
@@ -59,6 +59,17 @@ contextBridge.exposeInMainWorld("electronAPI", {
   registerHotkey: (hotkey) => ipcRenderer.invoke("register-hotkey", hotkey),
   unregisterHotkey: (hotkey) => ipcRenderer.invoke("unregister-hotkey", hotkey),
   getCurrentHotkey: () => ipcRenderer.invoke("get-current-hotkey"),
+  // 重载录音触发键（自定义快捷键保存后调用）
+  reloadRecordingTrigger: () => ipcRenderer.invoke("reload-recording-trigger"),
+  // 隐藏胶囊（粘贴/取消后调用）
+  hideRecorder: () => ipcRenderer.invoke("hide-recorder"),
+  // 通知主进程录音开始/结束（用于按需注册 Esc 取消键）
+  setRecorderState: (recording) => ipcRenderer.send("recorder-state", recording),
+  // 监听取消录音事件（Esc 触发）
+  onCancelRecording: (callback) => {
+    ipcRenderer.on("cancel-recording", callback);
+    return () => ipcRenderer.removeListener("cancel-recording", callback);
+  },
   
   // F2热键管理
   registerF2Hotkey: () => ipcRenderer.invoke("register-f2-hotkey"),

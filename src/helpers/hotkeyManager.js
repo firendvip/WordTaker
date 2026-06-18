@@ -27,9 +27,9 @@ class HotkeyManager {
       this.onF2DoubleClick = callback;
       return true;
     }
-    
+
     this.onF2DoubleClick = callback;
-    
+
     // 注册F2单击监听
     const success = globalShortcut.register('F2', () => {
       this.handleF2Click();

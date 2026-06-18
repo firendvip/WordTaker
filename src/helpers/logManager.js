@@ -173,10 +173,9 @@ class LogManager {
       appVersion: require('electron').app.getVersion(),
       userDataPath: require('electron').app.getPath('userData'),
       logDir: this.logDir,
+      // 仅暴露 NODE_ENV；不记录 PATH/PYTHON_PATH 等可能泄露系统布局的环境变量
       env: {
-        NODE_ENV: process.env.NODE_ENV,
-        PATH: process.env.PATH,
-        PYTHON_PATH: process.env.PYTHON_PATH
+        NODE_ENV: process.env.NODE_ENV
       }
     };
   }

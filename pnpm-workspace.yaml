@@ -1,3 +1,13 @@
+allowBuilds:
+  '@tailwindcss/oxide': set this to true or false
+  better-sqlite3: set this to true or false
+  electron: set this to true or false
+  esbuild: set this to true or false
+  ffmpeg-static: set this to true or false
+  uiohook-napi: set this to true or false
 onlyBuiltDependencies:
+  - '@tailwindcss/oxide'
   - better-sqlite3
   - electron
+  - esbuild
+  - ffmpeg-static

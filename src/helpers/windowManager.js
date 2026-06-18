@@ -15,21 +15,35 @@ class WindowManager {
       return this.mainWindow;
     }
 
+    // 紧凑"胶囊"录音条：frameless + 透明 + 置顶 + 不抢焦点（避免抢走目标输入框的焦点导致粘贴失败）
     this.mainWindow = new BrowserWindow({
-      width: 400,
-      height: 500,
+      width: 200,
+      height: 44,
       frame: false,
       transparent: true,
       alwaysOnTop: true,
       resizable: false,
       skipTaskbar: true,
       movable: true,
+      focusable: false,
+      hasShadow: false,
+      show: false,
       webPreferences: {
         nodeIntegration: false,
         contextIsolation: true,
+        backgroundThrottling: false,
+        autoplayPolicy: "no-user-gesture-required",
         preload: path.join(__dirname, "..", "..", "preload.js"),
       },
     });
+
+    // 浮于其他窗口（含全屏）之上
+    try {
+      this.mainWindow.setAlwaysOnTop(true, "screen-saver");
+      this.mainWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+    } catch (e) {
+      // 某些平台不支持时忽略
+    }
 
     const isDev = process.env.NODE_ENV === "development";
 
@@ -44,6 +58,45 @@ class WindowManager {
     });
 
     return this.mainWindow;
+  }
+
+  // 把胶囊录音条放到"鼠标光标所在屏幕"的底部居中（每次唤起都重新定位，忽略用户手动移动）
+  positionMainWindowBottomCenter() {
+    if (!this.mainWindow || this.mainWindow.isDestroyed()) return;
+    try {
+      const { screen } = require("electron");
+      const pt = screen.getCursorScreenPoint();
+      const display = screen.getDisplayNearestPoint(pt);
+      const wa = display.workArea;
+      const [w, h] = this.mainWindow.getSize();
+      const x = Math.round(wa.x + (wa.width - w) / 2);
+      const y = Math.round(wa.y + wa.height - h - 24); // 距屏幕底部 24px
+      this.mainWindow.setPosition(x, y);
+    } catch (error) {
+      // 定位失败不影响录音
+    }
+  }
+
+  // 唤起：定位到光标所在屏幕底部并显示（不抢焦点）
+  showRecorderAtBottom() {
+    if (!this.mainWindow || this.mainWindow.isDestroyed()) return;
+    this.positionMainWindowBottomCenter();
+    try {
+      this.mainWindow.showInactive();
+    } catch (e) {
+      // 忽略
+    }
+  }
+
+  // 隐藏胶囊
+  hideMainWindow() {
+    if (this.mainWindow && !this.mainWindow.isDestroyed()) {
+      try {
+        this.mainWindow.hide();
+      } catch (e) {
+        // 忽略
+      }
+    }
   }
 
   async createControlPanelWindow() {
@@ -91,7 +144,7 @@ class WindowManager {
       width: 1000,
       height: 700,
       show: false,
-      title: "转录历史 - 蛐蛐",
+      title: "转录历史",
       alwaysOnTop: true,
       webPreferences: {
         nodeIntegration: false,
@@ -127,7 +180,7 @@ class WindowManager {
       width: 700,
       height: 600,
       show: false,
-      title: "设置 - 蛐蛐",
+      title: "设置",
       alwaysOnTop: true,
       webPreferences: {
         nodeIntegration: false,

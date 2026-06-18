@@ -8,6 +8,7 @@ FunASR模型服务器
 import sys
 import json
 import os
+import time
 import logging
 import traceback
 import signal
@@ -70,6 +71,8 @@ class FunASRServer:
         self.asr_model = None
         self.vad_model = None
         self.punc_model = None
+        self.sensevoice_model = None   # 快速识别引擎（ONNX）
+        self.sensevoice_tokens = None
         self.initialized = False
         self.running = True
         self.transcription_count = 0
@@ -116,6 +119,46 @@ class FunASRServer:
         except Exception as e:
             logger.error(f"ASR模型加载失败: {str(e)}")
             return False
+
+    def _load_sensevoice(self):
+        """加载 SenseVoice ONNX（快速识别引擎，自带标点/ITN）。失败则保持 None，自动回退 Paraformer。"""
+        try:
+            import json as _json
+            model_dir = os.path.join(
+                os.path.dirname(os.path.abspath(__file__)), "models", "sensevoice"
+            )
+            if not os.path.exists(os.path.join(model_dir, "model_quant.onnx")):
+                logger.warning("未找到 SenseVoice ONNX 模型，跳过（将回退 Paraformer）")
+                return False
+            logger.info("开始加载 SenseVoice ONNX 模型...")
+            from funasr_onnx import SenseVoiceSmallONNX
+
+            with open(os.path.join(model_dir, "tokens.json"), "r", encoding="utf-8") as f:
+                self.sensevoice_tokens = _json.load(f)
+            self.sensevoice_model = SenseVoiceSmallONNX(
+                model_dir, batch_size=1, quantize=True, device_id="-1"
+            )
+            logger.info("SenseVoice ONNX 模型加载完成")
+            return True
+        except Exception as e:
+            logger.error(f"SenseVoice 加载失败（将回退 Paraformer）: {str(e)}")
+            self.sensevoice_model = None
+            return False
+
+    def _decode_sensevoice(self, token_ids):
+        """把 SenseVoice 输出的 token id 解码成纯文本，剥离 <...> 标记。"""
+        toks = self.sensevoice_tokens or []
+        out = []
+        for tid in token_ids:
+            if 0 <= tid < len(toks):
+                t = toks[tid]
+                if t.startswith("<") and t.endswith(">"):
+                    continue
+                out.append(t)
+        text = "".join(out).replace("▁", " ").strip()
+        while text and text[-1] in "。.":
+            text = text[:-1]
+        return text
 
     def _load_vad_model(self):
         """加载VAD模型"""
@@ -234,6 +277,10 @@ class FunASRServer:
             logger.info(
                 f"所有FunASR模型并行初始化完成，总耗时: {total_time:.2f}秒"
             )
+            # 加载快速识别引擎 SenseVoice（可选，失败自动回退 Paraformer）
+            self._load_sensevoice()
+            # 预热，避免首次真实识别的冷启动延迟
+            self._warmup()
             return {
                 "success": True,
                 "message": f"FunASR模型并行初始化成功，耗时: {total_time:.2f}秒",
@@ -250,6 +297,31 @@ class FunASRServer:
             logger.error(traceback.format_exc())
             return {"success": False, "error": error_msg, "type": "init_error"}
 
+    def _warmup(self):
+        """用极短静音预热 ASR/标点模型，避免首次真实识别的冷启动延迟"""
+        try:
+            import tempfile, wave, struct
+            t0 = time.time()
+            path = os.path.join(tempfile.gettempdir(), "ququ_warmup.wav")
+            with wave.open(path, "wb") as w:
+                w.setnchannels(1)
+                w.setsampwidth(2)
+                w.setframerate(16000)
+                w.writeframes(struct.pack("<" + "h" * 1600, *([0] * 1600)))  # 0.1s 静音
+            if self.asr_model:
+                self.asr_model.generate(input=path, batch_size_s=60, cache={}, disable_pbar=True)
+            if self.punc_model:
+                self.punc_model.generate(input="你好")
+            if self.sensevoice_model:
+                # SenseVoice ONNX 首次推理冷启动较久（~7s），预热吸收掉
+                try:
+                    self.sensevoice_model([path], language=[0], textnorm=[14])
+                except Exception as e:
+                    logger.warning(f"SenseVoice 预热跳过: {str(e)}")
+            logger.info(f"模型预热完成，耗时: {time.time() - t0:.2f}秒")
+        except Exception as e:
+            logger.warning(f"模型预热跳过: {str(e)}")
+
     def transcribe_audio(self, audio_path, options=None):
         """转录音频文件"""
         if not self.initialized:
@@ -265,31 +337,60 @@ class FunASRServer:
             logger.info(f"开始转录音频文件: {audio_path}")
 
             # 设置默认选项
+            # 注意：原实现每次都额外跑一遍 VAD 模型，但其结果从未被使用（纯浪费一次推理）。
+            # Paraformer 已能处理整段音频，这里默认关闭独立 VAD 以显著提速。
             default_options = {
                 "batch_size_s": 60,
                 "hotword": "",
-                "use_vad": True,
+                "use_vad": False,
                 "use_punc": True,  # 使用FunASR自带的标点恢复
                 "language": "zh",
+                "engine": "sensevoice",  # 识别引擎：sensevoice(快) / paraformer(稳)
             }
 
             if options:
                 default_options.update(options)
 
-            # 执行语音识别
-            if default_options["use_vad"]:
-                vad_result = self.vad_model.generate(
+            # —— 引擎选择：默认 SenseVoice（快），不可用时自动回退 Paraformer ——
+            engine = default_options.get("engine", "sensevoice")
+            if engine == "sensevoice" and self.sensevoice_model is not None:
+                _sv_t0 = time.time()
+                sv_res = self.sensevoice_model(
+                    [audio_path], language=[0], textnorm=[14]
+                )
+                logger.info(f"[计时] SenseVoice识别耗时: {time.time() - _sv_t0:.2f}秒")
+                raw_text = self._decode_sensevoice(sv_res[0]) if sv_res else ""
+                duration = self._get_audio_duration(audio_path)
+                self.transcription_count += 1
+                logger.info(f"转录完成(SenseVoice)，文本长度: {len(raw_text)}字")
+                return {
+                    "success": True,
+                    "text": raw_text,        # SenseVoice 自带标点/ITN
+                    "raw_text": raw_text,
+                    "confidence": 0.0,
+                    "duration": duration,
+                    "language": "zh-CN",
+                    "model_type": "sensevoice-onnx",
+                }
+
+            # —— 否则走 Paraformer + 标点 ——
+            # 可选的独立 VAD（默认关闭；其输出当前不参与 ASR，仅为兼容保留）
+            if default_options["use_vad"] and self.vad_model:
+                self.vad_model.generate(
                     input=audio_path, batch_size_s=default_options["batch_size_s"]
                 )
                 logger.info("VAD处理完成")
 
-            # 执行ASR识别
+            # 执行ASR识别（关闭进度条，减少开销）
+            _asr_t0 = time.time()
             asr_result = self.asr_model.generate(
                 input=audio_path,
                 batch_size_s=default_options["batch_size_s"],
                 hotword=default_options["hotword"],
                 cache={},
+                disable_pbar=True,
             )
+            logger.info(f"[计时] ASR识别耗时: {time.time() - _asr_t0:.2f}秒")
 
             # 提取识别文本
             if isinstance(asr_result, list) and len(asr_result) > 0:
@@ -300,13 +401,15 @@ class FunASRServer:
             else:
                 raw_text = str(asr_result)
 
-            logger.info(f"ASR识别完成，原始文本: {raw_text[:100]}...")
+            logger.info(f"ASR识别完成，文本长度: {len(raw_text)}字")
 
             # 使用FunASR进行标点恢复
             final_text = raw_text
             if default_options["use_punc"] and self.punc_model and raw_text.strip():
                 try:
+                    _punc_t0 = time.time()
                     punc_result = self.punc_model.generate(input=raw_text)
+                    logger.info(f"[计时] 标点恢复耗时: {time.time() - _punc_t0:.2f}秒")
                     if isinstance(punc_result, list) and len(punc_result) > 0:
                         if (
                             isinstance(punc_result[0], dict)
@@ -341,7 +444,7 @@ class FunASRServer:
                 self._cleanup_memory()
                 logger.info(f"已完成 {self.transcription_count} 次转录，执行内存清理")
 
-            logger.info(f"转录完成，最终文本: {final_text[:100]}...")
+            logger.info(f"转录完成，文本长度: {len(final_text)}字")
             return result
 
         except Exception as e:

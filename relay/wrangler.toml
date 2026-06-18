@@ -1,0 +1,22 @@
+name = "ququ-relay"
+main = "worker.js"
+compatibility_date = "2024-11-01"
+
+# ───────────────────────────────────────────────────────────────
+# 非敏感变量（可直接写在这里）。敏感的 key/token 用 `wrangler secret` 设置，
+# 不要写进本文件，详见 README.md。
+# ───────────────────────────────────────────────────────────────
+[vars]
+DEEPSEEK_BASE_URL = "https://api.deepseek.com"
+DEEPSEEK_MODEL = "deepseek-v4-flash"
+MAX_INPUT_CHARS = "4000"
+MAX_TOKENS = "2000"
+RATE_LIMIT_PER_MIN = "20"
+
+# ───────────────────────────────────────────────────────────────
+# 可选：启用按 IP 限流需要绑定一个 KV。先创建再取消下面注释并填入 id：
+#   npx wrangler kv namespace create RATE_KV
+# ───────────────────────────────────────────────────────────────
+# [[kv_namespaces]]
+# binding = "RATE_KV"
+# id = "在这里填入 wrangler 输出的 namespace id"

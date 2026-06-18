@@ -32,13 +32,13 @@ const HistoryPage = () => {
   };
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-50 to-gray-100 dark:from-gray-900 dark:to-gray-800">
+    <div className="min-h-screen bg-gray-50 dark:bg-neutral-950">
       {/* 使用历史记录组件，但作为全屏页面而不是模态框 */}
       <div className="h-screen flex flex-col">
         {/* 标题栏 */}
-        <div className="flex items-center justify-between p-6 border-b border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 shadow-sm">
+        <div className="flex items-center justify-between p-6 border-b border-gray-100 dark:border-neutral-800 bg-white dark:bg-neutral-900 shadow-sm">
           <div className="flex items-center space-x-3">
-            <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100 chinese-title">蛐蛐 - 转录历史</h1>
+            <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100 chinese-title">转录历史</h1>
           </div>
           <button
             onClick={handleClose}
@@ -70,7 +70,7 @@ const HistoryContent = ({ onCopy }) => {
     
     setLoading(true);
     try {
-      const result = await window.electronAPI.getTranscriptions(100, 0);
+      const result = await window.electronAPI.getTranscriptions(1000, 0);
       setTranscriptions(result || []);
       setFilteredTranscriptions(result || []);
     } catch (error) {
@@ -136,7 +136,7 @@ const HistoryContent = ({ onCopy }) => {
   return (
     <div className="h-full flex flex-col">
       {/* 搜索栏 */}
-      <div className="p-6 bg-white dark:bg-gray-800 border-b border-gray-100 dark:border-gray-700">
+      <div className="p-6 bg-white dark:bg-neutral-900 border-b border-gray-100 dark:border-neutral-800">
         <div className="max-w-4xl mx-auto">
           <div className="relative">
             <svg className="absolute left-3 top-1/2 transform -translate-y-1/2 w-4 h-4 text-gray-400 dark:text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -147,7 +147,7 @@ const HistoryContent = ({ onCopy }) => {
               placeholder="搜索转录内容..."
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              className="w-full pl-10 pr-4 py-3 border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent chinese-text text-lg"
+              className="w-full pl-10 pr-4 py-3 border border-gray-300 dark:border-neutral-700 bg-white dark:bg-neutral-800 text-gray-900 dark:text-white rounded-lg focus:ring-1 focus:ring-neutral-400 focus:border-transparent chinese-text text-lg"
             />
           </div>
           <div className="mt-3 flex items-center justify-between">
@@ -160,7 +160,7 @@ const HistoryContent = ({ onCopy }) => {
                   window.electronAPI.exportTranscriptions('txt');
                 }
               }}
-              className="px-4 py-2 bg-blue-500 hover:bg-blue-600 dark:bg-blue-600 dark:hover:bg-blue-700 text-white rounded-lg transition-colors text-sm"
+              className="px-4 py-2 bg-neutral-900 hover:bg-black text-white dark:bg-white dark:text-neutral-900 dark:hover:bg-neutral-200 rounded-lg transition-colors text-sm"
             >
               导出全部
             </button>
@@ -173,7 +173,7 @@ const HistoryContent = ({ onCopy }) => {
         <div className="max-w-4xl mx-auto">
           {loading ? (
             <div className="flex items-center justify-center py-12">
-              <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-500"></div>
+              <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-neutral-400"></div>
               <span className="ml-3 text-gray-600 dark:text-gray-400">加载中...</span>
             </div>
           ) : filteredTranscriptions.length === 0 ? (
@@ -190,7 +190,7 @@ const HistoryContent = ({ onCopy }) => {
               {filteredTranscriptions.map((item) => (
                 <div
                   key={item.id}
-                  className="bg-white dark:bg-gray-800 rounded-lg p-6 shadow-sm hover:shadow-md transition-shadow border border-gray-200 dark:border-gray-700"
+                  className="bg-white dark:bg-neutral-900 rounded-lg p-6 shadow-sm hover:shadow-md transition-shadow border border-gray-100 dark:border-neutral-800"
                 >
                   <div className="flex items-start justify-between mb-4">
                     <div className="flex items-center space-x-3 text-sm text-gray-500 dark:text-gray-400">
@@ -199,7 +199,7 @@ const HistoryContent = ({ onCopy }) => {
                       </svg>
                       <span>{formatDate(item.created_at)}</span>
                       {item.confidence && (
-                        <span className="bg-blue-100 dark:bg-blue-900/50 text-blue-700 dark:text-blue-300 px-2 py-1 rounded text-xs">
+                        <span className="bg-gray-100 dark:bg-neutral-800 text-gray-700 dark:text-neutral-300 px-2 py-1 rounded text-xs">
                           置信度: {Math.round(item.confidence * 100)}%
                         </span>
                       )}
@@ -226,30 +226,20 @@ const HistoryContent = ({ onCopy }) => {
                     </div>
                   </div>
 
-                  {/* 最终文本 */}
+                  {/* 原始识别 */}
                   <div className="mb-4">
-                    <h4 className="text-sm font-medium text-gray-800 dark:text-gray-200 mb-2">最终结果:</h4>
-                    <p className="chinese-content leading-relaxed bg-gray-50 dark:bg-gray-700/60 p-4 rounded-lg border dark:border-gray-600/30">
-                      {item.text}
+                    <h4 className="text-sm font-medium text-gray-800 dark:text-gray-200 mb-2">原始识别:</h4>
+                    <p className="chinese-content leading-relaxed bg-gray-50 dark:bg-neutral-800/60 p-4 rounded-lg border dark:border-neutral-700/30">
+                      {item.raw_text || item.text}
                     </p>
                   </div>
 
-                  {/* AI优化文本 */}
-                  {item.processed_text && item.processed_text.trim() !== (item.raw_text || '').trim() && (
-                    <div className="mb-4">
-                      <h4 className="text-sm font-medium text-emerald-700 dark:text-emerald-400 mb-2">AI优化:</h4>
-                      <p className="chinese-content leading-relaxed bg-emerald-50 dark:bg-emerald-900/20 p-4 rounded-lg border border-emerald-200 dark:border-emerald-700">
-                        {item.processed_text}
-                      </p>
-                    </div>
-                  )}
-
-                  {/* 原始识别文本 */}
-                  {item.raw_text && item.raw_text.trim() !== item.text.trim() && (
+                  {/* AI优化 */}
+                  {item.processed_text && item.processed_text.trim() !== (item.raw_text || item.text || '').trim() && (
                     <div>
-                      <h4 className="text-sm font-medium text-gray-500 dark:text-gray-400 mb-2">原始识别:</h4>
-                      <p className="text-xs chinese-content leading-relaxed bg-gray-100 dark:bg-gray-700/40 p-3 rounded-lg border dark:border-gray-600/20 text-gray-600 dark:text-gray-200">
-                        {item.raw_text}
+                      <h4 className="text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">AI优化:</h4>
+                      <p className="chinese-content leading-relaxed bg-gray-100 dark:bg-neutral-800/40 p-4 rounded-lg border dark:border-neutral-700/30 text-gray-700 dark:text-gray-200">
+                        {item.processed_text}
                       </p>
                     </div>
                   )}

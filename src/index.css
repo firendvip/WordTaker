@@ -80,6 +80,116 @@ html, body {
   background: transparent;
 }
 
+/* 胶囊录音条窗口需要完全透明，覆盖 @layer base 里 body 的背景色 */
+body {
+  background-color: transparent !important;
+}
+
+/* ===== 胶囊录音条（紧凑，悬浮在光标附近）===== */
+.pill-root {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 4px;
+  -webkit-app-region: drag;
+}
+.recorder-pill {
+  width: 100%;
+  height: 36px;
+  background: #0b0b0c;
+  border-radius: 999px;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 0 8px;
+  -webkit-app-region: drag;
+}
+.recorder-pill button,
+.non-draggable {
+  -webkit-app-region: no-drag;
+}
+.pill-badge {
+  width: 22px;
+  height: 22px;
+  border-radius: 999px;
+  background: #ffffff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  border: none;
+  cursor: pointer;
+  transition: transform 0.12s ease;
+}
+.pill-badge:active { transform: scale(0.9); }
+.pill-wave {
+  flex: 1;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  overflow: hidden;
+}
+.pill-bar {
+  width: 2px;
+  height: 70%;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.85);
+  transform: scaleY(0.3);
+  transform-origin: center;
+}
+.pill-wave.is-recording .pill-bar {
+  animation: ququ-eq 0.9s ease-in-out infinite;
+}
+.pill-wave.is-busy .pill-bar {
+  animation: ququ-eq 1.4s ease-in-out infinite;
+  opacity: 0.6;
+}
+@keyframes ququ-eq {
+  0%, 100% { transform: scaleY(0.25); }
+  50% { transform: scaleY(1); }
+}
+.pill-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex-shrink: 0;
+}
+.pill-ghost {
+  width: 20px;
+  height: 20px;
+  border-radius: 999px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: rgba(255, 255, 255, 0.5);
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.15s ease, color 0.15s ease, background 0.15s ease;
+}
+.recorder-pill:hover .pill-ghost { opacity: 1; }
+.pill-ghost:hover { color: #fff; background: rgba(255, 255, 255, 0.12); }
+.pill-sparkle {
+  width: 22px;
+  height: 22px;
+  border-radius: 999px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #f5c451;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: background 0.15s ease;
+}
+.pill-sparkle:hover { background: rgba(245, 196, 81, 0.16); }
+
 /* 中文文本优化 - 基于WCAG 2.1标准 */
 .chinese-text {
   font-family: 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'WenQuanYi Micro Hei', system-ui, -apple-system, sans-serif;

@@ -47,7 +47,7 @@ class ErrorBoundary extends React.Component {
             </div>
             
             <p className="text-gray-600 mb-4">
-              蛐蛐遇到了一个意外错误。请尝试重启应用。
+              应用遇到了一个意外错误。请尝试重启应用。
             </p>
             
             {process.env.NODE_ENV === 'development' && (
@@ -161,7 +161,6 @@ root.render(
   <React.StrictMode>
     <ErrorBoundary>
       <App />
-      <Toaster />
     </ErrorBoundary>
   </React.StrictMode>
 )

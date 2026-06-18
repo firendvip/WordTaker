@@ -7,6 +7,8 @@ class TrayManager {
     this.mainWindow = null;
     this.controlPanelWindow = null;
     this.createControlPanelCallback = null;
+    this.openSettings = null;
+    this.openHistory = null;
     this.logger = logger;
   }
 
@@ -19,41 +21,40 @@ class TrayManager {
     this.createControlPanelCallback = callback;
   }
 
+  setOpenSettings(callback) {
+    this.openSettings = callback;
+  }
+
+  setOpenHistory(callback) {
+    this.openHistory = callback;
+  }
+
   async createTray() {
     try {
       // 创建托盘图标
       const iconPath = this.getTrayIconPath();
       let trayIcon;
       
-      if (iconPath && require("fs").existsSync(iconPath)) {
+      if (process.platform === "darwin") {
+        // macOS 菜单栏：代码生成透明底的单色波形模板图标（避免 SVG 渲染丢失透明度）
+        trayIcon = this.buildWaveformTrayIcon();
+        trayIcon.setTemplateImage(true);
+      } else if (iconPath && require("fs").existsSync(iconPath)) {
         trayIcon = nativeImage.createFromPath(iconPath);
-        if (process.platform === "darwin") {
-          trayIcon = trayIcon.resize({ width: 16, height: 16 });
-          trayIcon.setTemplateImage(true);
-        }
       } else {
-        // 如果图标文件不存在，创建一个简单的图标
         trayIcon = nativeImage.createEmpty();
       }
 
       this.tray = new Tray(trayIcon);
-      this.tray.setToolTip("蛐蛐 - 中文语音转文字");
+      this.tray.setToolTip("中文语音转文字");
 
       // 创建上下文菜单
       this.updateContextMenu();
 
-      // 设置点击事件
+      // 左/右键都弹出菜单（应用在后台常驻，平时不显示任何窗口）
       this.tray.on("click", () => {
-        if (this.mainWindow) {
-          if (this.mainWindow.isVisible()) {
-            this.mainWindow.hide();
-          } else {
-            this.mainWindow.show();
-            this.mainWindow.focus();
-          }
-        }
+        this.tray.popUpContextMenu();
       });
-
       this.tray.on("right-click", () => {
         this.tray.popUpContextMenu();
       });
@@ -65,14 +66,37 @@ class TrayManager {
     }
   }
 
+  // 生成透明底的极简波形托盘图标（模板图，菜单栏自动适配明暗）
+  // 用 @2x 高清画布（44px）+ scaleFactor 2，使其在菜单栏按 22pt 显示——清晰且不过大。
+  buildWaveformTrayIcon() {
+    const S = 44;            // 物理像素画布（@2x）
+    const buf = Buffer.alloc(S * S * 4, 0); // 全透明
+    const bw = 4;            // 条宽
+    const gap = 6;           // 条间距
+    const heights = [13, 25, 19, 11]; // 4 条柔和起伏，上下留白，观感更轻
+    const totalW = heights.length * bw + (heights.length - 1) * gap;
+    let x = Math.round((S - totalW) / 2);
+    for (const h of heights) {
+      const y0 = Math.round((S - h) / 2);
+      for (let y = y0; y < y0 + h; y++) {
+        for (let xx = x; xx < x + bw; xx++) {
+          const i = (y * S + xx) * 4;
+          buf[i + 3] = 255; // 仅 alpha（模板图）
+        }
+      }
+      x += bw + gap;
+    }
+    return nativeImage.createFromBitmap(buf, { width: S, height: S, scaleFactor: 2 });
+  }
+
   getTrayIconPath() {
     const isDev = process.env.NODE_ENV === "development";
-    
+    // macOS 菜单栏用单色模板图标（仅波形条、透明底）；其它平台用应用图标
+    const iconFile = process.platform === "darwin" ? "trayTemplate.png" : "icon.png";
     if (isDev) {
-      return path.join(__dirname, "..", "..", "assets", "icon.png");
+      return path.join(__dirname, "..", "..", "assets", iconFile);
     } else {
-      // 生产环境路径
-      return path.join(process.resourcesPath, "assets", "icon.png");
+      return path.join(process.resourcesPath, "assets", iconFile);
     }
   }
 
@@ -81,34 +105,15 @@ class TrayManager {
 
     const contextMenu = Menu.buildFromTemplate([
       {
-        label: "显示主窗口",
+        label: "设置",
         click: () => {
-          if (this.mainWindow) {
-            this.mainWindow.show();
-            this.mainWindow.focus();
-          }
+          if (typeof this.openSettings === "function") this.openSettings();
         }
       },
       {
-        label: "控制面板",
+        label: "历史记录",
         click: () => {
-          if (this.controlPanelWindow) {
-            this.controlPanelWindow.show();
-            this.controlPanelWindow.focus();
-          } else if (this.createControlPanelCallback) {
-            this.createControlPanelCallback().then(() => {
-              if (this.controlPanelWindow) {
-                this.controlPanelWindow.show();
-              }
-            });
-          }
-        }
-      },
-      { type: "separator" },
-      {
-        label: "关于",
-        click: () => {
-          // TODO: 显示关于对话框
+          if (typeof this.openHistory === "function") this.openHistory();
         }
       },
       { type: "separator" },
@@ -135,14 +140,14 @@ class TrayManager {
 
     switch (status) {
       case "recording":
-        this.tray.setToolTip("蛐蛐 - 正在录音...");
+        this.tray.setToolTip("正在录音...");
         break;
       case "processing":
-        this.tray.setToolTip("蛐蛐 - 正在处理...");
+        this.tray.setToolTip("正在处理...");
         break;
       case "ready":
       default:
-        this.tray.setToolTip("蛐蛐 - 中文语音转文字");
+        this.tray.setToolTip("中文语音转文字");
         break;
     }
   }
