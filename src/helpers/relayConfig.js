@@ -16,8 +16,8 @@
 module.exports = {
   // 是否默认启用中转。分发版应为 true。
   RELAY_ENABLED: true,
-  // 腾讯云云函数 SCF 的函数URL（国内链路）
-  RELAY_URL: "https://1311262545-c75hkqrhhx.ap-guangzhou.tencentscf.com",
+  // 腾讯云云函数 SCF「Web 函数」地址（国内链路，支持流式与非流式）
+  RELAY_URL: "https://1311262545-3ihll1gdlf.ap-guangzhou.tencentscf.com",
   // 访问令牌，对应中转的 APP_TOKEN
   RELAY_TOKEN: "64caa0fbd432f49a65269be31e581b19aceab557205b7b24",
 };
