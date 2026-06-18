@@ -15,184 +15,6 @@ import { playWake, playEnd, warmupAudio } from "./utils/sounds";
 // 动态导入设置页面组件
 const SettingsPage = React.lazy(() => import('./settings.jsx').then(module => ({ default: module.SettingsPage })));
 
-// 声波图标组件（空闲/悬停状态）
-const SoundWaveIcon = ({ size = 16, isActive = false }) => {
-  return (
-    <div className="flex items-center justify-center gap-1">
-      {[...Array(4)].map((_, i) => (
-        <div
-          key={i}
-          className={`bg-slate-600 dark:bg-gray-300 rounded-full transition-all duration-150 shadow-sm ${
-            isActive ? "wave-bar" : ""
-          }`}
-          style={{
-            width: size * 0.15,
-            height: isActive ? size * 0.8 : size * 0.4,
-            animationDelay: isActive ? `${i * 0.1}s` : "0s",
-          }}
-        />
-      ))}
-    </div>
-  );
-};
-
-// 加载指示器组件（FunASR启动中）
-const LoadingIndicator = ({ size = 20 }) => {
-  return (
-    <div className="flex items-center justify-center gap-0.5">
-      {[...Array(3)].map((_, i) => (
-        <div
-          key={i}
-          className="w-1 bg-gray-500 rounded-full"
-          style={{
-            height: size * 0.6,
-            animation: `loading-dots 1.4s ease-in-out infinite`,
-            animationDelay: `${i * 0.2}s`,
-          }}
-        />
-      ))}
-    </div>
-  );
-};
-
-// 语音波形指示器组件（处理状态）
-const VoiceWaveIndicator = ({ isListening }) => {
-  return (
-    <div className="flex items-center justify-center gap-0.5">
-      {[...Array(4)].map((_, i) => (
-        <div
-          key={i}
-          className={`w-0.5 bg-white rounded-full transition-all duration-150 drop-shadow-sm ${
-            isListening ? "animate-pulse h-5" : "h-2"
-          }`}
-          style={{
-            animationDelay: isListening ? `${i * 0.1}s` : "0s",
-            animationDuration: isListening ? `${0.6 + i * 0.1}s` : "0s",
-          }}
-        />
-      ))}
-    </div>
-  );
-};
-
-// 增强的工具提示组件
-const Tooltip = ({ children, content, position = "top" }) => {
-  const [isVisible, setIsVisible] = useState(false);
-
-  const getPositionClasses = () => {
-    if (position === "bottom") {
-      return {
-        tooltip: "absolute top-full left-1/2 transform -translate-x-1/2 mt-2 px-2 py-1 text-white bg-gradient-to-r from-neutral-800 to-neutral-700 rounded-md whitespace-nowrap z-50 transition-opacity duration-150",
-        arrow: "absolute bottom-full left-1/2 transform -translate-x-1/2 w-0 h-0 border-l-2 border-r-2 border-b-2 border-transparent border-b-neutral-800"
-      };
-    }
-    // 默认为顶部
-    return {
-      tooltip: "absolute bottom-full left-1/2 transform -translate-x-1/2 mb-2 px-2 py-1 text-white bg-gradient-to-r from-neutral-800 to-neutral-700 rounded-md whitespace-nowrap z-50 transition-opacity duration-150",
-      arrow: "absolute top-full left-1/2 transform -translate-x-1/2 w-0 h-0 border-l-2 border-r-2 border-t-2 border-transparent border-t-neutral-800"
-    };
-  };
-
-  const { tooltip, arrow } = getPositionClasses();
-
-  return (
-    <div className="relative inline-block">
-      <div
-        onMouseEnter={() => setIsVisible(true)}
-        onMouseLeave={() => setIsVisible(false)}
-      >
-        {children}
-      </div>
-      {isVisible && (
-        <div
-          className={tooltip}
-          style={{ fontSize: "10px" }}
-        >
-          {content}
-          <div className={arrow}></div>
-        </div>
-      )}
-    </div>
-  );
-};
-
-// 文本显示区域组件
-const TextDisplay = ({ originalText, processedText, isProcessing, onCopy, onExport, onPaste }) => {
-  if (!originalText && !processedText) {
-    return null; // 当没有文本时不显示任何内容，避免重复
-  }
-
-  return (
-    <div className="space-y-4">
-      {/* 原始识别文本 - 简化设计，单行显示 */}
-      {originalText && (
-        <div className="bg-slate-100/80 dark:bg-gray-800/80 rounded-lg p-3 shadow-sm">
-          <div className="flex items-center justify-between">
-            <p className="chinese-content text-gray-800 dark:text-gray-200 flex-1 truncate pr-2">
-              {originalText}
-            </p>
-            <button
-              onClick={() => onCopy(originalText)}
-              className="p-1.5 hover:bg-slate-200/70 dark:hover:bg-gray-700/70 rounded-md transition-colors flex-shrink-0"
-              title="复制识别文本"
-            >
-              <Copy className="w-4 h-4 text-slate-600 dark:text-gray-400" />
-            </button>
-          </div>
-        </div>
-      )}
-
-      {/* AI处理后文本 */}
-      {(processedText || isProcessing) && (
-        <div className="bg-gradient-to-br from-emerald-50 to-emerald-100 dark:from-emerald-900/20 dark:to-emerald-800/20 rounded-xl p-5 border-l-4 border-emerald-400 dark:border-emerald-500 shadow-lg border border-emerald-200/50 dark:border-emerald-700/50">
-          <div className="flex items-center justify-between mb-3">
-            <h3 className="text-base font-semibold chinese-title text-emerald-700 dark:text-emerald-400">AI优化后</h3>
-            <div className="flex space-x-2">
-              {processedText && (
-                <>
-                  <button
-                    onClick={() => onPaste(processedText)}
-                    className="p-2 hover:bg-emerald-200/70 dark:hover:bg-emerald-700/30 rounded-lg transition-colors shadow-sm"
-                    title="粘贴优化文本"
-                  >
-                    <svg className="w-5 h-5 text-emerald-600 dark:text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5H7a2 2 0 00-2 2v10a2 2 0 002 2h8a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
-                    </svg>
-                  </button>
-                  <button
-                    onClick={() => onCopy(processedText)}
-                    className="p-2 hover:bg-emerald-200/70 dark:hover:bg-emerald-700/30 rounded-lg transition-colors shadow-sm"
-                    title="复制优化文本"
-                  >
-                    <Copy className="w-5 h-5 text-emerald-600 dark:text-emerald-400" />
-                  </button>
-                  <button
-                    onClick={() => onExport(processedText)}
-                    className="p-2 hover:bg-emerald-200/70 dark:hover:bg-emerald-700/30 rounded-lg transition-colors shadow-sm"
-                    title="导出文本"
-                  >
-                    <Download className="w-5 h-5 text-emerald-600 dark:text-emerald-400" />
-                  </button>
-                </>
-              )}
-            </div>
-          </div>
-          {isProcessing ? (
-            <div className="flex items-center space-x-3 text-emerald-700 dark:text-emerald-400">
-              <LoadingDots />
-              <span className="status-text">AI正在优化文本...</span>
-            </div>
-          ) : (
-            <p className="chinese-content leading-loose fade-in text-gray-800 dark:text-gray-200">
-              {processedText}
-            </p>
-          )}
-        </div>
-      )}
-    </div>
-  );
-};
-
 export default function App() {
   // 检查URL参数来决定渲染哪个页面
   const urlParams = new URLSearchParams(window.location.search);
@@ -295,7 +117,7 @@ export default function App() {
     
     // 防重复粘贴：如果是相同文本且在防抖时间内，则跳过
     if (lastPaste.text === text && (now - lastPaste.timestamp) < PASTE_DEBOUNCE_TIME) {
-      console.log("🚫 跳过重复粘贴，文本:", text.substring(0, 50) + "...");
+      window.electronAPI?.log?.('info', "🚫 跳过重复粘贴，文本:", text.substring(0, 50) + "...");
       return;
     }
     
@@ -309,15 +131,15 @@ export default function App() {
         await navigator.clipboard.writeText(text);
       }
     } catch (error) {
-      console.error("粘贴文本失败:", error);
+      window.electronAPI?.log?.('error', "粘贴文本失败:", error);
     }
   }, []);
 
   // 处理录音完成（FunASR识别完成）
   const handleRecordingComplete = useCallback(async (transcriptionResult) => {
-    console.log("🎤 handleRecordingComplete 被调用:", transcriptionResult);
+    window.electronAPI?.log?.('info', "🎤 handleRecordingComplete 被调用:", transcriptionResult);
     if (transcriptionResult.success && transcriptionResult.text) {
-      console.log("✅ 转录成功，文本:", transcriptionResult.text);
+      window.electronAPI?.log?.('info', "✅ 转录成功，文本:", transcriptionResult.text);
       // 立即显示FunASR识别的原始文本
       setOriginalText(transcriptionResult.text);
       setShowTextArea(true);
@@ -328,7 +150,7 @@ export default function App() {
       // 不立即粘贴，等待AI处理完成后再粘贴；不弹任何提示
       // 注意：不在这里保存到数据库，由 useRecording.js 统一处理保存逻辑
     } else {
-      console.log("转录失败或无文本:", transcriptionResult);
+      window.electronAPI?.log?.('info', "转录失败或无文本:", transcriptionResult);
     }
   }, []);
 
@@ -350,7 +172,7 @@ export default function App() {
               await navigator.clipboard.writeText(result.text || "");
             }
           } catch (e) {
-            console.warn("写入剪贴板失败:", e);
+            window.electronAPI?.log?.('warn', "写入剪贴板失败:", e);
           }
         }
       } else if (result && result.paste && result.text) {
@@ -424,18 +246,18 @@ export default function App() {
 
   // 设置转录完成回调
   useEffect(() => {
-    console.log('设置回调函数');
+    window.electronAPI?.log?.('info', '设置回调函数');
     window.onTranscriptionComplete = handleRecordingComplete;
     window.onAIOptimizationComplete = handleAIOptimizationComplete;
     
     // 验证回调函数是否正确设置
-    console.log('回调函数设置完成:', {
+    window.electronAPI?.log?.('info', '回调函数设置完成:', {
       onTranscriptionComplete: typeof window.onTranscriptionComplete,
       onAIOptimizationComplete: typeof window.onAIOptimizationComplete
     });
     
     return () => {
-      console.log('清理回调函数');
+      window.electronAPI?.log?.('info', '清理回调函数');
       window.onTranscriptionComplete = null;
       window.onAIOptimizationComplete = null;
     };
@@ -456,7 +278,7 @@ export default function App() {
         toast.success("文本已复制到剪贴板");
       }
     } catch (error) {
-      console.error("复制文本失败:", error);
+      window.electronAPI?.log?.('error', "复制文本失败:", error);
       toast.error(`无法复制文本到剪贴板: ${error.message}`);
     }
   };
@@ -496,7 +318,7 @@ export default function App() {
         toast.error(`❌ 模型下载失败: ${result.error}`);
       }
     } catch (error) {
-      console.error('下载模型失败:', error);
+      window.electronAPI?.log?.('error', '下载模型失败:', error);
       toast.error(`❌ 模型下载失败: ${error.message}`);
     }
   }, [modelStatus]);
@@ -547,7 +369,7 @@ export default function App() {
     
     // 只有主窗口才注册热键
     if (isControlPanel) {
-      console.log('控制面板窗口，跳过热键注册');
+      window.electronAPI?.log?.('info', '控制面板窗口，跳过热键注册');
       return;
     }
 
@@ -555,7 +377,7 @@ export default function App() {
     //  - 裸修饰键（如单击左 Option / 双击 Alt）经 uiohook 监听
     //  - 普通组合键经 Electron globalShortcut
     // 渲染层只需监听 'hotkey-triggered' 事件并 toggle 录音，避免重复注册造成冲突。
-    console.log('录音触发键由主进程管理，渲染层仅监听 hotkey-triggered');
+    window.electronAPI?.log?.('info', '录音触发键由主进程管理，渲染层仅监听 hotkey-triggered');
   }, []);
 
   // 处理关闭窗口
@@ -588,15 +410,15 @@ export default function App() {
     if (window.electronAPI) {
       // 监听传统热键触发
       const unsubscribeHotkey = window.electronAPI.onHotkeyTriggered((event, data) => {
-        console.log('收到热键触发事件:', data);
-        console.log('当前录音状态:', isRecording, '处理状态:', isRecordingProcessing);
+        window.electronAPI?.log?.('info', '收到热键触发事件:', data);
+        window.electronAPI?.log?.('info', '当前录音状态:', isRecording, '处理状态:', isRecordingProcessing);
         toggleRecording();
       });
 
       // 监听旧的toggle事件（保持兼容性）
       const unsubscribeToggle = window.electronAPI.onToggleDictation(() => {
-        console.log('收到旧版toggle事件');
-        console.log('当前录音状态:', isRecording, '处理状态:', isRecordingProcessing);
+        window.electronAPI?.log?.('info', '收到旧版toggle事件');
+        window.electronAPI?.log?.('info', '当前录音状态:', isRecording, '处理状态:', isRecordingProcessing);
         toggleRecording();
       });
 

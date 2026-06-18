@@ -32,7 +32,7 @@ export const useModelStatus = () => {
       }
       return { success: false, models_downloaded: false };
     } catch (error) {
-      console.error('检查模型文件失败:', error);
+      window.electronAPI?.log?.('error', '检查模型文件失败:', error);
       return { success: false, models_downloaded: false };
     }
   }, []);
@@ -46,7 +46,7 @@ export const useModelStatus = () => {
       }
       return { success: false };
     } catch (error) {
-      console.error('检查服务器状态失败:', error);
+      window.electronAPI?.log?.('error', '检查服务器状态失败:', error);
       return { success: false };
     }
   }, []);
@@ -178,9 +178,9 @@ export const useModelStatus = () => {
         
         // 下载完成后重启FunASR服务器以加载模型
         try {
-          console.log('模型下载完成，重启FunASR服务器...');
+          window.electronAPI?.log?.('info', '模型下载完成，重启FunASR服务器...');
           await window.electronAPI.restartFunasrServer();
-          console.log('FunASR服务器重启完成');
+          window.electronAPI?.log?.('info', 'FunASR服务器重启完成');
           
           // 重启后等待一段时间再检查状态
           setTimeout(() => {
@@ -188,7 +188,7 @@ export const useModelStatus = () => {
           }, 3000); // 增加等待时间到3秒
           
         } catch (restartError) {
-          console.error('重启FunASR服务器失败:', restartError);
+          window.electronAPI?.log?.('error', '重启FunASR服务器失败:', restartError);
           setModelStatus(prev => ({
             ...prev,
             isLoading: false,
@@ -203,7 +203,7 @@ export const useModelStatus = () => {
       }
       
     } catch (error) {
-      console.error('下载模型失败:', error);
+      window.electronAPI?.log?.('error', '下载模型失败:', error);
       setModelStatus(prev => ({
         ...prev,
         isDownloading: false,
@@ -224,7 +224,7 @@ export const useModelStatus = () => {
       }
       return { success: false };
     } catch (error) {
-      console.error('获取下载进度失败:', error);
+      window.electronAPI?.log?.('error', '获取下载进度失败:', error);
       return { success: false };
     }
   }, []);
@@ -232,7 +232,7 @@ export const useModelStatus = () => {
   // 初始化时检查状态
   useEffect(() => {
     if (isControlPanelOrSettings()) {
-      console.log('控制面板或设置页面，跳过模型状态检查');
+      window.electronAPI?.log?.('info', '控制面板或设置页面，跳过模型状态检查');
       return;
     }
     

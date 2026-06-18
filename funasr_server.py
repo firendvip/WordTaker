@@ -461,7 +461,8 @@ class FunASRServer:
             duration = librosa.get_duration(filename=audio_path)
             self.total_audio_duration += duration  # 累计音频时长
             return duration
-        except:
+        except Exception as e:
+            logger.warning(f"获取音频时长失败: {str(e)}")
             return 0.0
 
     def _cleanup_memory(self):

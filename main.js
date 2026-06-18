@@ -276,6 +276,25 @@ const ipcHandlers = new IPCHandlers({
 });
 
 // 主应用启动函数
+// 启动时清理上次崩溃残留的临时音频文件（os.tmpdir 下 funasr_audio_*.wav）
+function cleanupOrphanTempAudio() {
+  try {
+    const os = require('os');
+    const fs = require('fs');
+    const path = require('path');
+    const dir = os.tmpdir();
+    let removed = 0;
+    for (const name of fs.readdirSync(dir)) {
+      if (name.startsWith('funasr_audio_') && name.endsWith('.wav')) {
+        try { fs.unlinkSync(path.join(dir, name)); removed++; } catch (e) { /* 跳过 */ }
+      }
+    }
+    if (removed) logger.info('已清理孤儿临时音频文件', { removed });
+  } catch (error) {
+    logger.warn('清理孤儿临时音频文件失败:', error?.message || error);
+  }
+}
+
 async function startApp() {
   logger.info('应用启动开始', {
     nodeEnv: process.env.NODE_ENV,
@@ -284,6 +303,9 @@ async function startApp() {
     electronVersion: process.versions.electron,
     appVersion: app.getVersion()
   });
+
+  // 清理上次异常退出残留的临时音频
+  cleanupOrphanTempAudio();
 
   // 注释掉 accessibility 支持 - 可能干扰文本插入
   // try {

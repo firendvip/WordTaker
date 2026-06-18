@@ -2,6 +2,37 @@ const Database = require("better-sqlite3");
 const path = require("path");
 const fs = require("fs");
 const crypto = require("crypto");
+const { safeStorage } = require("electron");
+
+// 这些设置项在落盘时用系统密钥链加密（macOS Keychain / Win DPAPI / Linux libsecret）。
+// 兼容旧的明文值：读取时若无加密标记则原样返回，下次保存自动转为密文。
+const ENCRYPTED_SETTING_KEYS = new Set(["ai_api_key"]);
+
+function maybeEncrypt(key, value) {
+  if (!ENCRYPTED_SETTING_KEYS.has(key) || typeof value !== "string" || value === "") {
+    return JSON.stringify(value);
+  }
+  try {
+    if (safeStorage && safeStorage.isEncryptionAvailable()) {
+      const enc = safeStorage.encryptString(value).toString("base64");
+      return JSON.stringify({ __enc: "v1", data: enc });
+    }
+  } catch (e) {
+    // 加密不可用则回退明文
+  }
+  return JSON.stringify(value);
+}
+
+function maybeDecrypt(parsed) {
+  if (parsed && typeof parsed === "object" && parsed.__enc === "v1" && typeof parsed.data === "string") {
+    try {
+      return safeStorage.decryptString(Buffer.from(parsed.data, "base64"));
+    } catch (e) {
+      return "";
+    }
+  }
+  return parsed;
+}
 
 // 中转 (relay) 打包期默认配置；分发前在 relayConfig.js 填好即可。
 let RELAY_DEFAULTS = { RELAY_ENABLED: false, RELAY_URL: "", RELAY_TOKEN: "" };
@@ -239,43 +270,46 @@ class DatabaseManager {
       INSERT OR REPLACE INTO settings (key, value, updated_at) 
       VALUES (?, ?, CURRENT_TIMESTAMP)
     `);
-    return stmt.run(key, JSON.stringify(value));
+    return stmt.run(key, maybeEncrypt(key, value));
   }
 
   getSetting(key, defaultValue = null) {
     const stmt = this.db.prepare("SELECT value FROM settings WHERE key = ?");
     const result = stmt.get(key);
-    
+
     if (result) {
       try {
-        return JSON.parse(result.value);
+        return maybeDecrypt(JSON.parse(result.value));
       } catch (error) {
         return result.value;
       }
     }
-    
+
     return defaultValue;
   }
 
   getAllSettings() {
     const stmt = this.db.prepare("SELECT key, value FROM settings");
     const rows = stmt.all();
-    
+
     const settings = {};
     for (const row of rows) {
       try {
-        settings[row.key] = JSON.parse(row.value);
+        settings[row.key] = maybeDecrypt(JSON.parse(row.value));
       } catch (error) {
         settings[row.key] = row.value;
       }
     }
-    
+
     return settings;
   }
 
   resetSettings() {
     const stmt = this.db.prepare("DELETE FROM settings");
-    return stmt.run();
+    const r = stmt.run();
+    // 清空后立即重新播种默认值，避免行为不一致（file1-4.6）
+    try { this.seedDefaultSettings(); } catch (e) { /* 忽略 */ }
+    return r;
   }
 
   backup(backupPath) {

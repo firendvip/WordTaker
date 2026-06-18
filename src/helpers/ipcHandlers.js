@@ -35,6 +35,29 @@ async function fetchWithTimeout(url, options = {}, timeoutMs = LLM_REQUEST_TIMEO
   }
 }
 
+const _sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// 在 fetchWithTimeout 之上加指数退避重试：仅对瞬时错误(429/5xx)与网络异常重试，最多 3 次。
+async function fetchWithRetry(url, options = {}, timeoutMs = LLM_REQUEST_TIMEOUT_MS) {
+  const backoff = [1000, 3000];
+  let lastErr;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      const res = await fetchWithTimeout(url, options, timeoutMs);
+      if ((res.status === 429 || res.status >= 500) && attempt < 2) {
+        await _sleep(backoff[attempt]);
+        continue;
+      }
+      return res;
+    } catch (e) {
+      lastErr = e;
+      if (attempt < 2) { await _sleep(backoff[attempt]); continue; }
+      throw e;
+    }
+  }
+  throw lastErr || new Error("fetch failed");
+}
+
 class IPCHandlers {
   constructor(managers) {
     this.environmentManager = managers.environmentManager;
@@ -697,7 +720,8 @@ class IPCHandlers {
 
     // 保持向后兼容性
     ipcMain.handle("log-message", (event, level, message, data) => {
-      this.logger[level](`[渲染进程] ${message}`, data || "");
+      const lvl = VALID_LOG_LEVELS.has(level) ? level : "info";
+      this.logger[lvl](`[渲染进程] ${message}`, data || "");
       return true;
     });
 
@@ -1009,7 +1033,7 @@ class IPCHandlers {
 
       this.logger.info('AI文案处理(中转)请求:', { mode, inputLength: text.length });
 
-      const response = await fetchWithTimeout(relayUrl, {
+      const response = await fetchWithRetry(relayUrl, {
         method: 'POST',
         headers,
         body: JSON.stringify({ text, mode }),
@@ -1192,7 +1216,7 @@ ${text}
         inputLength: text.length
       });
 
-      const response = await fetchWithTimeout(`${baseUrl}/chat/completions`, {
+      const response = await fetchWithRetry(`${baseUrl}/chat/completions`, {
         method: 'POST',
         headers: {
           'Authorization': `Bearer ${apiKey}`,
@@ -1311,7 +1335,7 @@ ${text}
 
       this.logger.info('发送AI测试请求:', { model });
 
-      const response = await fetchWithTimeout(`${baseUrl}/chat/completions`, {
+      const response = await fetchWithRetry(`${baseUrl}/chat/completions`, {
         method: 'POST',
         headers: {
           'Authorization': `Bearer ${apiKey}`,
@@ -1348,14 +1372,15 @@ ${text}
       }
 
       const data = await response.json();
-      this.logger.info('AI API成功响应:', data);
+      // 日志脱敏：只记录状态/模型/用量，绝不记录完整响应体或回复内容
+      this.logger.info('AI API成功响应:', { status: response.status, model: data.model, usage: data.usage });
 
       if (!data.choices || data.choices.length === 0) {
         throw new Error('AI API返回格式异常：缺少choices字段');
       }
 
       const aiResponse = data.choices[0].message?.content || '';
-      this.logger.info('AI回复内容:', aiResponse);
+      this.logger.info('AI回复内容长度:', aiResponse.length);
 
       return {
         available: true,

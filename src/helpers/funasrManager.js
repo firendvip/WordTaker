@@ -300,10 +300,11 @@ class FunASRManager {
       
       for (const [modelType, config] of Object.entries(this.modelConfigs)) {
         const modelDir = path.join(cachePath, config.cache_path);
-        const modelFile = path.join(modelDir, "model.pt");
-        
-        if (fs.existsSync(modelFile)) {
-          const stats = fs.statSync(modelFile);
+        const found = this.findModelFile(modelDir);
+        const modelFile = found || path.join(modelDir, "model.pt");
+
+        if (found) {
+          const stats = fs.statSync(found);
           const fileSize = stats.size;
           const isComplete = fileSize >= config.expected_size * 0.95; // 允许5%误差
           
@@ -367,6 +368,25 @@ class FunASRManager {
     }
   }
 
+  // 在模型目录中查找有效模型文件，兼容多种格式（.pt / .onnx / .bin），
+  // 避免只认 model.pt 时把 SenseVoice ONNX 等格式误报为"缺失"。
+  findModelFile(modelDir) {
+    const candidates = ["model.pt", "model_quant.onnx", "model.onnx", "pytorch_model.bin"];
+    for (const name of candidates) {
+      const p = path.join(modelDir, name);
+      if (fs.existsSync(p)) return p;
+    }
+    try {
+      const f = fs.readdirSync(modelDir).find(
+        (n) => n.endsWith(".onnx") || n.endsWith(".pt") || n.endsWith(".bin")
+      );
+      if (f) return path.join(modelDir, f);
+    } catch (e) {
+      // 目录不存在等
+    }
+    return null;
+  }
+
   async getDownloadProgress() {
     /**
      * 获取模型下载进度
@@ -392,11 +412,11 @@ class FunASRManager {
       
       for (const [modelType, config] of Object.entries(this.modelConfigs)) {
         const modelDir = path.join(cachePath, config.cache_path);
-        const modelFile = path.join(modelDir, "model.pt");
-        
+        const found = this.findModelFile(modelDir);
+
         let fileSize = 0;
-        if (fs.existsSync(modelFile)) {
-          const stats = fs.statSync(modelFile);
+        if (found) {
+          const stats = fs.statSync(found);
           fileSize = stats.size;
           totalDownloaded += fileSize;
         }
@@ -644,6 +664,7 @@ class FunASRManager {
 
   async _startFunASRServer() {
     try {
+      this._intentionalStop = false; // 新一轮启动，允许后续异常自动重启
       this.logger.info && this.logger.info('启动FunASR服务器...');
       
       const status = await this.checkFunASRInstallation();
@@ -710,6 +731,7 @@ class FunASRManager {
                 if (result.success) {
                   this.serverReady = true;
                   this.modelsInitialized = true;
+                  this._restartCount = 0; // 成功就绪，重置自动重启计数
                   this._clearModelCache(); // 清除缓存，确保状态更新
                   this.logger.info && this.logger.info('FunASR服务器启动成功，模型已初始化');
                 } else {
@@ -738,9 +760,24 @@ class FunASRManager {
           this.serverProcess = null;
           this.serverReady = false;
           this.modelsInitialized = false;
-          
+
           if (!initResponseReceived) {
             resolve();
+          }
+
+          // 非主动停止且异常退出(崩溃/OOM)时自动重启：最多3次、指数退避
+          if (!this._intentionalStop && code !== 0) {
+            if ((this._restartCount || 0) < 3) {
+              this._restartCount = (this._restartCount || 0) + 1;
+              const delay = [1000, 3000, 8000][this._restartCount - 1] || 8000;
+              this.logger.warn && this.logger.warn(`FunASR 异常退出，${delay}ms 后自动重启(第${this._restartCount}次)`);
+              setTimeout(() => {
+                this.initializationPromise = this._startFunASRServer();
+                this.initializationPromise.catch((e) => this.logger.error && this.logger.error('FunASR 自动重启失败', e));
+              }, delay);
+            } else {
+              this.logger.error && this.logger.error('FunASR 连续重启3次仍失败，停止自动重启');
+            }
           }
         });
 
@@ -813,6 +850,7 @@ class FunASRManager {
   }
 
   async _stopFunASRServer() {
+    this._intentionalStop = true; // 标记为主动停止，阻止自动重启
     if (this.serverProcess) {
       try {
         // 发送退出命令

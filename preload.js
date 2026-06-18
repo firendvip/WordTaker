@@ -112,7 +112,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
   checkForUpdates: () => ipcRenderer.invoke("check-for-updates"),
 
   // 调试和日志
-  log: (level, message) => ipcRenderer.invoke("log", level, message),
+  log: (level, message, data) => ipcRenderer.invoke("log", level, message, data),
   getDebugInfo: () => ipcRenderer.invoke("get-debug-info"),
 
   // 事件监听
