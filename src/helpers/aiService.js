@@ -68,6 +68,58 @@ class AiService {
     }
   }
 
+  // 流式润色：经 Web 函数中转，边收边回调 onDelta(增量文本)。返回 { success, text:全文 }。
+  // 仅在中转为「Web 函数」(支持流式)时可用；普通事件函数中转不要走这里。
+  async processTextViaRelayStream(text, mode, relayUrl, onDelta) {
+    try {
+      const token = await this.databaseManager.getSetting('llm_relay_token', '');
+      const deviceId = await this.databaseManager.getSetting('device_id', '');
+      const headers = { 'Content-Type': 'application/json' };
+      if (token) headers['X-App-Token'] = token;
+      if (deviceId) headers['X-Device-Id'] = deviceId;
+
+      this.logger.info('AI文案处理(中转·流式)请求:', { mode, inputLength: text.length });
+
+      // 流式不重试(重试会重复输出);用带超时的 fetch
+      const response = await fetchWithTimeout(relayUrl, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ text, mode, stream: true }),
+      });
+      if (!response.ok || !response.body) {
+        return { success: false, error: `中转服务错误: ${response.status}` };
+      }
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buf = '';
+      let full = '';
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += decoder.decode(value, { stream: true });
+        let idx;
+        while ((idx = buf.indexOf('\n')) >= 0) {
+          const line = buf.slice(0, idx).trim();
+          buf = buf.slice(idx + 1);
+          if (!line) continue;
+          try {
+            const j = JSON.parse(line);
+            if (j.d) { full += j.d; if (typeof onDelta === 'function') onDelta(j.d); }
+            else if (j.done && typeof j.text === 'string' && j.text) full = j.text;
+          } catch { /* 跳过坏行 */ }
+        }
+      }
+      const out = full.trim();
+      if (!out) return { success: false, error: '流式返回为空' };
+      this.logger.info('AI文案处理(中转·流式)完成:', { outputLength: out.length });
+      return { success: true, text: out };
+    } catch (error) {
+      this.logger.error('流式中转请求失败:', error?.message || error);
+      return { success: false, error: '无法连接文案中转服务(流式)' };
+    }
+  }
+
   async processTextViaRelay(text, mode, relayUrl) {
     try {
       const token = await this.databaseManager.getSetting('llm_relay_token', '');

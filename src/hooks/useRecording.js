@@ -237,7 +237,29 @@ export const useRecording = ({ onTranscriptionCompleteRef, onAIOptimizationCompl
               let emit;
 
               if (copywriting) {
-                // —— 文案模式（主路径）——
+                // —— 流式优先：开启 Web 函数流式时，边生成边贴(粘贴在主进程完成) ——
+                let streamed = false;
+                try {
+                  const streaming = await window.electronAPI.getSetting('llm_streaming_enabled', false);
+                  if (streaming && window.electronAPI.processTextStream) {
+                    const _sT0 = Date.now();
+                    const sres = await window.electronAPI.processTextStream(raw_text);
+                    if (sres && (sres.success || sres.pastedAny)) {
+                      log('info', `[计时] 流式文案: ${Date.now() - _sT0}ms`);
+                      const t = sres.text || raw_text;
+                      finalData.processed_text = t;
+                      finalData.text = t;
+                      // 主进程已增量贴出，这里不再重复粘贴
+                      emit = { ...transcriptionResult, text: t, processed_text: t, enhanced_by_ai: true, paste: false };
+                      streamed = true;
+                    }
+                  }
+                } catch (err) {
+                  log('error', '流式文案异常，回退非流式:', err);
+                }
+
+                if (!streamed) {
+                // —— 文案模式（非流式主路径）——
                 log('info', '开始生成文案(LLM):', raw_text.substring(0, 50) + '...');
                 let result = null;
                 try {
@@ -276,6 +298,7 @@ export const useRecording = ({ onTranscriptionCompleteRef, onAIOptimizationCompl
                     error: errMsg,
                   };
                 }
+                } // end if(!streamed)
               } else if (useAI) {
                 // —— 兼容：旧版可选润色 ——
                 let result = null;

@@ -411,6 +411,49 @@ class ClipboardManager {
     tryNextCommand();
   }
 
+  // —— 流式增量上屏(供路线 I：边生成边追加到光标处) ——
+  captureClipboard() {
+    try { return clipboard.readText(); } catch (e) { return ""; }
+  }
+  async restoreClipboard(text) {
+    try { clipboard.writeText(text || ""); } catch (e) { /* 忽略 */ }
+  }
+
+  // 按一次粘贴键（不恢复剪贴板），平台通用
+  _pressPaste() {
+    return new Promise((resolve, reject) => {
+      let cmd, args;
+      if (process.platform === "darwin") {
+        cmd = "osascript"; args = ["-e", 'tell application "System Events" to keystroke "v" using command down'];
+      } else if (process.platform === "win32") {
+        cmd = "powershell"; args = ["-Command", 'Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.SendKeys]::SendWait("^v")'];
+      } else {
+        cmd = "xdotool"; args = ["key", "ctrl+v"];
+      }
+      const p = spawn(cmd, args);
+      const to = setTimeout(() => { try { p.kill("SIGKILL"); } catch (e) {} reject(new Error("paste timeout")); }, 3000);
+      p.on("close", (code) => { clearTimeout(to); code === 0 ? resolve() : reject(new Error("paste " + code)); });
+      p.on("error", (e) => { clearTimeout(to); reject(e); });
+    });
+  }
+
+  // 追加一段文本到光标处：写剪贴板→Cmd+V，不恢复。与 pasteText 共用串行链，保证顺序。
+  async appendChunk(text) {
+    const run = async () => {
+      if (!text) return;
+      clipboard.writeText(text);
+      if (clipboard.readText() !== text) clipboard.writeText(text);
+      if (process.platform === "darwin") {
+        const ok = await this.checkAccessibilityPermissions();
+        if (!ok) throw new Error("需要辅助功能权限");
+      }
+      await this._pressPaste();
+    };
+    const resultPromise = this._pasteChain.then(run, run);
+    this._pasteChain = resultPromise.then(() => undefined, () => undefined);
+    return resultPromise;
+  }
+
   /**
    * 复制文本到剪贴板
    * @param {string} text - 要复制的文本

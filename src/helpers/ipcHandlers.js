@@ -9,7 +9,7 @@ const ALLOWED_SETTING_KEYS = new Set([
   "recording_trigger", "cancel_key", "raw_stop_key", "sound_scheme", "sound_volume",
   "asr_engine", "skip_polish_max_chars",
   // 文案优化中转（key 留在服务器端，客户端只存中转地址与令牌）
-  "llm_relay_enabled", "llm_relay_url", "llm_relay_token",
+  "llm_relay_enabled", "llm_relay_url", "llm_relay_token", "llm_streaming_enabled",
 ]);
 // 合法日志级别，防止 this.logger[level] 调用注入
 const VALID_LOG_LEVELS = new Set(["info", "warn", "error", "debug"]);
@@ -126,6 +126,44 @@ class IPCHandlers {
     ipcMain.handle("prewarm-llm", () => {
       this.aiService.prewarm();
       return { success: true };
+    });
+
+    // 流式润色 + 增量上屏：边收边贴到光标处。返回 { success, text, pastedAny }
+    ipcMain.handle("process-text-stream", async (event, text) => {
+      if (typeof text !== "string" || !text.trim()) return { success: false, error: "无有效文本", pastedAny: false };
+      if (text.length > 10000) return { success: false, error: "文本过长", pastedAny: false };
+      const streaming = await this.databaseManager.getSetting("llm_streaming_enabled", false);
+      const relayEnabled = await this.databaseManager.getSetting("llm_relay_enabled", false);
+      const relayUrl = await this.databaseManager.getSetting("llm_relay_url", "");
+      if (!streaming || !relayEnabled || !relayUrl) {
+        return { success: false, error: "streaming-unavailable", pastedAny: false };
+      }
+
+      const original = this.clipboardManager.captureClipboard();
+      let buffer = "";
+      let pastedAny = false;
+      const flush = () => {
+        if (!buffer) return;
+        const chunk = buffer;
+        buffer = "";
+        pastedAny = true;
+        // 投入串行链，不阻塞流读取
+        this.clipboardManager.appendChunk(chunk).catch((e) => this.logger.warn("增量粘贴失败:", e?.message || e));
+      };
+      const onDelta = (d) => {
+        buffer += d;
+        if ([...buffer].length >= 6) flush(); // 攒到≥6字再贴一次，控制 Cmd+V 频率
+      };
+
+      const result = await this.aiService.processTextViaRelayStream(text, "copywriting", relayUrl, onDelta);
+      try {
+        flush();
+        await this.clipboardManager.appendChunk(""); // 等待所有增量贴完
+      } catch (e) { /* 忽略 */ }
+      // 贴完后稍等再恢复原剪贴板，避免抢在最后一次 Cmd+V 之前
+      setTimeout(() => this.clipboardManager.restoreClipboard(original), 500);
+
+      return { success: !!result.success, text: result.text || "", error: result.error, pastedAny };
     });
 
     // 音频转录相关

@@ -1,0 +1,7 @@
+{
+  "name": "wordtaker-relay-web",
+  "version": "1.0.0",
+  "private": true,
+  "type": "commonjs",
+  "description": "WordTaker 文案优化中转 —— 腾讯云 SCF Web 函数版（支持流式，CommonJS, 监听 9000）。"
+}

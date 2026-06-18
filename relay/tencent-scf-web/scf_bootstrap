@@ -1,0 +1,3 @@
+#!/bin/bash
+# 腾讯云 SCF Web 函数启动文件：拉起 Node HTTP 服务，监听 9000。
+exec node server.js

@@ -168,7 +168,9 @@ class DatabaseManager {
       llm_relay_url: RELAY_DEFAULTS.RELAY_URL || '',
       llm_relay_token: RELAY_DEFAULTS.RELAY_TOKEN || '',
       // 本机匿名设备标识：用于中转端按设备限流（不含任何个人信息，仅一串随机 UUID）
-      device_id: crypto.randomUUID()
+      device_id: crypto.randomUUID(),
+      // 流式润色（边生成边上屏）：需中转为「Web 函数」版才支持；默认关，部署后再开
+      llm_streaming_enabled: false
     };
     try {
       const existsStmt = this.db.prepare('SELECT 1 FROM settings WHERE key = ?');

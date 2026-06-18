@@ -154,3 +154,6 @@ temp/
 .gyprc
 
 python
+
+# 中转打包产物
+relay/**/*.zip
