@@ -122,6 +122,9 @@ const funasrManager = new FunASRManager(logger); // 传递logger实例
 const trayManager = new TrayManager();
 const hotkeyManager = new HotkeyManager();
 const triggerManager = new TriggerManager(logger);
+// 第二个触发器：录音期间监听"不走 API 的结束键"（默认左 Ctrl）。
+// uiohook 是单例（TriggerManager._hookRunning 守卫），多个实例可共存、各自挂自己的监听。
+const rawStopTriggerManager = new TriggerManager(logger);
 
 // 校验 recording_trigger，非法字段一律回退默认（防止渲染层写入异常对象）
 function validateRecordingTrigger(t, fallback) {
@@ -219,10 +222,42 @@ function unregisterCancelKey() {
   }
 }
 
-// 渲染层在录音开始/结束时通知主进程，用于按需注册/注销 Esc 取消键
+// "不走 API 的结束键"（裸修饰键，默认左 Ctrl）：仅录音期间监听，停止后注销。
+// 触发时通知渲染层走"原始识别、不调用大模型"的结束路径。
+function registerRawStopKey() {
+  try {
+    const key = databaseManager.getSetting('raw_stop_key', 'LeftCtrl') || 'LeftCtrl';
+    if (!TriggerManager.VALID_KEYS.has(key)) {
+      logger.warn('raw_stop_key 非法，跳过注册', { key });
+      return;
+    }
+    // 与录音触发键相同则跳过，避免同一次按键被两个监听器同时当成结束
+    const trig = databaseManager.getSetting('recording_trigger', null);
+    if (trig && trig.type === 'modifier-tap' && trig.key === key) {
+      logger.warn('raw_stop_key 与录音触发键相同，跳过注册', { key });
+      return;
+    }
+    rawStopTriggerManager.start({ type: 'modifier-tap', key, taps: 1 }, () => {
+      const win = windowManager.mainWindow;
+      if (win && !win.isDestroyed()) win.webContents.send('raw-stop');
+    });
+  } catch (error) {
+    logger.error('注册 raw 结束键失败:', error);
+  }
+}
+function unregisterRawStopKey() {
+  try { rawStopTriggerManager.stop(); } catch (_) { /* 忽略 */ }
+}
+
+// 渲染层在录音开始/结束时通知主进程，用于按需注册/注销 Esc 取消键 + raw 结束键
 ipcMain.on('recorder-state', (event, recording) => {
-  if (recording) registerCancelKey();
-  else unregisterCancelKey();
+  if (recording) {
+    registerCancelKey();
+    registerRawStopKey();
+  } else {
+    unregisterCancelKey();
+    unregisterRawStopKey();
+  }
 });
 
 // 初始化数据库
@@ -349,6 +384,9 @@ app.on("activate", () => {
 
 app.on("will-quit", () => {
   globalShortcut.unregisterAll();
+  try {
+    rawStopTriggerManager.stop();
+  } catch (_) { /* 忽略 */ }
   try {
     triggerManager.shutdown();
   } catch (error) {

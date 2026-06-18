@@ -274,6 +274,7 @@ export default function App() {
     startRecording,
     stopRecording,
     cancelRecording,
+    requestRawStop,
     error: recordingError
   } = useRecording();
   
@@ -396,6 +397,17 @@ export default function App() {
       if (typeof off === "function") off();
     };
   }, [cancelRecording]);
+
+  // 监听"不走 API 的结束键"：标记本句跳过大模型，再正常停止录音（贴原始识别）
+  useEffect(() => {
+    if (!window.electronAPI || !window.electronAPI.onRawStop) return;
+    const off = window.electronAPI.onRawStop(() => {
+      requestRawStop();
+    });
+    return () => {
+      if (typeof off === "function") off();
+    };
+  }, [requestRawStop]);
 
   // 设置转录完成回调
   useEffect(() => {

@@ -15,7 +15,7 @@
 
 var DEFAULT_BASE_URL = "https://api.deepseek.com";
 var DEFAULT_MODEL = "deepseek-v4-flash";
-var DEFAULT_MAX_INPUT_CHARS = 4000;
+var DEFAULT_MAX_INPUT_CHARS = 1500;
 var DEFAULT_MAX_TOKENS = 2000;
 var DEFAULT_TEMPERATURE = 0.7;
 
@@ -54,6 +54,11 @@ function randomId() {
 }
 
 exports.main_handler = async function (event, context) {
+  // 保活：定时触发器(每 ~5 分钟 ping 一次)只为让容器常驻、消除冷启动，立即返回、不调用 DeepSeek
+  if (event && event.Type === "Timer") {
+    return { isBase64Encoded: false, statusCode: 200, headers: CORS_HEADERS, body: '{"warm":true}' };
+  }
+
   var method = (event && event.httpMethod) || "POST";
   if (method === "OPTIONS") {
     return { isBase64Encoded: false, statusCode: 204, headers: CORS_HEADERS, body: "" };

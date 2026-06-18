@@ -5,7 +5,7 @@ import { toast, Toaster } from "sonner";
 import { Settings, Save, Eye, EyeOff, X, Loader2, TestTube, CheckCircle, XCircle, Mic, Shield, Keyboard, Volume2, Play, Sparkles } from "lucide-react";
 import { usePermissions } from "./hooks/usePermissions";
 import PermissionCard from "./components/ui/permission-card";
-import { SOUND_SCHEMES, previewSound } from "./utils/sounds";
+import { SOUND_SCHEMES, previewSound, playEnd } from "./utils/sounds";
 
 const SettingsPage = () => {
   const [settings, setSettings] = useState({
@@ -19,6 +19,7 @@ const SettingsPage = () => {
     recording_trigger_key: "LeftOption",
     recording_trigger_taps: 1,
     cancel_key: "Escape",
+    raw_stop_key: "LeftCtrl",
     sound_scheme: "soft",
     sound_volume: 0.3,
     asr_engine: "sensevoice"
@@ -72,6 +73,7 @@ const SettingsPage = () => {
           recording_trigger_taps: (allSettings.recording_trigger && allSettings.recording_trigger.taps)
             || (isMac ? 1 : 2),
           cancel_key: allSettings.cancel_key || "Escape",
+          raw_stop_key: allSettings.raw_stop_key || "LeftCtrl",
           sound_scheme: allSettings.sound_scheme || "soft",
           sound_volume: typeof allSettings.sound_volume === "number" ? allSettings.sound_volume : 0.3,
           asr_engine: allSettings.asr_engine || "sensevoice"
@@ -162,6 +164,9 @@ const SettingsPage = () => {
           } else if (field === "cancel_key") {
             await window.electronAPI.setSetting("cancel_key", value);
             if (window.electronAPI.reloadRecordingTrigger) await window.electronAPI.reloadRecordingTrigger();
+          } else if (field === "raw_stop_key") {
+            // 录音期间动态注册，下次录音即生效，无需重载主触发器
+            await window.electronAPI.setSetting("raw_stop_key", value);
           } else if (field === "sound_scheme") {
             await window.electronAPI.setSetting("sound_scheme", value);
           } else if (field === "sound_volume") {
@@ -747,7 +752,8 @@ const SettingsPage = () => {
           </div>
           </>)}
 
-          {/* AI 文案优化总开关：同时控制 AI 优化与提示词润色 */}
+          {/* AI 文案优化：强制开启、对用户隐藏（整块不渲染） */}
+          {false && (
           <div className="mt-4 bg-white dark:bg-neutral-900 rounded-2xl shadow-sm border border-gray-100 dark:border-neutral-800">
             <div className="p-6">
               <div className="flex items-center justify-between">
@@ -780,28 +786,7 @@ const SettingsPage = () => {
               </div>
             </div>
           </div>
-
-          {/* 隐私与数据安全 */}
-          <div className="mt-4 bg-white dark:bg-neutral-900 rounded-2xl shadow-sm border border-gray-100 dark:border-neutral-800">
-            <div className="p-6">
-              <div className="mb-3 flex items-center space-x-2">
-                <Shield className="w-5 h-5 text-neutral-500 dark:text-neutral-400" />
-                <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100 chinese-title">
-                  隐私与数据安全
-                </h2>
-              </div>
-              <div className="bg-gray-50 dark:bg-neutral-800/50 rounded-lg p-4 space-y-2">
-                <p className="text-xs text-gray-700 dark:text-neutral-300 flex items-start">
-                  <span className="mr-2">🔒</span>
-                  <span><strong>本地：</strong>转写文本只保存在本机，<strong>不存服务器、不用于训练</strong>。语音识别全程离线。</span>
-                </p>
-                <p className="text-xs text-gray-700 dark:text-neutral-300 flex items-start">
-                  <span className="mr-2">🗑️</span>
-                  <span><strong>删除：</strong>历史记录可随时删除，即从本机彻底移除。</span>
-                </p>
-              </div>
-            </div>
-          </div>
+          )}
 
           {/* 录音快捷键 */}
           <div className="mt-4 bg-white dark:bg-neutral-900 rounded-2xl shadow-sm border border-gray-100 dark:border-neutral-800">
@@ -816,7 +801,7 @@ const SettingsPage = () => {
               <div className="space-y-4">
                 <div>
                   <label className="block text-xs font-medium text-gray-700 dark:text-gray-300 mb-1">
-                    触发键
+                    开始
                   </label>
                   <select
                     value={settings.recording_trigger_key}
@@ -831,7 +816,7 @@ const SettingsPage = () => {
 
                 <div>
                   <label className="block text-xs font-medium text-gray-700 dark:text-gray-300 mb-1">
-                    触发方式
+                    方式
                   </label>
                   <div className="flex items-center space-x-4">
                     <label className="flex items-center space-x-2 cursor-pointer">
@@ -842,7 +827,7 @@ const SettingsPage = () => {
                         onChange={() => updateAndSave('recording_trigger_taps', 1)}
                         className="w-3 h-3 text-neutral-500 dark:text-neutral-400 border-gray-300 focus:ring-neutral-400"
                       />
-                      <span className="text-xs text-gray-700 dark:text-gray-300">单击（更顺手，偶有误触）</span>
+                      <span className="text-xs text-gray-700 dark:text-gray-300">单击</span>
                     </label>
                     <label className="flex items-center space-x-2 cursor-pointer">
                       <input
@@ -852,7 +837,7 @@ const SettingsPage = () => {
                         onChange={() => updateAndSave('recording_trigger_taps', 2)}
                         className="w-3 h-3 text-neutral-500 dark:text-neutral-400 border-gray-300 focus:ring-neutral-400"
                       />
-                      <span className="text-xs text-gray-700 dark:text-gray-300">双击（更稳，少误触）</span>
+                      <span className="text-xs text-gray-700 dark:text-gray-300">双击</span>
                     </label>
                   </div>
                 </div>
@@ -860,7 +845,7 @@ const SettingsPage = () => {
                 {/* 取消键 */}
                 <div>
                   <label className="block text-xs font-medium text-gray-700 dark:text-gray-300 mb-1">
-                    取消键（录音中按下：立即取消并隐藏）
+                    取消
                   </label>
                   <select
                     value={settings.cancel_key}
@@ -873,6 +858,27 @@ const SettingsPage = () => {
                     <option value="F4">F4</option>
                     <option value="F8">F8</option>
                   </select>
+                </div>
+
+                {/* 不走 AI 的结束键 */}
+                <div>
+                  <label className="block text-xs font-medium text-gray-700 dark:text-gray-300 mb-1">
+                    原文
+                  </label>
+                  <select
+                    value={settings.raw_stop_key}
+                    onChange={(e) => updateAndSave('raw_stop_key', e.target.value)}
+                    className="w-full px-3 py-2 text-sm border border-gray-300 dark:border-neutral-700 rounded-lg focus:ring-1 focus:ring-neutral-400 focus:border-transparent bg-white dark:bg-neutral-800 text-gray-900 dark:text-gray-100"
+                  >
+                    <option value="LeftCtrl">左 Control ⌃</option>
+                    <option value="RightCtrl">右 Control ⌃</option>
+                    <option value="RightOption">{isMac ? "右 Option ⌥" : "右 Alt"}</option>
+                    <option value="RightMeta">{isMac ? "右 Command ⌘" : "右 Win"}</option>
+                    <option value="RightShift">右 Shift ⇧</option>
+                  </select>
+                  <p className="mt-1 text-[11px] text-gray-400 dark:text-neutral-500">
+                    按它结束＝直接贴原文，不走 AI
+                  </p>
                 </div>
 
               </div>
@@ -891,7 +897,12 @@ const SettingsPage = () => {
                   <label className="block text-xs font-medium text-gray-700 dark:text-gray-300 mb-1">声音</label>
                   <select
                     value={settings.sound_scheme}
-                    onChange={(e) => updateAndSave('sound_scheme', e.target.value)}
+                    onChange={(e) => {
+                      const v = e.target.value;
+                      updateAndSave('sound_scheme', v);
+                      // 切换音色即试听（无需按钮）
+                      if (v !== 'none') previewSound(v, settings.sound_volume);
+                    }}
                     className="w-full px-3 py-2 text-sm border border-gray-300 dark:border-neutral-700 rounded-lg focus:ring-1 focus:ring-neutral-400 focus:border-transparent bg-white dark:bg-neutral-800 text-gray-900 dark:text-gray-100"
                   >
                     {SOUND_SCHEMES.map((s) => (
@@ -906,18 +917,37 @@ const SettingsPage = () => {
                   <input
                     type="range" min="0" max="1" step="0.05"
                     value={settings.sound_volume}
-                    onChange={(e) => updateAndSave('sound_volume', parseFloat(e.target.value))}
+                    onChange={(e) => {
+                      const v = parseFloat(e.target.value);
+                      updateAndSave('sound_volume', v);
+                      // 拖动音量即按当前音色发声，听到对应大小（无需试听按钮）
+                      if (settings.sound_scheme !== 'none') playEnd(settings.sound_scheme, v);
+                    }}
                     className="w-full accent-neutral-700 dark:accent-neutral-200"
                   />
                 </div>
-                <div className="flex justify-end">
-                  <button
-                    onClick={() => previewSound(settings.sound_scheme, settings.sound_volume)}
-                    className="flex items-center space-x-1 px-3 py-1.5 text-sm border border-gray-300 dark:border-neutral-700 rounded-lg text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-neutral-800 transition-colors"
-                  >
-                    <Play className="w-3 h-3" /><span>试听</span>
-                  </button>
-                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* 隐私与数据安全（置于最底部） */}
+          <div className="mt-4 bg-white dark:bg-neutral-900 rounded-2xl shadow-sm border border-gray-100 dark:border-neutral-800">
+            <div className="p-6">
+              <div className="mb-3 flex items-center space-x-2">
+                <Shield className="w-5 h-5 text-neutral-500 dark:text-neutral-400" />
+                <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100 chinese-title">
+                  隐私与数据安全
+                </h2>
+              </div>
+              <div className="bg-gray-50 dark:bg-neutral-800/50 rounded-lg p-4 space-y-2">
+                <p className="text-xs text-gray-700 dark:text-neutral-300 flex items-start">
+                  <span className="mr-2">🔒</span>
+                  <span><strong>本地：</strong>转写文本只保存在本机，<strong>不存服务器、不用于训练</strong>。语音识别全程离线。</span>
+                </p>
+                <p className="text-xs text-gray-700 dark:text-neutral-300 flex items-start">
+                  <span className="mr-2">🗑️</span>
+                  <span><strong>删除：</strong>历史记录可随时删除，即从本机彻底移除。</span>
+                </p>
               </div>
             </div>
           </div>

@@ -1,6 +1,7 @@
 const Database = require("better-sqlite3");
 const path = require("path");
 const fs = require("fs");
+const crypto = require("crypto");
 
 // 中转 (relay) 打包期默认配置；分发前在 relayConfig.js 填好即可。
 let RELAY_DEFAULTS = { RELAY_ENABLED: false, RELAY_URL: "", RELAY_TOKEN: "" };
@@ -122,6 +123,8 @@ class DatabaseManager {
         : { type: 'modifier-tap', key: 'LeftOption', taps: 1 },
       // 取消录音快捷键（Esc，可在设置里改）
       cancel_key: 'Escape',
+      // "不走 API 的结束键"（裸修饰键，录音时生效）：按它结束=只贴原始识别、不调用大模型
+      raw_stop_key: 'LeftCtrl',
       // 提示音：唤起/结束的合成音方案与音量（none 为无声）
       sound_scheme: 'soft',
       sound_volume: 0.3,
@@ -130,7 +133,9 @@ class DatabaseManager {
       // 文案优化中转：开启后客户端不持有 DeepSeek key，只调用自建 Worker
       llm_relay_enabled: !!RELAY_DEFAULTS.RELAY_ENABLED,
       llm_relay_url: RELAY_DEFAULTS.RELAY_URL || '',
-      llm_relay_token: RELAY_DEFAULTS.RELAY_TOKEN || ''
+      llm_relay_token: RELAY_DEFAULTS.RELAY_TOKEN || '',
+      // 本机匿名设备标识：用于中转端按设备限流（不含任何个人信息，仅一串随机 UUID）
+      device_id: crypto.randomUUID()
     };
     try {
       const existsStmt = this.db.prepare('SELECT 1 FROM settings WHERE key = ?');

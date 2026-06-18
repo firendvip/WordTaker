@@ -22,6 +22,8 @@ export const useRecording = () => {
   const cancelledRef = useRef(false);
   // 代次：每段音频处理自增；异步 LLM 完成时若代次已变，说明有更新的录音，作废本次粘贴
   const generationRef = useRef(0);
+  // 本次是否走"不走 API"的结束（按了 raw 结束键）：true 则只贴原始识别、不调用大模型
+  const rawOnlyRef = useRef(false);
 
   // 使用模型状态Hook
   const modelStatus = useModelStatus();
@@ -31,6 +33,7 @@ export const useRecording = () => {
     try {
       setError(null);
       cancelledRef.current = false;
+      rawOnlyRef.current = false; // 每次新录音重置"不走 API"标记
 
       // 检查FunASR是否就绪
       if (!modelStatus.isReady) {
@@ -134,6 +137,12 @@ export const useRecording = () => {
     }
   }, [isRecording]);
 
+  // "不走 API 的结束"：标记本句跳过大模型，然后正常停止录音（贴原始识别）
+  const requestRawStop = useCallback(() => {
+    rawOnlyRef.current = true;
+    stopRecording();
+  }, [stopRecording]);
+
   // 处理音频
   const processAudio = useCallback(async (audioBlob) => {
     // 并发守卫：上一段还在处理时忽略本次，避免重复识别/重复粘贴/重复入库
@@ -146,6 +155,8 @@ export const useRecording = () => {
     processingRef.current.isProcessingAudio = true;
     // 本次处理的代次；后面异步粘贴前会校验它是否仍是最新
     const myGen = ++generationRef.current;
+    // 在同步阶段定格"是否不走 API"，避免后续被新录音重置造成竞态
+    const rawOnly = rawOnlyRef.current;
 
     const tlog = (msg) => {
       if (window.electronAPI && window.electronAPI.log) window.electronAPI.log('info', msg);
@@ -204,8 +215,14 @@ export const useRecording = () => {
             };
             try {
               // 文案模式：识别后必走 LLM，贴"模型结果"；旧版优化模式作为兼容回退
-              const copywriting = await window.electronAPI.getSetting('copywriting_mode_enabled', true);
-              const useAI = await window.electronAPI.getSetting('enable_ai_optimization', true);
+              let copywriting = await window.electronAPI.getSetting('copywriting_mode_enabled', true);
+              let useAI = await window.electronAPI.getSetting('enable_ai_optimization', true);
+              // 按了"不走 API 的结束键"：本句强制跳过大模型，直接贴原始识别
+              if (rawOnly) {
+                copywriting = false;
+                useAI = false;
+                log('info', 'raw 结束键：跳过大模型，直接贴原始识别');
+              }
 
               let finalData = { ...transcriptionData };
               let emit;
@@ -458,6 +475,7 @@ export const useRecording = () => {
     startRecording,
     stopRecording,
     cancelRecording,
+    requestRawStop,
     checkPermissions
   };
 };

@@ -5,7 +5,7 @@ const ALLOWED_SETTING_KEYS = new Set([
   "ai_api_key", "ai_base_url", "ai_model", "enable_ai_optimization",
   "copywriting_mode_enabled", "llm_prompt_template", "llm_temperature",
   "llm_max_tokens", "llm_extra_body", "llm_fallback_paste_raw",
-  "recording_trigger", "cancel_key", "sound_scheme", "sound_volume",
+  "recording_trigger", "cancel_key", "raw_stop_key", "sound_scheme", "sound_volume",
   "asr_engine",
   // 文案优化中转（key 留在服务器端，客户端只存中转地址与令牌）
   "llm_relay_enabled", "llm_relay_url", "llm_relay_token",
@@ -1002,8 +1002,10 @@ class IPCHandlers {
   async processTextViaRelay(text, mode, relayUrl) {
     try {
       const token = await this.databaseManager.getSetting('llm_relay_token', '');
+      const deviceId = await this.databaseManager.getSetting('device_id', '');
       const headers = { 'Content-Type': 'application/json' };
       if (token) headers['X-App-Token'] = token;
+      if (deviceId) headers['X-Device-Id'] = deviceId; // 供中转端按设备限流
 
       this.logger.info('AI文案处理(中转)请求:', { mode, inputLength: text.length });
 
