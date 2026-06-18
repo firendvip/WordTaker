@@ -1,4 +1,4 @@
-# 蛐蛐文案优化中转 (Cloudflare Worker)
+# WordTaker文案优化中转 (Cloudflare Worker)
 
 让你把软件分发给别人时，**别人能用你的 DeepSeek 额度，却拿不到你的 key**。
 真正的 key 只存在这个 Worker 的服务器密钥里，从不下发到用户机器。
@@ -32,7 +32,7 @@ npx wrangler deploy
 部署成功后会得到一个地址，例如：
 
 ```
-https://ququ-relay.<你的子域>.workers.dev
+https://wordtaker-relay.<你的子域>.workers.dev
 ```
 
 ## 二、把地址和令牌填进客户端
@@ -42,7 +42,7 @@ https://ququ-relay.<你的子域>.workers.dev
 ```js
 module.exports = {
   RELAY_ENABLED: true,                                   // 打开中转
-  RELAY_URL: "https://ququ-relay.<你的子域>.workers.dev", // 上一步得到的地址
+  RELAY_URL: "https://wordtaker-relay.<你的子域>.workers.dev", // 上一步得到的地址
   RELAY_TOKEN: "你在第3步设置的 APP_TOKEN",
 };
 ```

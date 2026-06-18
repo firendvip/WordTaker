@@ -72,11 +72,11 @@ const SettingsPanel = ({ onClose }) => {
           {/* 应用信息部分 */}
           <div className="border-t pt-8">
             <h3 className="text-lg font-semibold text-gray-900 mb-4 chinese-title">
-              关于蛐蛐
+              关于WordTaker
             </h3>
             <div className="bg-gradient-to-r from-blue-50 to-green-50 p-4 rounded-lg">
               <p className="text-sm text-gray-700 mb-2">
-                🎤 <strong>蛐蛐 (QuQu)</strong> - 基于FunASR和AI的中文语音转文字应用
+                🎤 <strong>WordTaker (WordTaker)</strong> - 基于FunASR和AI的中文语音转文字应用
               </p>
               <p className="text-xs text-gray-600">
                 • 高精度中文语音识别<br/>

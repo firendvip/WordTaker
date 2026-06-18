@@ -1,7 +1,7 @@
 {
-  "name": "ququ",
-  "version": "1.0.0",
-  "description": " 蛐蛐-基于FunASR和可配置AI模型的中文优化语音转文字应用",
+  "name": "wordtaker",
+  "version": "0.1.0",
+  "description": "WordTaker — 基于 FunASR 本地识别与 DeepSeek 润色的本地中文语音输入工具",
   "main": "main.js",
   "private": true,
   "scripts": {
@@ -110,8 +110,8 @@
     "unzipper": "^0.12.3"
   },
   "build": {
-    "appId": "com.ququ.app",
-    "productName": "蛐蛐",
+    "appId": "com.wordtaker.app",
+    "productName": "WordTaker",
     "directories": {
       "output": "dist"
     },

@@ -1,7 +1,7 @@
 {
-  "name": "ququ-relay-scf",
+  "name": "wordtaker-relay-scf",
   "version": "1.0.0",
   "private": true,
   "type": "commonjs",
-  "description": "蛐蛐文案优化中转 —— 腾讯云云函数 SCF 版（CommonJS, exports.main_handler）。"
+  "description": "WordTaker文案优化中转 —— 腾讯云云函数 SCF 版（CommonJS, exports.main_handler）。"
 }

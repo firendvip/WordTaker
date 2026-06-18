@@ -30,7 +30,7 @@ def get_log_path():
         log_dir = os.path.join(os.environ["ELECTRON_USER_DATA"], "logs")
     else:
         # 回退到临时目录
-        log_dir = os.path.join(tempfile.gettempdir(), "ququ_logs")
+        log_dir = os.path.join(tempfile.gettempdir(), "wordtaker_logs")
 
     # 确保日志目录存在
     os.makedirs(log_dir, exist_ok=True)
@@ -302,7 +302,7 @@ class FunASRServer:
         try:
             import tempfile, wave, struct
             t0 = time.time()
-            path = os.path.join(tempfile.gettempdir(), "ququ_warmup.wav")
+            path = os.path.join(tempfile.gettempdir(), "wordtaker_warmup.wav")
             with wave.open(path, "wb") as w:
                 w.setnchannels(1)
                 w.setsampwidth(2)

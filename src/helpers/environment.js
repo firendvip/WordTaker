@@ -101,7 +101,7 @@ class EnvironmentManager {
   }
 
   getDataDirectory() {
-    const appName = "蛐蛐";
+    const appName = "WordTaker";
     
     switch (process.platform) {
       case "win32":

@@ -142,13 +142,13 @@ body {
   transform-origin: center;
 }
 .pill-wave.is-recording .pill-bar {
-  animation: ququ-eq 0.9s ease-in-out infinite;
+  animation: wordtaker-eq 0.9s ease-in-out infinite;
 }
 .pill-wave.is-busy .pill-bar {
-  animation: ququ-eq 1.4s ease-in-out infinite;
+  animation: wordtaker-eq 1.4s ease-in-out infinite;
   opacity: 0.6;
 }
-@keyframes ququ-eq {
+@keyframes wordtaker-eq {
   0%, 100% { transform: scaleY(0.25); }
   50% { transform: scaleY(1); }
 }

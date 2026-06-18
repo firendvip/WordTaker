@@ -1,9 +1,9 @@
 {
-  "name": "ququ-relay",
+  "name": "wordtaker-relay",
   "version": "1.0.0",
   "private": true,
   "type": "module",
-  "description": "蛐蛐文案优化中转 (Cloudflare Worker)：服务端持有 DeepSeek key，客户端只发待润色文本。",
+  "description": "WordTaker文案优化中转 (Cloudflare Worker)：服务端持有 DeepSeek key，客户端只发待润色文本。",
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "wrangler deploy"

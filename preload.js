@@ -176,7 +176,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
 
 // 添加一些实用的常量
 contextBridge.exposeInMainWorld("constants", {
-  APP_NAME: "蛐蛐 (QuQu)",
+  APP_NAME: "WordTaker (WordTaker)",
   VERSION: "1.0.0",
   SUPPORTED_AUDIO_FORMATS: ["wav", "mp3", "m4a", "flac"],
   SUPPORTED_EXPORT_FORMATS: ["txt", "docx", "pdf", "json"],
