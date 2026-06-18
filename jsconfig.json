@@ -3,8 +3,16 @@
     "baseUrl": ".",
     "paths": {
       "@/*": ["./src/*"]
-    }
+    },
+    "allowJs": true,
+    "checkJs": false,
+    "module": "ESNext",
+    "target": "ES2022",
+    "moduleResolution": "Bundler",
+    "jsx": "react-jsx",
+    "skipLibCheck": true
   },
-  "include": ["src/**/*"],
-  "exclude": ["node_modules"]
+  "//": "渐进式类型：已开 allowJs；核心模块补齐 JSDoc 后再将 checkJs 置 true 做软类型检查。",
+  "include": ["src/**/*", "main.js", "preload.js"],
+  "exclude": ["node_modules", "dist", ".venv", "python", "models"]
 }

@@ -5,7 +5,7 @@ import { useModelStatus } from './useModelStatus';
  * 录音功能Hook
  * 提供录音、停止录音、音频处理等功能
  */
-export const useRecording = () => {
+export const useRecording = ({ onTranscriptionCompleteRef, onAIOptimizationCompleteRef } = {}) => {
   const [isRecording, setIsRecording] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
   const [isOptimizing, setIsOptimizing] = useState(false);
@@ -201,8 +201,8 @@ export const useRecording = () => {
           };
 
           // 立即显示初步结果
-          if (window.onTranscriptionComplete) {
-            window.onTranscriptionComplete({ ...transcriptionResult, enhanced_by_ai: false });
+          if (onTranscriptionCompleteRef?.current) {
+            onTranscriptionCompleteRef?.current({ ...transcriptionResult, enhanced_by_ai: false });
           }
 
           // 异步处理 LLM 与保存（只保存一次）
@@ -307,13 +307,13 @@ export const useRecording = () => {
               // 若期间已有更新的录音，作废本次粘贴（入库仍保留），避免贴出过期内容
               if (myGen !== generationRef.current) {
                 log('info', '已被更新的录音取代，跳过本次粘贴');
-              } else if (window.onAIOptimizationComplete) {
-                window.onAIOptimizationComplete(emit);
+              } else if (onAIOptimizationCompleteRef?.current) {
+                onAIOptimizationCompleteRef?.current(emit);
               }
             } catch (err) {
               log('error', '处理和保存转录时出错:', err);
-              if (window.onAIOptimizationComplete) {
-                window.onAIOptimizationComplete({
+              if (onAIOptimizationCompleteRef?.current) {
+                onAIOptimizationCompleteRef?.current({
                   ...transcriptionResult,
                   text: raw_text,
                   enhanced_by_ai: false,
@@ -334,7 +334,7 @@ export const useRecording = () => {
       } else {
         // Web环境模拟
         const mockResult = { success: true, text: '模拟识别结果。', confidence: 0.95, duration: 3.5 };
-        if (window.onTranscriptionComplete) window.onTranscriptionComplete(mockResult);
+        if (onTranscriptionCompleteRef?.current) onTranscriptionCompleteRef?.current(mockResult);
         return mockResult;
       }
     } catch (err) {

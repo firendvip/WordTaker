@@ -89,6 +89,11 @@ export default function App() {
   const { isDragging, handleMouseDown, handleMouseMove, handleMouseUp, handleClick } = useWindowDrag();
   const modelStatus = useModelStatus();
   
+  // 录音完成/优化完成回调用 ref 传给 useRecording（替代旧的 window 全局回调，
+  // 既避免全局变量泄漏，又用 ref 规避 stale closure；handler 定义在后面，运行时才被调用）。
+  const onTranscriptionCompleteRef = useRef(null);
+  const onAIOptimizationCompleteRef = useRef(null);
+
   const {
     isRecording,
     isProcessing: isRecordingProcessing,
@@ -98,7 +103,7 @@ export default function App() {
     cancelRecording,
     requestRawStop,
     error: recordingError
-  } = useRecording();
+  } = useRecording({ onTranscriptionCompleteRef, onAIOptimizationCompleteRef });
   
   const {
     processText,
@@ -244,22 +249,13 @@ export default function App() {
     };
   }, [requestRawStop]);
 
-  // 设置转录完成回调
+  // 把最新的回调写入 ref，供 useRecording 在录音完成时调用（替代 window 全局回调）
   useEffect(() => {
-    window.electronAPI?.log?.('info', '设置回调函数');
-    window.onTranscriptionComplete = handleRecordingComplete;
-    window.onAIOptimizationComplete = handleAIOptimizationComplete;
-    
-    // 验证回调函数是否正确设置
-    window.electronAPI?.log?.('info', '回调函数设置完成:', {
-      onTranscriptionComplete: typeof window.onTranscriptionComplete,
-      onAIOptimizationComplete: typeof window.onAIOptimizationComplete
-    });
-    
+    onTranscriptionCompleteRef.current = handleRecordingComplete;
+    onAIOptimizationCompleteRef.current = handleAIOptimizationComplete;
     return () => {
-      window.electronAPI?.log?.('info', '清理回调函数');
-      window.onTranscriptionComplete = null;
-      window.onAIOptimizationComplete = null;
+      onTranscriptionCompleteRef.current = null;
+      onAIOptimizationCompleteRef.current = null;
     };
   }, [handleRecordingComplete, handleAIOptimizationComplete]);
 
