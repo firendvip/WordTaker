@@ -375,15 +375,28 @@ export default function App() {
     }
   }, [isRecording]);
 
-  // 唤起/结束提示音（录音开始 → 唤起音；录音结束 → 结束音）
+  // 唤起/结束提示音：每次播放都从设置读取最新音色/音量，
+  // 保证在设置里改完即时生效，而不是沿用启动时缓存的旧值。
   useEffect(() => {
     const prev = prevRecordingRef.current;
-    if (!prev && isRecording) {
-      playWake(soundCfgRef.current.scheme, soundCfgRef.current.volume);
-    } else if (prev && !isRecording) {
-      playEnd(soundCfgRef.current.scheme, soundCfgRef.current.volume);
-    }
     prevRecordingRef.current = isRecording;
+    const isWake = !prev && isRecording;
+    const isEnd = prev && !isRecording;
+    if (!isWake && !isEnd) return;
+    (async () => {
+      let { scheme, volume } = soundCfgRef.current;
+      try {
+        if (window.electronAPI && window.electronAPI.getSetting) {
+          scheme = await window.electronAPI.getSetting("sound_scheme", scheme);
+          volume = await window.electronAPI.getSetting("sound_volume", volume);
+          soundCfgRef.current = { scheme, volume };
+        }
+      } catch (e) {
+        // 读取失败则沿用缓存值
+      }
+      if (isWake) playWake(scheme, volume);
+      else playEnd(scheme, volume);
+    })();
   }, [isRecording]);
 
   // 监听 Esc 取消事件：取消录音并隐藏胶囊
