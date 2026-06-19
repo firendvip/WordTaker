@@ -54,7 +54,7 @@ const SettingsPage = () => {
     { id: "permissions", label: "权限", icon: Shield },
     { id: "shortcuts", label: "快捷键", icon: Keyboard },
     { id: "sound", label: "提示音", icon: Volume2 },
-    { id: "general", label: "通用", icon: Settings },
+    { id: "general", label: "实验", icon: Settings },
     { id: "about", label: "关于", icon: Info },
   ];
 

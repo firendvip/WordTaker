@@ -168,10 +168,13 @@ class IPCHandlers {
       const STREAM_FLUSH_MIN_CHARS = 40;
       const STREAM_MAX_PASTES = 40;
       const SENTENCE_BOUNDARY = /[。！？!?；;\n]/;
+      // 首块只看字数、不看标点，让首字尽快出现（约节省 ~200ms 首字时间）
+      const FIRST_FLUSH_CHARS = 12;
       const original = this.clipboardManager.captureClipboard();
       let buffer = "";
       let pastedAny = false;
       let pasteCount = 0;
+      let firstFlushDone = false;
       const flush = (force) => {
         if (!buffer) return;
         // 达到中途上限后停止逐段粘贴，剩余内容攒到结束时一次性贴出
@@ -185,7 +188,12 @@ class IPCHandlers {
       };
       const onDelta = (d) => {
         buffer += d;
-        if ([...buffer].length >= STREAM_FLUSH_MIN_CHARS || SENTENCE_BOUNDARY.test(d)) flush();
+        const len = [...buffer].length;
+        if (!firstFlushDone) {
+          if (len >= FIRST_FLUSH_CHARS) { flush(); firstFlushDone = true; }
+          return; // 首块只按字数触发，忽略句末标点
+        }
+        if (len >= STREAM_FLUSH_MIN_CHARS || SENTENCE_BOUNDARY.test(d)) flush();
       };
 
       const result = await this.aiService.processTextViaRelayStream(text, "copywriting", relayUrl, onDelta);
