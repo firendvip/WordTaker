@@ -27,7 +27,19 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: '22'
-          cache: pnpm
+
+      - name: Get pnpm store directory
+        id: pnpm-cache
+        shell: bash
+        run: echo "STORE_PATH=$(pnpm store path --silent)" >> $GITHUB_OUTPUT
+
+      - name: Setup pnpm cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ steps.pnpm-cache.outputs.STORE_PATH }}
+          key: ${{ runner.os }}-pnpm-store-${{ hashFiles('**/pnpm-lock.yaml') }}
+          restore-keys: |
+            ${{ runner.os }}-pnpm-store-
 
       # 嵌入式 Python 构建脚本要用 pip 装 torch/funasr 等，需要 Python 3.11。
       - name: Setup Python 3.11
@@ -35,11 +47,14 @@ jobs:
         with:
           python-version: "3.11"
 
-      # 安装 JS 依赖。postinstall 会跑 electron-builder install-app-deps
-      # 把 better-sqlite3 等原生模块按 Electron ABI 重建（Windows 需要 MSVC 工具链，
+      # 安装 JS 依赖。--ignore-scripts 跳过 postinstall（Windows 上 pnpm.cjs 调用会失败），
+      # 再单独用 @electron/rebuild 按 Electron ABI 重建原生模块（Windows 需要 MSVC 工具链，
       # windows-latest 自带）。
       - name: Install dependencies
-        run: pnpm install --no-frozen-lockfile
+        run: pnpm install --no-frozen-lockfile --ignore-scripts
+
+      - name: Rebuild native modules for Electron
+        run: npx --yes @electron/rebuild -f -w better-sqlite3 -w uiohook-napi
 
       # 下载 Windows 版嵌入式 CPython（python-build-standalone 的
       # x86_64-pc-windows-msvc-shared install_only 包）并装好 torch/funasr 等依赖。
