@@ -10,7 +10,7 @@
     "dev:main": "cross-env NODE_ENV=development electron . --dev",
     "dev:renderer": "cd src && vite",
     "build": "cd src && vite build && cd .. && electron-builder",
-    "postinstall": "electron-builder install-app-deps",
+    "postinstall": "electron-builder install-app-deps && npm run patch:uiohook",
     "build:renderer": "cd src && vite build",
     "prepare:python": "pip install funasr modelscope torch torchaudio librosa numpy && python download_models.py",
     "prepare:python:uv": "uv sync && uv run python download_models.py",
@@ -18,18 +18,19 @@
     "prepare:python:info": "node scripts/prepare-embedded-python.js --info",
     "test:python": "node scripts/test-embedded-python.js",
     "test:python:info": "node scripts/test-embedded-python.js --info",
-    "prebuild:mac": "npm run prepare:python:embedded && npm run build:renderer",
+    "prebuild:mac": "npm run prepare:python:embedded && npm run patch:uiohook && npm run build:renderer",
     "build:mac": "electron-builder --mac",
     "prebuild:win": "npm run prepare:python:embedded && npm run build:renderer",
     "build:win": "electron-builder --win",
     "prebuild:linux": "npm run prepare:python:embedded && npm run build:renderer",
     "build:linux": "electron-builder --linux",
-    "pack": "npm run build:renderer && CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --dir",
+    "pack": "npm run patch:uiohook && npm run build:renderer && CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --dir",
     "dist": "npm run prepare:python:embedded && npm run build:renderer && electron-builder",
     "lint": "cd src && eslint .",
     "test": "vitest run",
     "preview": "cd src && vite preview",
-    "clean": "node cleanup.js && rm -rf python"
+    "clean": "node cleanup.js && rm -rf python",
+    "patch:uiohook": "bash scripts/patch-uiohook-listenonly.sh"
   },
   "keywords": [
     "dictation",
@@ -162,11 +163,15 @@
       "target": [
         {
           "target": "nsis",
-          "arch": ["x64"]
+          "arch": [
+            "x64"
+          ]
         },
         {
           "target": "portable",
-          "arch": ["x64"]
+          "arch": [
+            "x64"
+          ]
         }
       ]
     },

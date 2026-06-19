@@ -1,7 +1,6 @@
 import React from "react";
 import { createRoot } from "react-dom/client";
 import "./index.css";
-import HistoryModal from "./components/ui/history-modal";
 
 // 历史记录页面组件
 const HistoryPage = () => {
@@ -61,6 +60,9 @@ const HistoryContent = ({ onCopy }) => {
   const [filteredTranscriptions, setFilteredTranscriptions] = React.useState([]);
   // 当前选中的记录（点击卡片选中，按 Delete/Backspace 删除）
   const [selectedId, setSelectedId] = React.useState(null);
+  // 日期范围筛选：起止日期(按中国时区的 YYYY-MM-DD，空=不限)由用户选择
+  const [fromDate, setFromDate] = React.useState("");
+  const [toDate, setToDate] = React.useState("");
 
   // 加载转录历史
   const loadTranscriptions = async () => {
@@ -79,18 +81,35 @@ const HistoryContent = ({ onCopy }) => {
     }
   };
 
-  // 搜索功能
+  // 过滤：先按日期，再按搜索关键词（created_at 为 UTC，需按中国时区换算日期）
   React.useEffect(() => {
-    if (!searchQuery.trim()) {
-      setFilteredTranscriptions(transcriptions);
-    } else {
-      const filtered = transcriptions.filter(item => 
-        item.text?.toLowerCase().includes(searchQuery.toLowerCase()) ||
-        item.processed_text?.toLowerCase().includes(searchQuery.toLowerCase())
-      );
-      setFilteredTranscriptions(filtered);
+    const tz = "Asia/Shanghai";
+    const dk = new Intl.DateTimeFormat("en-CA", { timeZone: tz, year: "numeric", month: "2-digit", day: "2-digit" });
+    const isoOf = (s) => (/T/.test(s) ? s : `${String(s || "").replace(" ", "T")}Z`);
+    const dayKeyOf = (s) => {
+      const d = new Date(isoOf(s));
+      return isNaN(d.getTime()) ? "" : dk.format(d);
+    };
+    // 起止可任意单边留空；YYYY-MM-DD 字符串按字典序比较 = 按时间先后比较
+    let list = transcriptions;
+    if (fromDate || toDate) {
+      list = list.filter((i) => {
+        const k = dayKeyOf(i.created_at);
+        if (!k) return false;
+        if (fromDate && k < fromDate) return false;
+        if (toDate && k > toDate) return false;
+        return true;
+      });
     }
-  }, [searchQuery, transcriptions]);
+
+    const q = searchQuery.trim().toLowerCase();
+    if (q) {
+      list = list.filter(
+        (i) => i.text?.toLowerCase().includes(q) || i.processed_text?.toLowerCase().includes(q)
+      );
+    }
+    setFilteredTranscriptions(list);
+  }, [searchQuery, transcriptions, fromDate, toDate]);
 
   // 组件挂载时加载数据
   React.useEffect(() => {
@@ -164,8 +183,43 @@ const HistoryContent = ({ onCopy }) => {
       {/* 顶部栏：标题（左）+ 搜索框（右）同一行 */}
       <div className="px-6 py-5 bg-white/70 dark:bg-neutral-950/70 backdrop-blur-md border-b border-gray-100 dark:border-neutral-900 flex-shrink-0">
         <div className="max-w-3xl mx-auto">
-          <div className="flex items-center justify-between gap-4">
-            <h1 className="text-base font-semibold tracking-tight text-gray-900 dark:text-gray-100 chinese-title flex-shrink-0">历史记录</h1>
+          <div className="flex items-center justify-between gap-4 flex-wrap">
+            <div className="flex items-baseline gap-2 flex-shrink-0">
+              <h1 className="text-base font-semibold tracking-tight text-gray-900 dark:text-gray-100 chinese-title">历史记录</h1>
+              <span className="text-sm text-gray-500 dark:text-gray-400">{filteredTranscriptions.length} 条</span>
+            </div>
+            {/* 日期范围筛选：起止日期由用户选择（在历史记录右侧） */}
+            <div className="flex items-center gap-2">
+              <input
+                type="date"
+                value={fromDate}
+                max={toDate || undefined}
+                onChange={(e) => setFromDate(e.target.value)}
+                className="px-3 py-1.5 rounded-lg text-sm border border-gray-300 dark:border-neutral-700 bg-white dark:bg-neutral-800 text-gray-900 dark:text-gray-100"
+                title="开始日期"
+              />
+              <span className="text-sm text-gray-400 dark:text-gray-500">至</span>
+              <input
+                type="date"
+                value={toDate}
+                min={fromDate || undefined}
+                onChange={(e) => setToDate(e.target.value)}
+                className="px-3 py-1.5 rounded-lg text-sm border border-gray-300 dark:border-neutral-700 bg-white dark:bg-neutral-800 text-gray-900 dark:text-gray-100"
+                title="结束日期"
+              />
+              {(fromDate || toDate) && (
+                <button
+                  onClick={() => { setFromDate(""); setToDate(""); }}
+                  className="px-2.5 py-1.5 rounded-lg text-sm text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-neutral-800 transition-colors"
+                  title="清除日期筛选"
+                >
+                  清除
+                </button>
+              )}
+            </div>
+          </div>
+          {/* 搜索（左）+ 刷新/导出（右） */}
+          <div className="mt-3 flex items-center justify-between gap-3 flex-wrap">
             <div className="relative w-64 max-w-[60%]">
               <svg className="absolute left-3.5 top-1/2 transform -translate-y-1/2 w-4 h-4 text-gray-400 dark:text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
@@ -175,14 +229,9 @@ const HistoryContent = ({ onCopy }) => {
                 placeholder="搜索转录内容..."
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
-                className="w-full pl-10 pr-4 py-2.5 border border-gray-300 dark:border-neutral-700 bg-white dark:bg-neutral-800 text-gray-900 dark:text-white rounded-xl focus:ring-1 focus:ring-neutral-400 focus:border-transparent chinese-text text-sm"
+                className="w-full pl-10 pr-4 py-2 border border-gray-300 dark:border-neutral-700 bg-white dark:bg-neutral-800 text-gray-900 dark:text-white rounded-xl focus:ring-1 focus:ring-neutral-400 focus:border-transparent chinese-text text-sm"
               />
             </div>
-          </div>
-          <div className="mt-3 flex items-center justify-between">
-            <span className="text-sm text-gray-500 dark:text-gray-400">
-              共 {filteredTranscriptions.length} 条记录
-            </span>
             <div className="flex items-center space-x-2">
               <button
                 onClick={loadTranscriptions}
@@ -264,6 +313,18 @@ const HistoryContent = ({ onCopy }) => {
                       >
                         <svg className="w-6 h-6 text-gray-600 dark:text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                        </svg>
+                      </button>
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          if (window.confirm("确定删除这条记录吗？")) handleDelete(item.id);
+                        }}
+                        className="p-2.5 hover:bg-red-100 dark:hover:bg-red-900/30 rounded-lg transition-colors"
+                        title="删除记录"
+                      >
+                        <svg className="w-6 h-6 text-red-500 dark:text-red-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
                         </svg>
                       </button>
                     </div>

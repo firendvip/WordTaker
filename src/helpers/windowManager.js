@@ -147,7 +147,7 @@ class WindowManager {
       width: 1000,
       height: 700,
       show: false,
-      title: "历史记录",
+      title: "",
       alwaysOnTop: true,
       webPreferences: {
         nodeIntegration: false,
@@ -183,7 +183,7 @@ class WindowManager {
       width: 700,
       height: 600,
       show: false,
-      title: "设置",
+      title: "",
       alwaysOnTop: true,
       webPreferences: {
         nodeIntegration: false,

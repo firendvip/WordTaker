@@ -11,6 +11,11 @@
 # 重要：每次 `npm install` / electron-builder 重建原生模块后，prebuilt 二进制会被
 # 还原为未打补丁版本，必须重新运行本脚本。打包 mac 版前务必在构建流程里执行它。
 set -e
+# 仅 macOS 需要：补丁针对 libuiohook 的 darwin CGEventTap。其它平台直接跳过。
+if [ "$(uname)" != "Darwin" ]; then
+  echo "[patch] 非 macOS，跳过 uiohook listen-only 补丁。"
+  exit 0
+fi
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 PKG=$(find "$ROOT/node_modules" -type d -path "*uiohook-napi@*/node_modules/uiohook-napi" 2>/dev/null | head -1)
 [ -z "$PKG" ] && PKG="$ROOT/node_modules/uiohook-napi"

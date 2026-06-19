@@ -30,7 +30,8 @@ const SettingsPage = () => {
     raw_stop_taps: 1,
     sound_scheme: "soft",
     sound_volume: 0.3,
-    asr_engine: "sensevoice"
+    asr_engine: "sensevoice",
+    llm_streaming_enabled: false
   });
 
   const isMac = typeof navigator !== "undefined" && !!navigator.platform && navigator.platform.toLowerCase().includes("mac");
@@ -53,6 +54,7 @@ const SettingsPage = () => {
     { id: "permissions", label: "权限", icon: Shield },
     { id: "shortcuts", label: "快捷键", icon: Keyboard },
     { id: "sound", label: "提示音", icon: Volume2 },
+    { id: "general", label: "通用", icon: Settings },
     { id: "about", label: "关于", icon: Info },
   ];
 
@@ -99,7 +101,8 @@ const SettingsPage = () => {
           raw_stop_taps: Number(allSettings.raw_stop_taps) === 2 ? 2 : 1,
           sound_scheme: allSettings.sound_scheme || "soft",
           sound_volume: typeof allSettings.sound_volume === "number" ? allSettings.sound_volume : 0.3,
-          asr_engine: allSettings.asr_engine || "sensevoice"
+          asr_engine: allSettings.asr_engine || "sensevoice",
+          llm_streaming_enabled: allSettings.llm_streaming_enabled === true
         };
         setSettings(prev => ({ ...prev, ...loadedSettings }));
 
@@ -927,6 +930,37 @@ const SettingsPage = () => {
                     }}
                     className="w-48 accent-blue-600 dark:accent-blue-500"
                   />
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* 通用 */}
+          {activeCategory === "general" && (
+            <div className="bg-white dark:bg-neutral-900 rounded-2xl shadow-sm border border-gray-100 dark:border-neutral-800">
+              <div className="px-6">
+                <div className="flex items-center justify-between gap-4 py-4">
+                  <div className="min-w-0">
+                    <label className={`${rowLabelClass} chinese-title`}>流式上屏</label>
+                    <p className="mt-0.5 text-[13px] text-gray-500 dark:text-neutral-400">
+                      开启后边生成边逐段贴出，首字更快；但语速较快或长文本时可能丢字，建议保持关闭。
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    role="switch"
+                    aria-checked={settings.llm_streaming_enabled}
+                    onClick={() => updateAndSave('llm_streaming_enabled', !settings.llm_streaming_enabled)}
+                    className={`relative inline-flex h-6 w-11 flex-shrink-0 items-center rounded-full transition-colors ${
+                      settings.llm_streaming_enabled ? 'bg-blue-600' : 'bg-gray-300 dark:bg-gray-600'
+                    }`}
+                  >
+                    <span
+                      className={`inline-block h-5 w-5 transform rounded-full bg-white transition-transform ${
+                        settings.llm_streaming_enabled ? 'translate-x-5' : 'translate-x-0.5'
+                      }`}
+                    />
+                  </button>
                 </div>
               </div>
             </div>
