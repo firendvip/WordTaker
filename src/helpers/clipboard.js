@@ -5,11 +5,19 @@ const { spawn } = require("child_process");
 // 剪贴板写入已在 _pasteTextImpl 里做过同步回读校验，这里只需给系统粘贴板很短的传播余量，
 // 故从 120ms 收紧到 60ms 以加快"出字"，仍保留约 2 倍于常见传播耗时的安全边际。
 const PASTE_SETTLE_MS = 60;
+// 流式增量粘贴时，Cmd+V 之后必须等待目标 App 真正“吃进”这次粘贴，再让串行链放行下一个分片去写剪贴板。
+// _pressPaste 只在 osascript 进程退出（按键已派发，而非已被消费）时 resolve，
+// 若不等待，下一个分片的 clipboard.writeText 会在目标 App 还在消费上一次粘贴时覆盖粘贴板，
+// 造成重复 + 丢字。该常量即“按下粘贴后到下一次写剪贴板前”的消费等待窗口。
+const PASTE_CONSUME_MS = 90;
 // 模拟 Cmd+V 后，等待目标 App 真正消费完粘贴、再恢复原始剪贴板的时间。
 // 必须足够长：太短会导致目标 App 读到“被恢复的旧内容”，从而粘贴上一次的结果。
 const CLIPBOARD_RESTORE_MS = 700;
 // 粘贴子进程的兜底超时：超过该时间仍未结束则 SIGKILL，避免挂死的粘贴进程堆积（ROB-4）。
 const PASTE_KILL_TIMEOUT_MS = 3000;
+
+// 简单的等待工具：用于粘贴前的稳定窗口与粘贴后的消费窗口。
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 class ClipboardManager {
   constructor(logger) {
@@ -503,17 +511,27 @@ class ClipboardManager {
     return ok;
   }
 
-  // 追加一段文本到光标处：写剪贴板→Cmd+V，不恢复。与 pasteText 共用串行链，保证顺序。
+  // 追加一段文本到光标处：写剪贴板→稳定→Cmd+V→消费等待，不恢复。与 pasteText 共用串行链，保证顺序。
+  // 空文本（appendChunk("")）仅用作排空/等待屏障：排在链尾被 await，绝不写剪贴板、绝不粘贴。
   async appendChunk(text) {
     const run = async () => {
+      // 空文本只作为串行链上的等待屏障：不写剪贴板、不粘贴，直接放行。
       if (!text) return;
+      // a. 写剪贴板并回读校验，不一致则重写一次。
       clipboard.writeText(text);
       if (clipboard.readText() !== text) clipboard.writeText(text);
+      // b. 走缓存的辅助功能权限检查，避免高频流式粘贴时进程风暴。
       if (process.platform === "darwin") {
         const ok = await this.ensureAccessibilityCached();
         if (!ok) throw new Error("需要辅助功能权限");
       }
+      // c. 粘贴前稳定：确保系统粘贴板已持有新文本，再触发 Cmd+V。
+      await sleep(PASTE_SETTLE_MS);
+      // d. 触发一次 Cmd+V。
       await this._pressPaste();
+      // e. 粘贴后消费等待：在 resolve 前确保目标 App 已吃进本次粘贴，
+      //    这样串行链上的下一个分片才不会过早 writeText 覆盖粘贴板，杜绝重复 + 丢字。
+      await sleep(PASTE_CONSUME_MS);
     };
     const resultPromise = this._pasteChain.then(run, run);
     this._pasteChain = resultPromise.then(() => undefined, () => undefined);
