@@ -13,6 +13,12 @@ const http = require("http");
 
 const PORT = Number(process.env.PORT) || 9000;
 const DEFAULT_BASE_URL = "https://api.deepseek.com";
+const ALLOWED_ORIGINS = [
+  "http://localhost:5173",
+  "http://localhost:3000",
+  "http://127.0.0.1:5173",
+];
+const ALLOWED_UPSTREAM_HOSTS = ["api.deepseek.com"];
 const DEFAULT_MODEL = "deepseek-v4-flash";
 const DEFAULT_MAX_INPUT_CHARS = 1000;
 const DEFAULT_MAX_TOKENS = 2000;
@@ -26,14 +32,25 @@ const COPYWRITING_PROMPT = [
   "【润色要求】1) 纠正音近、形近导致的错别字；2) 删除无意义的口头禅与冗余重复；3) 理顺逻辑与语序，保持语气中性平实，不增删原意之外的信息；4) 保留原文中出现的英文单词、专有名词、技术术语、代码标识符、缩写与品牌名原样，绝不翻译成中文，也不要改写大小写（例如 icon、bug、commit、API、token、Electron 等一律保持英文）；5) 只输出最终润色后的完整段落，不要附带任何解释、标注、前后缀或标记符号。",
 ].join("\n");
 
-const CORS = {
-  "Access-Control-Allow-Origin": "*",
+const CORS_BASE = {
   "Access-Control-Allow-Methods": "POST, OPTIONS",
   "Access-Control-Allow-Headers": "Content-Type, X-App-Token, X-Device-Id",
 };
 
-function sendJson(res, status, obj) {
-  res.writeHead(status, { "Content-Type": "application/json", ...CORS });
+// Returns cors headers for a given request. Null origin (native/desktop) → no ACAO.
+// Allowlisted origin → echo it with Vary. Non-allowlisted → returns null (caller must 403).
+function corsHeadersFor(req) {
+  const origin = getHeader(req, "origin");
+  if (!origin) return { ...CORS_BASE };
+  if (ALLOWED_ORIGINS.includes(origin)) {
+    return { ...CORS_BASE, "Access-Control-Allow-Origin": origin, "Vary": "Origin" };
+  }
+  return null; // disallowed — caller must reject
+}
+
+function sendJson(res, status, obj, corsHeaders) {
+  const headers = corsHeaders !== undefined ? corsHeaders : {};
+  res.writeHead(status, { "Content-Type": "application/json", ...(headers || {}) });
   res.end(JSON.stringify(obj));
 }
 
@@ -67,26 +84,45 @@ function buildRequestBody(text, stream) {
 async function handlePost(req, res, body) {
   const env = process.env;
 
+  // Origin check — must happen before any other processing
+  const cors = corsHeadersFor(req);
+  if (cors === null) {
+    res.writeHead(403, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ success: false, error: "Origin not allowed" }));
+    return;
+  }
+
   // 保活定时触发器(Web函数也可配)：空 body 直接回 200
   if (env.APP_TOKEN) {
     const token = getHeader(req, "X-App-Token");
-    if (token !== env.APP_TOKEN) return sendJson(res, 401, { success: false, error: "Unauthorized" });
+    if (token !== env.APP_TOKEN) return sendJson(res, 401, { success: false, error: "Unauthorized" }, cors);
   }
-  if (!env.DEEPSEEK_API_KEY) return sendJson(res, 500, { success: false, error: "Relay not configured" });
+  if (!env.DEEPSEEK_API_KEY) return sendJson(res, 500, { success: false, error: "Relay not configured" }, cors);
 
   let payload;
   try {
     payload = JSON.parse(body || "{}");
   } catch {
-    return sendJson(res, 400, { success: false, error: "Invalid JSON" });
+    return sendJson(res, 400, { success: false, error: "Invalid JSON" }, cors);
   }
   const text = typeof payload.text === "string" ? payload.text : "";
-  if (!text.trim()) return sendJson(res, 400, { success: false, error: "Empty text" });
+  if (!text.trim()) return sendJson(res, 400, { success: false, error: "Empty text" }, cors);
   const maxChars = Number(env.MAX_INPUT_CHARS || DEFAULT_MAX_INPUT_CHARS);
-  if (text.length > maxChars) return sendJson(res, 413, { success: false, error: "Text too long" });
+  if (text.length > maxChars) return sendJson(res, 413, { success: false, error: "Text too long" }, cors);
 
   const wantStream = payload.stream === true;
   const baseUrl = env.DEEPSEEK_BASE_URL || DEFAULT_BASE_URL;
+
+  // SSRF guard: validate upstream host against allowlist
+  let upstreamHostname;
+  try {
+    upstreamHostname = new URL(baseUrl).hostname.toLowerCase();
+  } catch {
+    upstreamHostname = "";
+  }
+  if (!ALLOWED_UPSTREAM_HOSTS.includes(upstreamHostname)) {
+    return sendJson(res, 500, { success: false, error: "Relay misconfigured" }, cors);
+  }
 
   let upstream;
   try {
@@ -96,28 +132,29 @@ async function handlePost(req, res, body) {
       body: JSON.stringify(buildRequestBody(text, wantStream)),
     });
   } catch {
-    return sendJson(res, 502, { success: false, error: "Relay request failed" });
+    return sendJson(res, 502, { success: false, error: "Relay request failed" }, cors);
   }
-  if (!upstream.ok) return sendJson(res, 502, { success: false, error: "Upstream error: " + upstream.status });
+  if (!upstream.ok) return sendJson(res, 502, { success: false, error: "Upstream error: " + upstream.status }, cors);
 
   // 非流式：照旧返回 { success, text }
   if (!wantStream) {
     const data = await upstream.json();
     const out = data && data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content;
-    if (!out) return sendJson(res, 502, { success: false, error: "Empty completion" });
-    return sendJson(res, 200, { success: true, text: out.trim() });
+    if (!out) return sendJson(res, 502, { success: false, error: "Empty completion" }, cors);
+    return sendJson(res, 200, { success: true, text: out.trim() }, cors);
   }
 
   // 流式：解析上游 OpenAI SSE，逐段以 {"d":"增量"} 行回传，最后 {"done":true}
   res.writeHead(200, {
     "Content-Type": "application/x-ndjson; charset=utf-8",
     "Cache-Control": "no-cache",
-    ...CORS,
+    ...cors,
   });
   const reader = upstream.body.getReader();
   const decoder = new TextDecoder();
   let sseBuf = "";
   let full = "";
+  let partial = false;
   try {
     for (;;) {
       const { done, value } = await reader.read();
@@ -143,19 +180,27 @@ async function handlePost(req, res, body) {
       }
     }
   } catch {
-    // 上游中断
+    partial = true; // 上游中断
   }
-  res.write(JSON.stringify({ done: true, text: full.trim() }) + "\n");
+  const terminal = { done: true, text: full.trim() };
+  if (partial) terminal.partial = true;
+  res.write(JSON.stringify(terminal) + "\n");
   res.end();
 }
 
 const server = http.createServer((req, res) => {
   if (req.method === "OPTIONS") {
-    res.writeHead(204, CORS);
+    const cors = corsHeadersFor(req);
+    if (cors === null) {
+      res.writeHead(403, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ success: false, error: "Origin not allowed" }));
+      return;
+    }
+    res.writeHead(204, cors);
     return res.end();
   }
   if (req.method !== "POST") {
-    return sendJson(res, 405, { success: false, error: "Method Not Allowed" });
+    return sendJson(res, 405, { success: false, error: "Method Not Allowed" }, {});
   }
   let body = "";
   req.on("data", (c) => {
@@ -164,7 +209,7 @@ const server = http.createServer((req, res) => {
   });
   req.on("end", () => {
     handlePost(req, res, body).catch(() => {
-      try { sendJson(res, 500, { success: false, error: "Internal error" }); } catch {}
+      try { sendJson(res, 500, { success: false, error: "Internal error" }, {}); } catch {}
     });
   });
 });

@@ -98,6 +98,18 @@ export const useRecording = ({ onTranscriptionCompleteRef, onAIOptimizationCompl
             type: 'audio/webm;codecs=opus'
           });
 
+          // 空/零长度音频：静默 no-op，不识别、不粘贴、不报错（ROB-5，对齐"未识别到语音"处理）
+          if (!audioBlob || audioBlob.size === 0) {
+            if (window.electronAPI && window.electronAPI.log) {
+              window.electronAPI.log('info', '空录音（0 字节），跳过识别');
+            }
+            audioChunksRef.current = [];
+            if (window.electronAPI && window.electronAPI.hideRecorder) {
+              try { await window.electronAPI.hideRecorder(); } catch (e) { /* 忽略 */ }
+            }
+            return;
+          }
+
           setAudioData(audioBlob);
 
           // 处理音频
@@ -174,7 +186,14 @@ export const useRecording = ({ onTranscriptionCompleteRef, onAIOptimizationCompl
 
         // 识别引擎：默认 SenseVoice（快），可在设置切回 Paraformer
         let engine = 'sensevoice';
-        try { engine = await window.electronAPI.getSetting('asr_engine', 'sensevoice'); } catch (e) {}
+        try {
+          engine = await window.electronAPI.getSetting('asr_engine', 'sensevoice');
+        } catch (e) {
+          // 读取失败不阻塞识别：记录后回退默认引擎（SF-4）
+          if (window.electronAPI && window.electronAPI.log) {
+            window.electronAPI.log('warn', '读取 asr_engine 失败，回退 sensevoice:', e?.message || e);
+          }
+        }
         const _tT0 = Date.now();
         const transcriptionResult = await window.electronAPI.transcribeAudio(uint8Array, { engine });
         tlog(`[计时] 转写往返(WAV→识别, ${engine}): ${Date.now() - _tT0}ms`);
@@ -188,6 +207,8 @@ export const useRecording = ({ onTranscriptionCompleteRef, onAIOptimizationCompl
             if (window.electronAPI && window.electronAPI.hideRecorder) {
               try { await window.electronAPI.hideRecorder(); } catch (e) {}
             }
+            // 本路径不会启动异步粘贴链，立即释放并发守卫（ROB-2）
+            processingRef.current.isProcessingAudio = false;
             return { success: true, text: '', skipped: true };
           }
 
@@ -384,23 +405,27 @@ export const useRecording = ({ onTranscriptionCompleteRef, onAIOptimizationCompl
               }
             } finally {
               setIsOptimizing(false);
+              // 异步粘贴/入库链全部结束后才释放并发守卫，避免新录音抢在粘贴链前插队（ROB-2）
+              processingRef.current.isProcessingAudio = false;
             }
           }, 0);
 
+          // 注意：此处不清并发守卫——真正的粘贴链在上面的 setTimeout 里，结束时才清（ROB-2）
           return { ...transcriptionResult, enhanced_by_ai: false };
         } else {
           throw new Error(transcriptionResult.error || '语音识别失败');
         }
       } else {
-        // Web环境模拟
+        // Web环境模拟：不启动异步粘贴链，立即释放守卫
         const mockResult = { success: true, text: '模拟识别结果。', confidence: 0.95, duration: 3.5 };
         if (onTranscriptionCompleteRef?.current) onTranscriptionCompleteRef?.current(mockResult);
+        processingRef.current.isProcessingAudio = false;
         return mockResult;
       }
     } catch (err) {
-      throw new Error(`音频处理失败: ${err.message}`);
-    } finally {
+      // 出错路径不会有在途粘贴链，释放守卫后再抛出
       processingRef.current.isProcessingAudio = false;
+      throw new Error(`音频处理失败: ${err.message}`);
     }
   }, []);
 

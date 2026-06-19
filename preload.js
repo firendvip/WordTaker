@@ -38,8 +38,8 @@ contextBridge.exposeInMainWorld("electronAPI", {
   writeClipboard: (text) => ipcRenderer.invoke("write-clipboard", text),
 
   // 数据库操作
-  saveTranscription: (text, processedText) => 
-    ipcRenderer.invoke("save-transcription", text, processedText),
+  saveTranscription: (transcriptionData) =>
+    ipcRenderer.invoke("save-transcription", transcriptionData),
   getTranscriptions: (limit, offset) => 
     ipcRenderer.invoke("get-transcriptions", limit, offset),
   deleteTranscription: (id) =>
@@ -185,7 +185,8 @@ contextBridge.exposeInMainWorld("electronAPI", {
 // 添加一些实用的常量
 contextBridge.exposeInMainWorld("constants", {
   APP_NAME: "WordTaker (WordTaker)",
-  VERSION: "1.0.0",
+  // 版本号不在此硬编码（避免与 package.json 漂移）。
+  // 单一来源 = package.json：渲染层通过 electronAPI.getAppVersion() 取 app.getVersion()。
   SUPPORTED_AUDIO_FORMATS: ["wav", "mp3", "m4a", "flac"],
   SUPPORTED_EXPORT_FORMATS: ["txt", "docx", "pdf", "json"],
   DEFAULT_HOTKEY: "CommandOrControl+Shift+Space",

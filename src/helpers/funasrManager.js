@@ -22,6 +22,7 @@ class FunASRManager {
     this.initializationPromise = null; // 缓存初始化Promise
     this.serverProcess = null; // FunASR服务器进程
     this.serverReady = false; // 服务器是否就绪
+    this.serverStartError = null; // 最近一次启动失败原因（供 checkStatus 暴露，避免静默失败）
     this.modelsDownloaded = null; // 缓存模型下载状态
     
     // 简化缓存
@@ -688,11 +689,13 @@ class FunASRManager {
   async _startFunASRServer() {
     try {
       this._intentionalStop = false; // 新一轮启动，允许后续异常自动重启
+      this.serverStartError = null; // 新一轮启动，清除上次失败原因
       this.logger.info && this.logger.info('启动FunASR服务器...');
-      
+
       const status = await this.checkFunASRInstallation();
       if (!status.installed) {
         this.logger.warn && this.logger.warn('FunASR未安装，跳过服务器启动');
+        this.serverStartError = { reason: 'funasr-not-installed', message: 'FunASR 未安装' };
         return;
       }
 
@@ -703,30 +706,44 @@ class FunASRManager {
         serverPath,
         serverExists: fs.existsSync(serverPath)
       });
-      
+
       if (!fs.existsSync(serverPath)) {
         this.logger.error && this.logger.error('FunASR服务器脚本未找到，跳过服务器启动', { serverPath });
+        this.serverStartError = { reason: 'server-script-missing', message: `服务器脚本未找到: ${serverPath}` };
         return;
       }
 
       // 确保环境变量正确设置
       this.setupIsolatedEnvironment();
-      
+
       // 构建完整的环境变量
       const pythonEnv = this.buildPythonEnvironment();
+
+      // getModelCachePath() 可能抛出（未找到模型目录）。在 executor 之外解析，
+      // 避免 Promise 构造函数内同步抛出产生未处理的 promise rejection。
+      let cachePath;
+      try {
+        cachePath = this.getModelCachePath();
+      } catch (cacheError) {
+        this.logger.error && this.logger.error('解析模型缓存路径失败', cacheError);
+        this.serverStartError = { reason: 'models-missing', message: cacheError.message };
+        return; // 解析为 resolved（无 reject），失败原因经 checkStatus 暴露
+      }
 
       return new Promise((resolve) => {
         this.logger.info && this.logger.info('启动FunASR Python进程', {
           command: pythonCmd,
-          args: [serverPath],
+          args: [serverPath, "--damo-root", cachePath],
           env: pythonEnv
         });
-        const cachePath = this.getModelCachePath();
-        // this.serverProcess = spawn(pythonCmd, [serverPath], {
-        //   stdio: ["pipe", "pipe", "pipe"],
-        //   windowsHide: true,
-        //   env: pythonEnv // 使用完整的Python环境变量
-        // });
+
+        // 标记本次启动是否已 settle，确保只 resolve 一次且不会无限挂起
+        let initResponseReceived = false;
+        const settle = () => {
+          if (initResponseReceived) return;
+          initResponseReceived = true;
+          resolve();
+        };
 
         this.serverProcess = spawn(
           pythonCmd,
@@ -738,29 +755,43 @@ class FunASRManager {
           }
         );
 
-        let initResponseReceived = false;
+        // spawn 时注册 stdin 'error'：子进程退出后写入触发 EPIPE 时，
+        // 立即拒绝在途命令（REL-2），并记录失败原因，避免被超时掩盖。
+        this.serverProcess.stdin.on('error', (error) => {
+          this.logger.error && this.logger.error('FunASR stdin 管道错误', error);
+          if (this._pendingStdinReject) {
+            const rejectFn = this._pendingStdinReject;
+            this._pendingStdinReject = null;
+            rejectFn(new Error(`FunASR服务器管道已关闭: ${error && error.message ? error.message : error}`));
+          }
+        });
 
         this.serverProcess.stdout.on("data", (data) => {
           const lines = data.toString().split('\n').filter(line => line.trim());
-          
+
           for (const line of lines) {
             this.logger.debug && this.logger.debug('FunASR服务器输出', { line });
             try {
               const result = JSON.parse(line);
-              
+
               if (!initResponseReceived) {
                 // 这是初始化响应
-                initResponseReceived = true;
                 if (result.success) {
                   this.serverReady = true;
                   this.modelsInitialized = true;
+                  this.serverStartError = null;
                   this._restartCount = 0; // 成功就绪，重置自动重启计数
                   this._clearModelCache(); // 清除缓存，确保状态更新
                   this.logger.info && this.logger.info('FunASR服务器启动成功，模型已初始化');
                 } else {
+                  // 初始化失败：记录可见的失败原因（如模型未下载），不静默
+                  this.serverStartError = {
+                    reason: result.type || 'init-failed',
+                    message: result.error || 'FunASR 初始化失败',
+                  };
                   this.logger.error && this.logger.error('FunASR服务器初始化失败', result);
                 }
-                resolve();
+                settle();
               }
             } catch (parseError) {
               // 忽略非JSON输出，但记录到日志
@@ -785,7 +816,12 @@ class FunASRManager {
           this.modelsInitialized = false;
 
           if (!initResponseReceived) {
-            resolve();
+            // 进程在返回初始化响应前就退出：记录可见失败原因，避免静默
+            this.serverStartError = {
+              reason: 'process-exited',
+              message: `FunASR 进程在初始化前退出，退出码: ${code}`,
+            };
+            settle();
           }
 
           // 非主动停止且异常退出(崩溃/OOM)时自动重启：最多3次、指数退避
@@ -797,8 +833,17 @@ class FunASRManager {
               this._restartTimer = setTimeout(() => {
                 this._restartTimer = null;
                 if (this._intentionalStop) return; // 已主动停止则不再重启
-                this.initializationPromise = this._startFunASRServer();
-                this.initializationPromise.catch((e) => this.logger.error && this.logger.error('FunASR 自动重启失败', e));
+                const restartPromise = this._startFunASRServer();
+                this.initializationPromise = restartPromise;
+                // 自动重启的 promise 无论成功/失败 settle 后都清空 initializationPromise，
+                // 让后续调用可以重新触发启动（避免卡在旧的已结算 promise 上）。
+                restartPromise
+                  .catch((e) => this.logger.error && this.logger.error('FunASR 自动重启失败', e))
+                  .finally(() => {
+                    if (this.initializationPromise === restartPromise) {
+                      this.initializationPromise = null;
+                    }
+                  });
               }, delay);
             } else {
               this.logger.error && this.logger.error('FunASR 连续重启3次仍失败，停止自动重启');
@@ -810,25 +855,25 @@ class FunASRManager {
           this.logger.error && this.logger.error('FunASR服务器进程错误', error);
           this.serverProcess = null;
           this.serverReady = false;
-          
-          if (!initResponseReceived) {
-            resolve();
-          }
+          this.serverStartError = { reason: 'spawn-failed', message: error.message };
+          settle();
         });
 
         // 设置超时
         setTimeout(() => {
           if (!initResponseReceived) {
             this.logger.warn && this.logger.warn('FunASR服务器启动超时');
+            this.serverStartError = { reason: 'timeout', message: 'FunASR 服务器启动超时' };
             if (this.serverProcess) {
               this.serverProcess.kill();
             }
-            resolve();
+            settle();
           }
         }, 120000); // 2分钟超时
       });
     } catch (error) {
       this.logger.error && this.logger.error('启动FunASR服务器异常', error);
+      this.serverStartError = { reason: 'start-exception', message: error.message };
     }
   }
 
@@ -846,20 +891,57 @@ class FunASRManager {
       throw new Error('FunASR服务器未就绪');
     }
 
+    const proc = this.serverProcess;
+
+    // 为每条命令生成关联 id，避免迟到/超时的响应被错误匹配到下一条命令（ROB-1）。
+    // 不修改调用方传入的 command（immutable），构造带 id 的新对象。
+    this._cmdSeq = (this._cmdSeq || 0) + 1;
+    const cmdId = `${Date.now()}-${this._cmdSeq}`;
+    const taggedCommand = { ...command, id: cmdId };
+
     return new Promise((resolve, reject) => {
       let responseReceived = false;
 
+      const cleanup = () => {
+        try { proc.stdout.removeListener('data', onData); } catch (e) {}
+        try { proc.stdin.removeListener('error', onStdinError); } catch (e) {}
+        if (this._pendingStdinReject === settleReject) {
+          this._pendingStdinReject = null;
+        }
+      };
+
+      const settleResolve = (result) => {
+        if (responseReceived) return;
+        responseReceived = true;
+        cleanup();
+        resolve(result);
+      };
+
+      const settleReject = (error) => {
+        if (responseReceived) return;
+        responseReceived = true;
+        cleanup();
+        reject(error);
+      };
+
       const onData = (data) => {
         if (responseReceived) return;
-        
+
         const lines = data.toString().split('\n').filter(line => line.trim());
-        
+
         for (const line of lines) {
           try {
             const result = JSON.parse(line);
-            responseReceived = true;
-            this.serverProcess.stdout.removeListener('data', onData);
-            resolve(result);
+            // 关联 id 校验：若响应带 id 且与本命令不一致，说明是迟到/串话的响应，跳过；
+            // 若响应无 id（向后兼容旧响应/初始化响应），仍按原行为接受。
+            if (result && result.id !== undefined && result.id !== cmdId) {
+              this.logger.warn && this.logger.warn('FunASR 收到不匹配的响应 id，已忽略', {
+                expected: cmdId,
+                received: result.id,
+              });
+              continue;
+            }
+            settleResolve(result);
             return;
           } catch (parseError) {
             // 忽略非JSON输出
@@ -867,18 +949,28 @@ class FunASRManager {
         }
       };
 
-      this.serverProcess.stdout.on('data', onData);
-      
-      // 发送命令
-      this.serverProcess.stdin.write(JSON.stringify(command) + '\n');
-      
+      // stdin 'error'（如子进程已退出导致 EPIPE）：立即以管道关闭错误拒绝在途命令，不等 30s 超时
+      const onStdinError = (error) => {
+        this.logger.error && this.logger.error('FunASR stdin 写入错误', error);
+        settleReject(new Error(`FunASR服务器管道已关闭: ${error && error.message ? error.message : error}`));
+      };
+
+      proc.stdout.on('data', onData);
+      proc.stdin.on('error', onStdinError);
+      // 暴露当前在途命令的 reject，供 spawn 时注册的全局 stdin error handler 调用
+      this._pendingStdinReject = settleReject;
+
+      // 发送命令：write 失败（管道已关闭）时立即拒绝，避免被 30s 超时掩盖真实原因
+      try {
+        proc.stdin.write(JSON.stringify(taggedCommand) + '\n');
+      } catch (writeError) {
+        settleReject(new Error(`FunASR命令写入失败（管道已关闭）: ${writeError.message}`));
+        return;
+      }
+
       // 设置超时
       setTimeout(() => {
-        if (!responseReceived) {
-          responseReceived = true;
-          try { this.serverProcess && this.serverProcess.stdout.removeListener('data', onData); } catch (e) {}
-          reject(new Error('服务器响应超时'));
-        }
+        settleReject(new Error('服务器响应超时'));
       }, timeoutMs);
     });
   }
@@ -1310,18 +1402,22 @@ class FunASRManager {
         if (installStatus.installed) {
           if (!modelStatus.models_downloaded) {
             error = "模型文件未下载，请先下载模型";
+          } else if (this.serverStartError) {
+            // 暴露真实的启动失败原因，避免一直显示"正在启动中"造成无限等待
+            error = `FunASR服务器启动失败: ${this.serverStartError.message}`;
           } else {
             error = "FunASR服务器正在启动中...";
           }
         }
-        
+
         return {
           success: installStatus.installed && modelStatus.models_downloaded,
           error: error,
           installed: installStatus.installed,
           models_downloaded: modelStatus.models_downloaded,
           missing_models: modelStatus.missing_models || [],
-          initializing: this.initializationPromise !== null
+          start_error: this.serverStartError || null,
+          initializing: this.initializationPromise !== null && !this.serverStartError
         };
       }
     } catch (error) {

@@ -6,11 +6,30 @@ const ALLOWED_SETTING_KEYS = new Set([
   "ai_api_key", "ai_base_url", "ai_model", "enable_ai_optimization",
   "copywriting_mode_enabled", "llm_prompt_template", "llm_temperature",
   "llm_max_tokens", "llm_extra_body", "llm_fallback_paste_raw",
-  "recording_trigger", "cancel_key", "raw_stop_key", "sound_scheme", "sound_volume",
+  "recording_trigger", "cancel_key", "cancel_taps", "raw_stop_key", "raw_stop_taps",
+  "sound_scheme", "sound_volume",
   "asr_engine", "skip_polish_max_chars",
   // 文案优化中转（key 留在服务器端，客户端只存中转地址与令牌）
   "llm_relay_enabled", "llm_relay_url", "llm_relay_token", "llm_streaming_enabled",
 ]);
+// 转录选项白名单：渲染层只能透传这些键到 Python 边界，丢弃未知键（IPCVAL-1）。
+// 与 funasr_server.py 的 default_options 对齐。
+const ALLOWED_TRANSCRIBE_OPTION_KEYS = new Set([
+  "engine", "language", "hotword", "use_vad", "use_punc", "batch_size_s",
+]);
+
+// 只保留白名单内的转录选项键，丢弃其余键（含 __proto__ 等原型污染键）。
+function sanitizeTranscribeOptions(options) {
+  if (!options || typeof options !== "object") return {};
+  const safe = {};
+  for (const key of ALLOWED_TRANSCRIBE_OPTION_KEYS) {
+    if (Object.prototype.hasOwnProperty.call(options, key)) {
+      safe[key] = options[key];
+    }
+  }
+  return safe;
+}
+
 // 合法日志级别，防止 this.logger[level] 调用注入
 const VALID_LOG_LEVELS = new Set(["info", "warn", "error", "debug"]);
 // 允许查询的 app 路径名
@@ -136,7 +155,12 @@ class IPCHandlers {
       const relayEnabled = await this.databaseManager.getSetting("llm_relay_enabled", false);
       const relayUrl = await this.databaseManager.getSetting("llm_relay_url", "");
       if (!streaming || !relayEnabled || !relayUrl) {
-        return { success: false, error: "streaming-unavailable", pastedAny: false };
+        // 不是静默 no-op：返回明确的、可被渲染层展示的原因（STREAM-1）。
+        const reason = !streaming
+          ? "未开启流式上屏"
+          : "流式上屏需要配置中转（relay）：请在设置中开启中转并填写中转地址后再使用。";
+        this.logger.warn("流式上屏不可用:", reason);
+        return { success: false, error: reason, code: "streaming-unavailable", pastedAny: false };
       }
 
       // 流式增量粘贴节流：按"句子边界或攒够 N 字"才贴一次，并对中途粘贴次数设硬上限，
@@ -165,62 +189,118 @@ class IPCHandlers {
       };
 
       const result = await this.aiService.processTextViaRelayStream(text, "copywriting", relayUrl, onDelta);
+      let flushError = null;
       try {
         flush(true); // 结束：强制贴出剩余缓冲（绕过上限）
         await this.clipboardManager.appendChunk(""); // 等待所有增量贴完
-      } catch (e) { /* 忽略 */ }
+      } catch (e) {
+        // 不再静默吞掉：记录上下文并把失败上报给渲染层，便于回退/告警（SF-1）。
+        flushError = e?.message || String(e);
+        this.logger.error("流式增量粘贴收尾失败:", flushError);
+      }
       // 贴完后稍等再恢复原剪贴板，避免抢在最后一次 Cmd+V 之前
       setTimeout(() => this.clipboardManager.restoreClipboard(original), 500);
 
+      if (flushError) {
+        return { success: false, error: flushError, text: result.text || "", pastedAny };
+      }
       return { success: !!result.success, text: result.text || "", error: result.error, pastedAny };
     });
 
     // 音频转录相关
     ipcMain.handle("transcribe-audio", async (event, audioData, options) => {
       try {
-        return await this.funasrManager.transcribeAudio(audioData, options);
+        // IPC 是信任边界：只放行已知的转录选项键，丢弃未知键，避免任意键透传到 Python（IPCVAL-1）。
+        const safeOptions = sanitizeTranscribeOptions(options);
+        return await this.funasrManager.transcribeAudio(audioData, safeOptions);
       } catch (error) {
         this.logger.error("转录失败:", error?.message || error);
         return { success: false, error: error?.message || "转录失败" };
       }
     });
 
-    // 数据库相关
+    // 数据库相关：每个 DB-facing IPC 都包 try/catch，失败返回结构化错误 + 记日志（SF-2），
+    // 避免数据库异常直接 reject 渲染层 Promise / 崩溃。
     ipcMain.handle("save-transcription", (event, data) => {
-      return this.databaseManager.saveTranscription(data);
+      try {
+        return this.databaseManager.saveTranscription(data);
+      } catch (error) {
+        this.logger.error("保存转录失败:", error);
+        return { success: false, error: error.message };
+      }
     });
 
     ipcMain.handle("get-transcriptions", (event, limit, offset) => {
-      return this.databaseManager.getTranscriptions(limit, offset);
+      try {
+        return this.databaseManager.getTranscriptions(limit, offset);
+      } catch (error) {
+        this.logger.error("获取转录列表失败:", error);
+        return { success: false, error: error.message };
+      }
     });
 
     ipcMain.handle("get-transcription", (event, id) => {
-      return this.databaseManager.getTranscriptionById(id);
+      try {
+        return this.databaseManager.getTranscriptionById(id);
+      } catch (error) {
+        this.logger.error("获取转录失败:", error);
+        return { success: false, error: error.message };
+      }
     });
 
     ipcMain.handle("delete-transcription", (event, id) => {
-      return this.databaseManager.deleteTranscription(id);
+      try {
+        return this.databaseManager.deleteTranscription(id);
+      } catch (error) {
+        this.logger.error("删除转录失败:", error);
+        return { success: false, error: error.message };
+      }
     });
 
     ipcMain.handle("update-transcription", (event, id, fields) => {
-      return this.databaseManager.updateTranscription(id, fields);
+      try {
+        return this.databaseManager.updateTranscription(id, fields);
+      } catch (error) {
+        this.logger.error("更新转录失败:", error);
+        return { success: false, error: error.message };
+      }
     });
 
     ipcMain.handle("search-transcriptions", (event, query, limit) => {
-      return this.databaseManager.searchTranscriptions(query, limit);
+      try {
+        return this.databaseManager.searchTranscriptions(query, limit);
+      } catch (error) {
+        this.logger.error("搜索转录失败:", error);
+        return { success: false, error: error.message };
+      }
     });
 
     ipcMain.handle("get-transcription-stats", () => {
-      return this.databaseManager.getTranscriptionStats();
+      try {
+        return this.databaseManager.getTranscriptionStats();
+      } catch (error) {
+        this.logger.error("获取转录统计失败:", error);
+        return { success: false, error: error.message };
+      }
     });
 
     ipcMain.handle("clear-all-transcriptions", () => {
-      return this.databaseManager.clearAllTranscriptions();
+      try {
+        return this.databaseManager.clearAllTranscriptions();
+      } catch (error) {
+        this.logger.error("清空转录失败:", error);
+        return { success: false, error: error.message };
+      }
     });
 
     // 设置相关
     ipcMain.handle("get-setting", (event, key, defaultValue) => {
-      return this.databaseManager.getSetting(key, defaultValue);
+      try {
+        return this.databaseManager.getSetting(key, defaultValue);
+      } catch (error) {
+        this.logger.error("读取设置失败:", error);
+        return defaultValue;
+      }
     });
 
     ipcMain.handle("set-setting", (event, key, value) => {
@@ -232,11 +312,21 @@ class IPCHandlers {
     });
 
     ipcMain.handle("get-all-settings", () => {
-      return this.databaseManager.getAllSettings();
+      try {
+        return this.databaseManager.getAllSettings();
+      } catch (error) {
+        this.logger.error("读取全部设置失败:", error);
+        return {};
+      }
     });
 
     ipcMain.handle("get-settings", () => {
-      return this.databaseManager.getAllSettings();
+      try {
+        return this.databaseManager.getAllSettings();
+      } catch (error) {
+        this.logger.error("读取全部设置失败:", error);
+        return {};
+      }
     });
 
     ipcMain.handle("save-setting", (event, key, value) => {

@@ -8,6 +8,8 @@ const PASTE_SETTLE_MS = 60;
 // 模拟 Cmd+V 后，等待目标 App 真正消费完粘贴、再恢复原始剪贴板的时间。
 // 必须足够长：太短会导致目标 App 读到“被恢复的旧内容”，从而粘贴上一次的结果。
 const CLIPBOARD_RESTORE_MS = 700;
+// 粘贴子进程的兜底超时：超过该时间仍未结束则 SIGKILL，避免挂死的粘贴进程堆积（ROB-4）。
+const PASTE_KILL_TIMEOUT_MS = 3000;
 
 class ClipboardManager {
   constructor(logger) {
@@ -15,6 +17,8 @@ class ClipboardManager {
     this.logger = logger;
     // 串行锁：保证任意时刻只有一个粘贴在执行，杜绝多次粘贴交叠互相污染剪贴板
     this._pasteChain = Promise.resolve();
+    // 待执行的剪贴板恢复定时器：新一次粘贴开始时取消旧的，只让最新一次粘贴负责恢复（ROB-3）
+    this._restoreTimer = null;
     // 辅助功能权限缓存：流式增量粘贴时绝不能每个分片都 spawn 一次 osascript 检查，
     // 否则一句长文会瞬间派生几十上百个进程把输入法/前台 App 卡死。缓存一段时间即可。
     this._accessOk = null;
@@ -106,6 +110,11 @@ class ClipboardManager {
 
   async _pasteTextImpl(text) {
     try {
+      // 新一次粘贴开始：取消上一次仍在等待的剪贴板恢复，避免旧定时器把过期内容写回（ROB-3）
+      if (this._restoreTimer) {
+        clearTimeout(this._restoreTimer);
+        this._restoreTimer = null;
+      }
       // 首先保存原始剪贴板内容
       const originalClipboard = clipboard.readText();
       this.safeLog(
@@ -151,7 +160,12 @@ class ClipboardManager {
   // 仅当剪贴板仍是“本次粘贴写入的文本”时才恢复原始内容，
   // 避免把过期内容写回、或覆盖掉更晚一次粘贴写入的内容。
   restoreClipboardLater(originalClipboard, pastedText) {
-    setTimeout(() => {
+    // 取消上一次仍在等待的恢复，只保留最新一次粘贴的恢复定时器（ROB-3）
+    if (this._restoreTimer) {
+      clearTimeout(this._restoreTimer);
+    }
+    this._restoreTimer = setTimeout(() => {
+      this._restoreTimer = null;
       try {
         if (clipboard.readText() === pastedText) {
           clipboard.writeText(originalClipboard);
@@ -226,7 +240,16 @@ class ClipboardManager {
         'Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.SendKeys]::SendWait("^v")',
       ]);
 
+      let hasTimedOut = false;
+      const timeoutId = setTimeout(() => {
+        hasTimedOut = true;
+        try { pasteProcess.kill("SIGKILL"); } catch (e) { /* 进程可能已退出 */ }
+        reject(new Error("Windows 粘贴操作超时。文本已复制到剪贴板。"));
+      }, PASTE_KILL_TIMEOUT_MS);
+
       pasteProcess.on("close", (code) => {
+        if (hasTimedOut) return;
+        clearTimeout(timeoutId);
         if (code === 0) {
           // 文本粘贴成功，延迟并校验后恢复
           this.restoreClipboardLater(originalClipboard, pastedText);
@@ -241,6 +264,8 @@ class ClipboardManager {
       });
 
       pasteProcess.on("error", (error) => {
+        if (hasTimedOut) return;
+        clearTimeout(timeoutId);
         reject(
           new Error(
             `Windows 粘贴失败: ${error.message}。文本已复制到剪贴板。`
@@ -254,7 +279,16 @@ class ClipboardManager {
     return new Promise((resolve, reject) => {
       const pasteProcess = spawn("xdotool", ["key", "ctrl+v"]);
 
+      let hasTimedOut = false;
+      const timeoutId = setTimeout(() => {
+        hasTimedOut = true;
+        try { pasteProcess.kill("SIGKILL"); } catch (e) { /* 进程可能已退出 */ }
+        reject(new Error("Linux 粘贴操作超时。文本已复制到剪贴板。"));
+      }, PASTE_KILL_TIMEOUT_MS);
+
       pasteProcess.on("close", (code) => {
+        if (hasTimedOut) return;
+        clearTimeout(timeoutId);
         if (code === 0) {
           // 文本粘贴成功，延迟并校验后恢复
           this.restoreClipboardLater(originalClipboard, pastedText);
@@ -269,6 +303,8 @@ class ClipboardManager {
       });
 
       pasteProcess.on("error", (error) => {
+        if (hasTimedOut) return;
+        clearTimeout(timeoutId);
         reject(
           new Error(
             `Linux 粘贴失败: ${error.message}。文本已复制到剪贴板。`
@@ -418,11 +454,22 @@ class ClipboardManager {
   }
 
   // —— 流式增量上屏(供路线 I：边生成边追加到光标处) ——
+  // 读取失败返回 null（而非 ""）：让 restoreClipboard 跳过恢复，绝不用空串覆盖用户剪贴板（SF-6）。
   captureClipboard() {
-    try { return clipboard.readText(); } catch (e) { return ""; }
+    try {
+      return clipboard.readText();
+    } catch (e) {
+      this.safeLog("⚠️ 读取剪贴板失败，将跳过本次恢复:", e?.message || e);
+      return null;
+    }
   }
+  // 仅当捕获到了有效原始内容（非 null）时才恢复；捕获失败时跳过，避免清空用户剪贴板（SF-6）。
   async restoreClipboard(text) {
-    try { clipboard.writeText(text || ""); } catch (e) { /* 忽略 */ }
+    if (text === null || text === undefined) {
+      this.safeLog("↩️ 未捕获到原始剪贴板内容，跳过恢复");
+      return;
+    }
+    try { clipboard.writeText(text); } catch (e) { /* 忽略 */ }
   }
 
   // 按一次粘贴键（不恢复剪贴板），平台通用

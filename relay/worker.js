@@ -21,6 +21,12 @@
  */
 
 const DEFAULT_BASE_URL = "https://api.deepseek.com";
+const ALLOWED_ORIGINS = [
+  "http://localhost:5173",
+  "http://localhost:3000",
+  "http://127.0.0.1:5173",
+];
+const ALLOWED_UPSTREAM_HOSTS = ["api.deepseek.com"];
 const DEFAULT_MODEL = "deepseek-v4-flash";
 const DEFAULT_MAX_INPUT_CHARS = 1000;
 const DEFAULT_MAX_TOKENS = 2000;
@@ -61,17 +67,25 @@ const COPYWRITING_PROMPT = `你是一位资深中文文本润色与校对专家�
 - 不能改变原文的事实和核心意思，也不能过度书面化而失去原味的表达色彩。
 - 对于实在无法确定原意的地方，选择最合理的理解来处理，而不是保留错误。`;
 
-const CORS_HEADERS = {
-  "Access-Control-Allow-Origin": "*",
+const CORS_BASE_HEADERS = {
   "Access-Control-Allow-Methods": "POST, OPTIONS",
   "Access-Control-Allow-Headers": "Content-Type, X-App-Token",
   "Access-Control-Max-Age": "86400",
 };
 
-function json(body, status = 200) {
+// Returns cors headers for the given origin, or null if disallowed.
+function corsHeadersFor(origin) {
+  if (!origin) return { ...CORS_BASE_HEADERS };
+  if (ALLOWED_ORIGINS.includes(origin)) {
+    return { ...CORS_BASE_HEADERS, "Access-Control-Allow-Origin": origin, "Vary": "Origin" };
+  }
+  return null; // disallowed — caller must reject
+}
+
+function json(body, status = 200, corsHeaders = {}) {
   return new Response(JSON.stringify(body), {
     status,
-    headers: { "Content-Type": "application/json", ...CORS_HEADERS },
+    headers: { "Content-Type": "application/json", ...(corsHeaders || {}) },
   });
 }
 
@@ -97,30 +111,41 @@ async function rateLimited(env, ip) {
 
 export default {
   async fetch(request, env) {
+    const origin = request.headers.get("Origin");
+    const cors = corsHeadersFor(origin);
+
     if (request.method === "OPTIONS") {
-      return new Response(null, { status: 204, headers: CORS_HEADERS });
+      if (cors === null) {
+        return json({ success: false, error: "Origin not allowed" }, 403, {});
+      }
+      return new Response(null, { status: 204, headers: cors });
     }
     if (request.method !== "POST") {
-      return json({ success: false, error: "Method Not Allowed" }, 405);
+      return json({ success: false, error: "Method Not Allowed" }, 405, cors || {});
+    }
+
+    // Origin check for POST
+    if (cors === null) {
+      return json({ success: false, error: "Origin not allowed" }, 403, {});
     }
 
     // 1) 准入令牌校验（设置了 APP_TOKEN 才校验）
     if (env.APP_TOKEN) {
       const token = request.headers.get("X-App-Token") || "";
       if (token !== env.APP_TOKEN) {
-        return json({ success: false, error: "Unauthorized" }, 401);
+        return json({ success: false, error: "Unauthorized" }, 401, cors);
       }
     }
 
     // 2) 服务端必须配置真实 key
     if (!env.DEEPSEEK_API_KEY) {
-      return json({ success: false, error: "Relay not configured" }, 500);
+      return json({ success: false, error: "Relay not configured" }, 500, cors);
     }
 
     // 3) 限流（可选）
     const ip = request.headers.get("CF-Connecting-IP") || "unknown";
     if (await rateLimited(env, ip)) {
-      return json({ success: false, error: "Too Many Requests" }, 429);
+      return json({ success: false, error: "Too Many Requests" }, 429, cors);
     }
 
     // 4) 解析与校验输入
@@ -128,15 +153,15 @@ export default {
     try {
       payload = await request.json();
     } catch {
-      return json({ success: false, error: "Invalid JSON" }, 400);
+      return json({ success: false, error: "Invalid JSON" }, 400, cors);
     }
     const text = typeof payload?.text === "string" ? payload.text : "";
     if (!text.trim()) {
-      return json({ success: false, error: "Empty text" }, 400);
+      return json({ success: false, error: "Empty text" }, 400, cors);
     }
     const maxChars = Number(env.MAX_INPUT_CHARS || DEFAULT_MAX_INPUT_CHARS);
     if (text.length > maxChars) {
-      return json({ success: false, error: `Text too long (>${maxChars})` }, 413);
+      return json({ success: false, error: `Text too long (>${maxChars})` }, 413, cors);
     }
 
     // 5) 服务端构建带防注入标记的请求体
@@ -146,6 +171,17 @@ export default {
       "[[[TEXT:" + rid + "]]]\n" + text + "\n[[[/TEXT:" + rid + "]]]";
 
     const baseUrl = env.DEEPSEEK_BASE_URL || DEFAULT_BASE_URL;
+
+    // SSRF guard: validate upstream host against allowlist
+    let upstreamHostname;
+    try {
+      upstreamHostname = new URL(baseUrl).hostname.toLowerCase();
+    } catch {
+      upstreamHostname = "";
+    }
+    if (!ALLOWED_UPSTREAM_HOSTS.includes(upstreamHostname)) {
+      return json({ success: false, error: "Relay misconfigured" }, 500, cors);
+    }
     const model = env.DEEPSEEK_MODEL || DEFAULT_MODEL;
     const requestData = {
       model,
@@ -176,18 +212,19 @@ export default {
         // 不向客户端泄露上游细节，仅返回状态
         return json(
           { success: false, error: `Upstream error: ${upstream.status}` },
-          502
+          502,
+          cors
         );
       }
 
       const data = await upstream.json();
       const out = data?.choices?.[0]?.message?.content;
       if (!out) {
-        return json({ success: false, error: "Empty completion" }, 502);
+        return json({ success: false, error: "Empty completion" }, 502, cors);
       }
-      return json({ success: true, text: out.trim() });
+      return json({ success: true, text: out.trim() }, 200, cors);
     } catch (e) {
-      return json({ success: false, error: "Relay request failed" }, 502);
+      return json({ success: false, error: "Relay request failed" }, 502, cors);
     }
   },
 };

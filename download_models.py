@@ -61,21 +61,25 @@ def main():
     results = {}
     completed_count = 0
     total_count = len(models)
-    
+    progress_lock = threading.Lock()  # 保护 completed_count/progress 的并发更新，避免丢失计数
+
     def progress_callback(model_type, stage, percent, error=None):
         nonlocal completed_count
-        
-        if stage == "downloading":
-            progress[model_type] = percent
-        elif stage == "completed":
-            progress[model_type] = 100
-            completed_count += 1
-        elif stage == "error":
-            progress[model_type] = 0
-            completed_count += 1
-        
-        # 计算总体进度
-        overall_progress = sum(progress.values()) / total_count
+
+        # progress_callback 由多个下载线程并发调用，整体加锁保证计数与进度一致
+        with progress_lock:
+            if stage == "downloading":
+                progress[model_type] = percent
+            elif stage == "completed":
+                progress[model_type] = 100
+                completed_count += 1
+            elif stage == "error":
+                progress[model_type] = 0
+                completed_count += 1
+
+            # 计算总体进度
+            overall_progress = sum(progress.values()) / total_count
+            completed_snapshot = completed_count
         
         # 输出进度信息
         status = {
@@ -83,7 +87,7 @@ def main():
             "model": model_type,
             "progress": percent,
             "overall_progress": round(overall_progress, 1),
-            "completed": completed_count,
+            "completed": completed_snapshot,
             "total": total_count
         }
         

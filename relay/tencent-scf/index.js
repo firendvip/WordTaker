@@ -14,6 +14,12 @@
  */
 
 var DEFAULT_BASE_URL = "https://api.deepseek.com";
+var ALLOWED_ORIGINS = [
+  "http://localhost:5173",
+  "http://localhost:3000",
+  "http://127.0.0.1:5173",
+];
+var ALLOWED_UPSTREAM_HOSTS = ["api.deepseek.com"];
 var DEFAULT_MODEL = "deepseek-v4-flash";
 var DEFAULT_MAX_INPUT_CHARS = 1000;
 var DEFAULT_MAX_TOKENS = 2000;
@@ -27,15 +33,27 @@ var COPYWRITING_PROMPT = [
   "【润色要求】1) 纠正音近、形近导致的错别字；2) 删除无意义的口头禅与冗余重复；3) 理顺逻辑与语序，保持语气中性平实，不增删原意之外的信息；4) 保留原文中出现的英文单词、专有名词、技术术语、代码标识符、缩写与品牌名原样，绝不翻译成中文，也不要改写大小写（例如 icon、bug、commit、API、token、Electron 等一律保持英文）；5) 只输出最终润色后的完整段落，不要附带任何解释、标注、前后缀或标记符号。"
 ].join("\n");
 
-var CORS_HEADERS = {
-  "Access-Control-Allow-Origin": "*",
+var CORS_BASE_HEADERS = {
   "Access-Control-Allow-Methods": "POST, OPTIONS",
   "Access-Control-Allow-Headers": "Content-Type, X-App-Token",
   "Content-Type": "application/json"
 };
 
-function resp(statusCode, obj) {
-  return { isBase64Encoded: false, statusCode: statusCode, headers: CORS_HEADERS, body: JSON.stringify(obj) };
+// Returns cors headers object for the given origin string, or null if disallowed.
+function corsHeadersFor(origin) {
+  if (!origin) return Object.assign({}, CORS_BASE_HEADERS);
+  if (ALLOWED_ORIGINS.indexOf(origin) !== -1) {
+    return Object.assign({}, CORS_BASE_HEADERS, {
+      "Access-Control-Allow-Origin": origin,
+      "Vary": "Origin"
+    });
+  }
+  return null; // disallowed — caller must reject
+}
+
+function resp(statusCode, obj, corsHeaders) {
+  var headers = corsHeaders !== undefined ? corsHeaders : Object.assign({}, CORS_BASE_HEADERS);
+  return { isBase64Encoded: false, statusCode: statusCode, headers: headers || CORS_BASE_HEADERS, body: JSON.stringify(obj) };
 }
 
 // API 网关 / 函数URL 传来的 header 大小写不固定，做不区分大小写查找
@@ -56,25 +74,36 @@ function randomId() {
 exports.main_handler = async function (event, context) {
   // 保活：定时触发器(每 ~5 分钟 ping 一次)只为让容器常驻、消除冷启动，立即返回、不调用 DeepSeek
   if (event && event.Type === "Timer") {
-    return { isBase64Encoded: false, statusCode: 200, headers: CORS_HEADERS, body: '{"warm":true}' };
+    return { isBase64Encoded: false, statusCode: 200, headers: Object.assign({}, CORS_BASE_HEADERS), body: '{"warm":true}' };
   }
+
+  var origin = getHeader(event.headers, "origin");
+  var cors = corsHeadersFor(origin);
 
   var method = (event && event.httpMethod) || "POST";
   if (method === "OPTIONS") {
-    return { isBase64Encoded: false, statusCode: 204, headers: CORS_HEADERS, body: "" };
+    if (cors === null) {
+      return { isBase64Encoded: false, statusCode: 403, headers: { "Content-Type": "application/json" }, body: '{"success":false,"error":"Origin not allowed"}' };
+    }
+    return { isBase64Encoded: false, statusCode: 204, headers: cors, body: "" };
   }
-  if (method !== "POST") return resp(405, { success: false, error: "Method Not Allowed" });
+  if (method !== "POST") return resp(405, { success: false, error: "Method Not Allowed" }, cors || Object.assign({}, CORS_BASE_HEADERS));
+
+  // Origin check for POST
+  if (cors === null) {
+    return { isBase64Encoded: false, statusCode: 403, headers: { "Content-Type": "application/json" }, body: '{"success":false,"error":"Origin not allowed"}' };
+  }
 
   var env = process.env;
 
   // 1) 准入令牌校验
   if (env.APP_TOKEN) {
     var token = getHeader(event.headers, "X-App-Token");
-    if (token !== env.APP_TOKEN) return resp(401, { success: false, error: "Unauthorized" });
+    if (token !== env.APP_TOKEN) return resp(401, { success: false, error: "Unauthorized" }, cors);
   }
 
   // 2) 服务端必须配置真实 key
-  if (!env.DEEPSEEK_API_KEY) return resp(500, { success: false, error: "Relay not configured" });
+  if (!env.DEEPSEEK_API_KEY) return resp(500, { success: false, error: "Relay not configured" }, cors);
 
   // 3) 解析与校验输入
   var raw = event && event.body;
@@ -85,12 +114,12 @@ exports.main_handler = async function (event, context) {
   try {
     payload = typeof raw === "string" ? JSON.parse(raw) : (raw || {});
   } catch (e) {
-    return resp(400, { success: false, error: "Invalid JSON" });
+    return resp(400, { success: false, error: "Invalid JSON" }, cors);
   }
   var text = typeof payload.text === "string" ? payload.text : "";
-  if (!text.trim()) return resp(400, { success: false, error: "Empty text" });
+  if (!text.trim()) return resp(400, { success: false, error: "Empty text" }, cors);
   var maxChars = Number(env.MAX_INPUT_CHARS || DEFAULT_MAX_INPUT_CHARS);
-  if (text.length > maxChars) return resp(413, { success: false, error: "Text too long" });
+  if (text.length > maxChars) return resp(413, { success: false, error: "Text too long" }, cors);
 
   // 4) 服务端构建带防注入标记的请求体
   var rid = randomId();
@@ -99,6 +128,17 @@ exports.main_handler = async function (event, context) {
     "[[[TEXT:" + rid + "]]]\n" + text + "\n[[[/TEXT:" + rid + "]]]";
 
   var baseUrl = env.DEEPSEEK_BASE_URL || DEFAULT_BASE_URL;
+
+  // SSRF guard: validate upstream host against allowlist
+  var upstreamHostname;
+  try {
+    upstreamHostname = new URL(baseUrl).hostname.toLowerCase();
+  } catch (e) {
+    upstreamHostname = "";
+  }
+  if (ALLOWED_UPSTREAM_HOSTS.indexOf(upstreamHostname) === -1) {
+    return resp(500, { success: false, error: "Relay misconfigured" }, cors);
+  }
   var model = env.DEEPSEEK_MODEL || DEFAULT_MODEL;
   var requestData = {
     model: model,
@@ -119,12 +159,12 @@ exports.main_handler = async function (event, context) {
       headers: { "Authorization": "Bearer " + env.DEEPSEEK_API_KEY, "Content-Type": "application/json" },
       body: JSON.stringify(requestData)
     });
-    if (!upstream.ok) return resp(502, { success: false, error: "Upstream error: " + upstream.status });
+    if (!upstream.ok) return resp(502, { success: false, error: "Upstream error: " + upstream.status }, cors);
     var data = await upstream.json();
     var out = data && data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content;
-    if (!out) return resp(502, { success: false, error: "Empty completion" });
-    return resp(200, { success: true, text: out.trim() });
+    if (!out) return resp(502, { success: false, error: "Empty completion" }, cors);
+    return resp(200, { success: true, text: out.trim() }, cors);
   } catch (e) {
-    return resp(502, { success: false, error: "Relay request failed" });
+    return resp(502, { success: false, error: "Relay request failed" }, cors);
   }
 };

@@ -16,6 +16,7 @@ import contextlib
 import io
 import argparse
 import glob
+import threading
 from pathlib import Path
 
 # 设置日志
@@ -74,6 +75,7 @@ class FunASRServer:
         self.sensevoice_model = None   # 快速识别引擎（ONNX）
         self.sensevoice_tokens = None
         self.initialized = False
+        self._init_lock = threading.Lock()  # 防止并发初始化导致重复加载模型
         self.running = True
         self.transcription_count = 0
         self.total_audio_duration = 0.0
@@ -216,11 +218,16 @@ class FunASRServer:
 
     def initialize(self):
         """并行初始化FunASR模型"""
-        if self.initialized:
-            return {"success": True, "message": "模型已初始化"}
+        # 用锁保护 initialized 检查与赋值，避免两个调用方同时进入并重复加载模型。
+        # 锁内做 double-check：等到锁的第二个调用方直接返回已初始化结果。
+        with self._init_lock:
+            if self.initialized:
+                return {"success": True, "message": "模型已初始化"}
+            return self._initialize_locked()
 
+    def _initialize_locked(self):
+        """在持有 _init_lock 的前提下执行实际的并行初始化。"""
         try:
-            import threading
             import time
 
             logger.info("正在并行初始化FunASR模型...")
@@ -237,15 +244,19 @@ class FunASRServer:
                 logger.info(f"{model_name}模型加载线程耗时: {thread_time:.2f}秒")
 
             # 创建并启动三个并行线程
+            # daemon=True：即使加载线程超时仍卡在原生调用里，也不会阻塞进程退出，避免僵尸线程累积。
             threads = [
                 threading.Thread(
-                    target=load_model_thread, args=("asr", self._load_asr_model)
+                    target=load_model_thread, args=("asr", self._load_asr_model),
+                    daemon=True,
                 ),
                 threading.Thread(
-                    target=load_model_thread, args=("vad", self._load_vad_model)
+                    target=load_model_thread, args=("vad", self._load_vad_model),
+                    daemon=True,
                 ),
                 threading.Thread(
-                    target=load_model_thread, args=("punc", self._load_punc_model)
+                    target=load_model_thread, args=("punc", self._load_punc_model),
+                    daemon=True,
                 ),
             ]
 
@@ -257,7 +268,8 @@ class FunASRServer:
             for thread in threads:
                 thread.join(timeout=300)  # 5分钟超时
                 if thread.is_alive():
-                    logger.error(f"模型加载线程超时")
+                    # 线程为 daemon，超时后不再 join；它不会阻止进程退出，避免线程泄漏累积
+                    logger.error("模型加载线程超时（已放弃等待，daemon 线程不会阻塞退出）")
                     return {
                         "success": False,
                         "error": "模型加载超时",
@@ -330,7 +342,9 @@ class FunASRServer:
                 return init_result
 
         try:
-            # 检查音频文件是否存在
+            # 校验 audio_path：必须是非空字符串且文件存在，避免 None 传入 os.path.exists 抛 TypeError
+            if not isinstance(audio_path, str) or not audio_path:
+                return {"success": False, "error": "缺少有效的 audio_path"}
             if not os.path.exists(audio_path):
                 return {"success": False, "error": f"音频文件不存在: {audio_path}"}
 
@@ -457,12 +471,18 @@ class FunASRServer:
         """获取音频时长"""
         try:
             import librosa
+        except ImportError as e:
+            # 缺少 librosa 是配置层面的严重问题，按 ERROR 暴露而非静默返回 0.0
+            logger.error(f"librosa 未安装，无法计算音频时长: {str(e)}")
+            return 0.0
 
-            duration = librosa.get_duration(filename=audio_path)
+        try:
+            # librosa 0.11.0 移除了 filename= 关键字，使用 path=
+            duration = librosa.get_duration(path=audio_path)
             self.total_audio_duration += duration  # 累计音频时长
             return duration
         except Exception as e:
-            logger.warning(f"获取音频时长失败: {str(e)}")
+            logger.warning(f"获取音频时长失败({audio_path}): {str(e)}")
             return 0.0
 
     def _cleanup_memory(self):
@@ -594,11 +614,18 @@ class FunASRServer:
                     sys.stdout.flush()
                     continue
 
+                # 命令关联 id（可选）：用于让客户端把响应匹配回对应命令，
+                # 防止迟到/超时的响应被错误地当成下一条命令的结果。
+                cmd_id = command.get("id")
+
                 # 处理命令
                 if command.get("action") == "transcribe":
                     audio_path = command.get("audio_path")
                     options = command.get("options", {})
-                    result = self.transcribe_audio(audio_path, options)
+                    if not audio_path:
+                        result = {"success": False, "error": "缺少有效的 audio_path"}
+                    else:
+                        result = self.transcribe_audio(audio_path, options)
                 elif command.get("action") == "status":
                     result = self.check_status()
                 elif command.get("action") == "stats":
@@ -608,6 +635,8 @@ class FunASRServer:
                     result = {"success": True, "message": "内存清理完成"}
                 elif command.get("action") == "exit":
                     result = {"success": True, "message": "服务器退出"}
+                    if cmd_id is not None:
+                        result["id"] = cmd_id
                     print(json.dumps(result, ensure_ascii=False))
                     sys.stdout.flush()
                     break
@@ -616,6 +645,10 @@ class FunASRServer:
                         "success": False,
                         "error": f"未知命令: {command.get('action')}",
                     }
+
+                # 回显命令 id（若提供）
+                if cmd_id is not None and isinstance(result, dict):
+                    result["id"] = cmd_id
 
                 # 输出结果
                 print(json.dumps(result, ensure_ascii=False))

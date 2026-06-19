@@ -6,7 +6,11 @@ const { safeStorage } = require("electron");
 
 // 这些设置项在落盘时用系统密钥链加密（macOS Keychain / Win DPAPI / Linux libsecret）。
 // 兼容旧的明文值：读取时若无加密标记则原样返回，下次保存自动转为密文。
-const ENCRYPTED_SETTING_KEYS = new Set(["ai_api_key"]);
+const ENCRYPTED_SETTING_KEYS = new Set(["ai_api_key", "llm_relay_token"]);
+
+// 这些是敏感密钥：getAllSettings（会经 IPC 回到渲染层）绝不返回明文，
+// 只返回"是否已设置"的布尔标记。主进程侧仍用 getSetting 取真实值（如 aiService）。
+const REDACTED_SETTING_KEYS = new Set(["ai_api_key", "llm_relay_token"]);
 
 function maybeEncrypt(key, value) {
   if (!ENCRYPTED_SETTING_KEYS.has(key) || typeof value !== "string" || value === "") {
@@ -288,11 +292,19 @@ class DatabaseManager {
   }
 
   setSetting(key, value) {
-    const stmt = this.db.prepare(`
-      INSERT OR REPLACE INTO settings (key, value, updated_at) 
-      VALUES (?, ?, CURRENT_TIMESTAMP)
-    `);
-    return stmt.run(key, maybeEncrypt(key, value));
+    try {
+      const stmt = this.db.prepare(`
+        INSERT OR REPLACE INTO settings (key, value, updated_at)
+        VALUES (?, ?, CURRENT_TIMESTAMP)
+      `);
+      const info = stmt.run(key, maybeEncrypt(key, value));
+      return { success: true, changes: info.changes };
+    } catch (error) {
+      if (this.logger && this.logger.error) {
+        this.logger.error("写入设置失败:", error);
+      }
+      return { success: false, error: error.message };
+    }
   }
 
   getSetting(key, defaultValue = null) {
@@ -316,6 +328,18 @@ class DatabaseManager {
 
     const settings = {};
     for (const row of rows) {
+      // 敏感密钥不外泄明文：只暴露"是否已设置"的布尔（KEYLEAK-1）。
+      if (REDACTED_SETTING_KEYS.has(row.key)) {
+        let hasValue = false;
+        try {
+          const v = maybeDecrypt(JSON.parse(row.value));
+          hasValue = typeof v === "string" ? v.length > 0 : !!v;
+        } catch (error) {
+          hasValue = !!row.value;
+        }
+        settings[`${row.key}_set`] = hasValue;
+        continue;
+      }
       try {
         settings[row.key] = maybeDecrypt(JSON.parse(row.value));
       } catch (error) {

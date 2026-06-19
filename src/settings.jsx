@@ -84,7 +84,9 @@ const SettingsPage = () => {
       if (window.electronAPI) {
         const allSettings = await window.electronAPI.getAllSettings();
         const loadedSettings = {
-          ai_api_key: allSettings.ai_api_key || "",
+          // ai_api_key 不再经 get-all-settings 回传明文（已脱敏，仅返回 ai_api_key_set 布尔）。
+          // 这里保持为空串：隐藏的 AI 配置 UI 不再读取明文，也绝不会把脱敏值回存为密钥。
+          ai_api_key: "",
           ai_base_url: allSettings.ai_base_url || "https://api.deepseek.com",
           ai_model: allSettings.ai_model || "deepseek-v4-flash",
           enable_ai_optimization: allSettings.enable_ai_optimization !== false, // 默认为true
@@ -166,46 +168,65 @@ const SettingsPage = () => {
     }));
   };
 
-  // 修改即保存（无需点按钮）。trigger/cancel 键改完立即重载生效。
-  const updateAndSave = (field, value) => {
-    setSettings(prev => {
-      let next = { ...prev, [field]: value };
-      // 总开关：同时控制 AI 文案优化（含提示词）两条链路
-      if (field === "ai_master_enabled") {
-        next = { ...next, copywriting_mode_enabled: value, enable_ai_optimization: value };
+  // 把"下一份设置"持久化到主进程。纯副作用，不读 React state（用传入的 next 快照），
+  // 因此可安全地在 setSettings 之外调用，避免 StrictMode 双调更新器导致的双写（SETSTATE-1）。
+  const persistChangedFields = async (next, changedFields) => {
+    try {
+      if (!window.electronAPI) return;
+      const changed = new Set(changedFields);
+      if (changed.has("ai_master_enabled")) {
+        await window.electronAPI.setSetting("copywriting_mode_enabled", next.copywriting_mode_enabled);
+        await window.electronAPI.setSetting("enable_ai_optimization", next.enable_ai_optimization);
       }
-      (async () => {
-        try {
-          if (!window.electronAPI) return;
-          if (field === "ai_master_enabled") {
-            await window.electronAPI.setSetting("copywriting_mode_enabled", value);
-            await window.electronAPI.setSetting("enable_ai_optimization", value);
-          } else if (field === "recording_trigger_key" || field === "recording_trigger_taps") {
-            await window.electronAPI.setSetting("recording_trigger", {
-              type: "modifier-tap",
-              key: next.recording_trigger_key,
-              taps: Number(next.recording_trigger_taps) || 1,
-            });
-            if (window.electronAPI.reloadRecordingTrigger) await window.electronAPI.reloadRecordingTrigger();
-          } else if (field === "cancel_key" || field === "cancel_taps") {
-            await window.electronAPI.setSetting("cancel_key", next.cancel_key);
-            await window.electronAPI.setSetting("cancel_taps", Number(next.cancel_taps) || 1);
-            if (window.electronAPI.reloadRecordingTrigger) await window.electronAPI.reloadRecordingTrigger();
-          } else if (field === "raw_stop_key" || field === "raw_stop_taps") {
-            // 录音期间动态注册，下次录音即生效，无需重载主触发器
-            await window.electronAPI.setSetting("raw_stop_key", next.raw_stop_key);
-            await window.electronAPI.setSetting("raw_stop_taps", Number(next.raw_stop_taps) || 1);
-          } else if (field === "sound_scheme") {
-            await window.electronAPI.setSetting("sound_scheme", value);
-          } else if (field === "sound_volume") {
-            await window.electronAPI.setSetting("sound_volume", Number(value));
-          }
-        } catch (e) {
-          console.error("自动保存失败:", e);
-        }
-      })();
-      return next;
-    });
+      if (changed.has("recording_trigger_key") || changed.has("recording_trigger_taps")) {
+        await window.electronAPI.setSetting("recording_trigger", {
+          type: "modifier-tap",
+          key: next.recording_trigger_key,
+          taps: Number(next.recording_trigger_taps) || 1,
+        });
+        if (window.electronAPI.reloadRecordingTrigger) await window.electronAPI.reloadRecordingTrigger();
+      }
+      if (changed.has("cancel_key") || changed.has("cancel_taps")) {
+        await window.electronAPI.setSetting("cancel_key", next.cancel_key);
+        await window.electronAPI.setSetting("cancel_taps", Number(next.cancel_taps) || 1);
+        if (window.electronAPI.reloadRecordingTrigger) await window.electronAPI.reloadRecordingTrigger();
+      }
+      if (changed.has("raw_stop_key") || changed.has("raw_stop_taps")) {
+        // 录音期间动态注册，下次录音即生效，无需重载主触发器
+        await window.electronAPI.setSetting("raw_stop_key", next.raw_stop_key);
+        await window.electronAPI.setSetting("raw_stop_taps", Number(next.raw_stop_taps) || 1);
+      }
+      if (changed.has("sound_scheme")) {
+        await window.electronAPI.setSetting("sound_scheme", next.sound_scheme);
+      }
+      if (changed.has("sound_volume")) {
+        await window.electronAPI.setSetting("sound_volume", Number(next.sound_volume));
+      }
+      if (changed.has("llm_streaming_enabled")) {
+        await window.electronAPI.setSetting("llm_streaming_enabled", next.llm_streaming_enabled === true);
+      }
+    } catch (e) {
+      console.error("自动保存失败:", e);
+    }
+  };
+
+  // 修改即保存（无需点按钮）。trigger/cancel 键改完立即重载生效。
+  // 支持一次更新多个字段（原子地合并 + 单次持久化），避免顺序两次调用读到陈旧 state（SET-2）。
+  const updateAndSave = (fieldOrPatch, value) => {
+    const patch = typeof fieldOrPatch === "object" && fieldOrPatch !== null
+      ? { ...fieldOrPatch }
+      : { [fieldOrPatch]: value };
+    const changedFields = Object.keys(patch);
+    // 总开关：同时控制 AI 文案优化（含提示词）两条链路
+    if (changedFields.includes("ai_master_enabled")) {
+      patch.copywriting_mode_enabled = patch.ai_master_enabled;
+      patch.enable_ai_optimization = patch.ai_master_enabled;
+    }
+    // 先算出 next（基于当前 state），再 setSettings(next)，最后用 next 持久化——
+    // 更新器保持纯函数，IPC 不在更新器内触发（SETSTATE-1）。
+    const next = { ...settings, ...patch };
+    setSettings(next);
+    persistChangedFields(next, changedFields);
   };
 
   // 单独保存并立即应用录音触发键（不依赖 API Key）
@@ -250,25 +271,22 @@ const SettingsPage = () => {
   // 取消键：value = "<Key>:<taps>"（如 "Escape:1"、"F1:2"）
   const cancelValue = `${settings.cancel_key}:${Number(settings.cancel_taps) === 2 ? 2 : 1}`;
 
-  // 唤醒：写 recording_trigger_key + recording_trigger_taps
+  // 唤醒：原子地写 recording_trigger_key + recording_trigger_taps（一次更新+一次持久化，SET-2）
   const handleWakeChange = (value) => {
     const { key, taps } = parseModifierShortcutValue(value);
-    updateAndSave("recording_trigger_key", key);
-    updateAndSave("recording_trigger_taps", taps);
+    updateAndSave({ recording_trigger_key: key, recording_trigger_taps: taps });
   };
 
-  // 原文：写 raw_stop_key + raw_stop_taps
+  // 原文：原子地写 raw_stop_key + raw_stop_taps（SET-2）
   const handleRawStopChange = (value) => {
     const { key, taps } = parseModifierShortcutValue(value);
-    updateAndSave("raw_stop_key", key);
-    updateAndSave("raw_stop_taps", taps);
+    updateAndSave({ raw_stop_key: key, raw_stop_taps: taps });
   };
 
-  // 取消：value 形如 "Escape:1" / "F1:2"，解析出 key + taps 后两者都写入
+  // 取消：value 形如 "Escape:1" / "F1:2"，解析出 key + taps 后原子写入（SET-2）
   const handleCancelChange = (value) => {
     const { key, taps } = parseModifierShortcutValue(value);
-    updateAndSave("cancel_key", key);
-    updateAndSave("cancel_taps", taps);
+    updateAndSave({ cancel_key: key, cancel_taps: taps });
   };
 
   // 应用推荐配置

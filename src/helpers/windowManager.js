@@ -2,11 +2,21 @@ const { BrowserWindow } = require("electron");
 const path = require("path");
 
 class WindowManager {
-  constructor() {
+  constructor(logger = null) {
     this.mainWindow = null;
     this.controlPanelWindow = null;
     this.historyWindow = null;
     this.settingsWindow = null;
+    this.logger = logger;
+  }
+
+  // 窗口创建/展示链路的错误统一记录（SF-3）：有 logger 用 logger，否则回退 console。
+  _logError(message, error) {
+    if (this.logger && this.logger.error) {
+      this.logger.error(message, error);
+    } else {
+      console.error(message, error);
+    }
   }
 
   async createMainWindow() {
@@ -214,9 +224,11 @@ class WindowManager {
       this.controlPanelWindow.show();
       this.controlPanelWindow.focus();
     } else {
-      this.createControlPanelWindow().then(() => {
-        this.controlPanelWindow.show();
-      });
+      this.createControlPanelWindow()
+        .then(() => {
+          this.controlPanelWindow.show();
+        })
+        .catch((error) => this._logError("创建控制面板窗口失败:", error));
     }
   }
 
@@ -232,11 +244,13 @@ class WindowManager {
       this.historyWindow.focus();
       this.historyWindow.setAlwaysOnTop(true);
     } else {
-      this.createHistoryWindow().then(() => {
-        this.historyWindow.show();
-        this.historyWindow.focus();
-        this.historyWindow.setAlwaysOnTop(true);
-      });
+      this.createHistoryWindow()
+        .then(() => {
+          this.historyWindow.show();
+          this.historyWindow.focus();
+          this.historyWindow.setAlwaysOnTop(true);
+        })
+        .catch((error) => this._logError("创建历史窗口失败:", error));
     }
   }
 
@@ -258,11 +272,13 @@ class WindowManager {
       this.settingsWindow.focus();
       this.settingsWindow.setAlwaysOnTop(true);
     } else {
-      this.createSettingsWindow().then(() => {
-        this.settingsWindow.show();
-        this.settingsWindow.focus();
-        this.settingsWindow.setAlwaysOnTop(true);
-      });
+      this.createSettingsWindow()
+        .then(() => {
+          this.settingsWindow.show();
+          this.settingsWindow.focus();
+          this.settingsWindow.setAlwaysOnTop(true);
+        })
+        .catch((error) => this._logError("创建设置窗口失败:", error));
     }
   }
 

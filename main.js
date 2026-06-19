@@ -1,4 +1,4 @@
-const { app, globalShortcut, BrowserWindow, ipcMain } = require("electron");
+const { app, globalShortcut, BrowserWindow, ipcMain, dialog } = require("electron");
 const path = require("path");
 const { spawn } = require("child_process");
 
@@ -115,7 +115,7 @@ logger.info('设置用户数据目录环境变量', {
 
 // 初始化管理器
 const environmentManager = new EnvironmentManager();
-const windowManager = new WindowManager();
+const windowManager = new WindowManager(logger);
 const databaseManager = new DatabaseManager();
 const clipboardManager = new ClipboardManager(logger); // 传递logger实例
 const funasrManager = new FunASRManager(logger); // 传递logger实例
@@ -308,9 +308,24 @@ ipcMain.on('recorder-state', (event, recording) => {
   }
 });
 
-// 初始化数据库
+// 初始化数据库：损坏/锁定等同步异常会在任何窗口出现前崩主进程，
+// 这里捕获后弹出可见错误对话框并干净退出，避免静默崩溃（DB-1）。
 const dataDirectory = environmentManager.ensureDataDirectory();
-databaseManager.initialize(dataDirectory);
+try {
+  databaseManager.initialize(dataDirectory);
+} catch (error) {
+  logger.error("数据库初始化失败:", error);
+  try {
+    dialog.showErrorBox(
+      "WordTaker 启动失败",
+      `无法初始化本地数据库，应用将退出。\n\n${error?.message || error}`
+    );
+  } catch (e) {
+    logger.error("显示数据库错误对话框失败:", e);
+  }
+  app.quit();
+  throw error;
+}
 
 // 使用所有管理器初始化IPC处理器
 const ipcHandlers = new IPCHandlers({
@@ -391,6 +406,20 @@ async function startApp() {
     logger.info('主窗口创建成功');
   } catch (error) {
     logger.error("创建主窗口时出错:", error);
+  }
+
+  // 主窗口创建失败会让应用陷入"无窗口、无反馈"状态：弹出可见错误并退出（MAIN-1）。
+  if (!windowManager.mainWindow) {
+    try {
+      dialog.showErrorBox(
+        "WordTaker 启动失败",
+        "无法创建主窗口，应用将退出。请重试或重新安装。"
+      );
+    } catch (e) {
+      logger.error("显示主窗口错误对话框失败:", e);
+    }
+    app.quit();
+    return;
   }
 
   // 控制面板窗口已废弃：新架构只用悬浮胶囊（主窗口），后台常驻仅靠托盘图标。

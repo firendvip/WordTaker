@@ -15,12 +15,12 @@ import { playWake, playEnd, warmupAudio } from "./utils/sounds";
 // 动态导入设置页面组件
 const SettingsPage = React.lazy(() => import('./settings.jsx').then(module => ({ default: module.SettingsPage })));
 
+// 顶层路由：在调用任何 hooks 之前就分流。设置页与录音页各自是独立组件，
+// 各自无条件地在顶部调用自己的 hooks，杜绝"条件性调用 hooks"（HOOK-1）。
 export default function App() {
-  // 检查URL参数来决定渲染哪个页面
   const urlParams = new URLSearchParams(window.location.search);
   const page = urlParams.get('page');
-  
-  // 如果是设置页面，直接渲染设置组件
+
   if (page === 'settings') {
     return (
       <React.Suspense fallback={
@@ -36,6 +36,11 @@ export default function App() {
     );
   }
 
+  return <RecorderApp />;
+}
+
+// 录音主界面（悬浮胶囊）：所有录音相关 hooks 都在这里无条件、按固定顺序调用。
+function RecorderApp() {
   const [isHovered, setIsHovered] = useState(false);
   const [originalText, setOriginalText] = useState("");
   const [processedText, setProcessedText] = useState("");
