@@ -62,19 +62,34 @@ class FunASRManager {
     }
   }
 
-  getEmbeddedPythonPath() {
-    // 获取嵌入式Python路径
+  // 嵌入式 Python 根目录（python/）。开发态在仓库根，打包态在 app.asar.unpacked 下。
+  getEmbeddedPythonDir() {
     if (process.env.NODE_ENV === "development") {
-      return path.join(__dirname, "..", "..", "python", "bin", "python3.11");
-    } else {
-      return path.join(
-        process.resourcesPath,
-        "app.asar.unpacked",
-        "python",
-        "bin",
-        "python3.11"
-      );
+      return path.join(__dirname, "..", "..", "python");
     }
+    return path.join(process.resourcesPath, "app.asar.unpacked", "python");
+  }
+
+  getEmbeddedPythonPath() {
+    // 获取嵌入式Python可执行文件路径（跨平台）。
+    // python-build-standalone 的目录布局按平台不同：
+    //   macOS/Linux: python/bin/python3.11
+    //   Windows:     python/python.exe
+    const pythonDir = this.getEmbeddedPythonDir();
+    if (process.platform === "win32") {
+      return path.join(pythonDir, "python.exe");
+    }
+    return path.join(pythonDir, "bin", "python3.11");
+  }
+
+  // 嵌入式 Python 的 site-packages 路径（跨平台）。
+  //   macOS/Linux: python/lib/python3.11/site-packages
+  //   Windows:     python/Lib/site-packages
+  getEmbeddedSitePackages(pythonHome) {
+    if (process.platform === "win32") {
+      return path.join(pythonHome, "Lib", "site-packages");
+    }
+    return path.join(pythonHome, "lib", "python3.11", "site-packages");
   }
 
   setupIsolatedEnvironment() {
@@ -84,9 +99,10 @@ class FunASRManager {
     
     if (isUsingEmbedded) {
       // 使用嵌入式Python时设置完全隔离的环境变量
-      const pythonHome = path.dirname(path.dirname(embeddedPythonPath));
-      const sitePackages = path.join(pythonHome, 'lib', 'python3.11', 'site-packages');
-      
+      // pythonHome = python/ 根目录（跨平台：mac 在 bin/ 上两级，win 在 python.exe 同级）
+      const pythonHome = this.getEmbeddedPythonDir();
+      const sitePackages = this.getEmbeddedSitePackages(pythonHome);
+
       process.env.PYTHONHOME = pythonHome;
       process.env.PYTHONPATH = sitePackages;
       process.env.PYTHONDONTWRITEBYTECODE = '1';
@@ -143,14 +159,21 @@ class FunASRManager {
     
     if (isUsingEmbedded) {
       // 使用嵌入式Python时的完整隔离环境
-      const pythonHome = path.dirname(path.dirname(embeddedPythonPath));
-      const sitePackages = path.join(pythonHome, 'lib', 'python3.11', 'site-packages');
-      
+      const pythonHome = this.getEmbeddedPythonDir();
+      const sitePackages = this.getEmbeddedSitePackages(pythonHome);
+
       env.PYTHONHOME = pythonHome;
       env.PYTHONPATH = sitePackages;
-      env.LD_LIBRARY_PATH = path.join(pythonHome, 'lib');
-      env.DYLD_LIBRARY_PATH = path.join(pythonHome, 'lib'); // macOS
-      
+      if (process.platform === 'win32') {
+        // Windows 嵌入式 Python 的扩展模块/原生 DLL 都在 python 根目录与 Lib 下，
+        // 需把 python 根目录加到 PATH 头部，否则 torch/numpy 等 .pyd 找不到依赖 DLL。
+        env.PATH = `${pythonHome};${path.join(pythonHome, 'Scripts')};${env.PATH || ''}`;
+      } else {
+        // macOS/Linux 共享库在 python/lib 下
+        env.LD_LIBRARY_PATH = path.join(pythonHome, 'lib');
+        env.DYLD_LIBRARY_PATH = path.join(pythonHome, 'lib'); // macOS
+      }
+
       // 只在首次构建或环境变化时记录日志
       if (!this._cachedPythonEnv || this._lastEmbeddedCheck !== isUsingEmbedded) {
         this.logger.info && this.logger.info('构建嵌入式Python环境变量', {
@@ -771,7 +794,9 @@ class FunASRManager {
               this._restartCount = (this._restartCount || 0) + 1;
               const delay = [1000, 3000, 8000][this._restartCount - 1] || 8000;
               this.logger.warn && this.logger.warn(`FunASR 异常退出，${delay}ms 后自动重启(第${this._restartCount}次)`);
-              setTimeout(() => {
+              this._restartTimer = setTimeout(() => {
+                this._restartTimer = null;
+                if (this._intentionalStop) return; // 已主动停止则不再重启
                 this.initializationPromise = this._startFunASRServer();
                 this.initializationPromise.catch((e) => this.logger.error && this.logger.error('FunASR 自动重启失败', e));
               }, delay);
@@ -807,14 +832,23 @@ class FunASRManager {
     }
   }
 
-  async _sendServerCommand(command) {
+  // 串行化命令：Python 是单管道单进程，并发会导致响应串话/永久挂起。
+  // 同一时刻只允许一个命令在途，其余排队。
+  async _sendServerCommand(command, timeoutMs = 30000) {
+    const run = () => this._sendServerCommandImpl(command, timeoutMs);
+    const p = (this._cmdChain || Promise.resolve()).then(run, run);
+    this._cmdChain = p.then(() => undefined, () => undefined);
+    return p;
+  }
+
+  async _sendServerCommandImpl(command, timeoutMs = 30000) {
     if (!this.serverProcess || !this.serverReady) {
       throw new Error('FunASR服务器未就绪');
     }
 
     return new Promise((resolve, reject) => {
       let responseReceived = false;
-      
+
       const onData = (data) => {
         if (responseReceived) return;
         
@@ -842,27 +876,37 @@ class FunASRManager {
       setTimeout(() => {
         if (!responseReceived) {
           responseReceived = true;
-          this.serverProcess.stdout.removeListener('data', onData);
+          try { this.serverProcess && this.serverProcess.stdout.removeListener('data', onData); } catch (e) {}
           reject(new Error('服务器响应超时'));
         }
-      }, 60000); // 1分钟超时
+      }, timeoutMs);
     });
   }
 
   async _stopFunASRServer() {
     this._intentionalStop = true; // 标记为主动停止，阻止自动重启
-    if (this.serverProcess) {
-      try {
-        // 发送退出命令
-        await this._sendServerCommand({ action: 'exit' });
-      } catch (error) {
-        // 如果发送退出命令失败，直接杀死进程
-        this.serverProcess.kill();
-      }
-      
-      this.serverProcess = null;
-      this.serverReady = false;
-      this.modelsInitialized = false;
+    if (this._restartTimer) { try { clearTimeout(this._restartTimer); } catch (e) {} this._restartTimer = null; }
+    const proc = this.serverProcess;
+    this.serverProcess = null;
+    this.serverReady = false;
+    this.modelsInitialized = false;
+    if (proc) {
+      // 不等待优雅退出(避免退出卡住)：先发 exit + SIGTERM，短延迟后 SIGKILL 兜底
+      try { proc.stdin && proc.stdin.write(JSON.stringify({ action: 'exit' }) + '\n'); } catch (e) {}
+      try { proc.kill(); } catch (e) {}
+      setTimeout(() => { try { proc.kill('SIGKILL'); } catch (e) {} }, 800);
+    }
+  }
+
+  // 同步强杀(供进程退出钩子调用，保证不留孤儿 Python)
+  killServerSync() {
+    this._intentionalStop = true;
+    if (this._restartTimer) { try { clearTimeout(this._restartTimer); } catch (e) {} this._restartTimer = null; }
+    const proc = this.serverProcess;
+    this.serverProcess = null;
+    this.serverReady = false;
+    if (proc) {
+      try { proc.kill('SIGKILL'); } catch (e) {}
     }
   }
 
@@ -1248,7 +1292,15 @@ class FunASRManager {
   async checkStatus() {
     try {
       if (this.serverReady) {
-        return await this._sendServerCommand({ action: 'status' });
+        // 已就绪：直接用缓存标志回答状态轮询，绝不把 status 命令塞进与转录共享的命令链，
+        // 否则 3 秒一次的轮询可能排在用户的转录命令前面，拖慢"按下停止→出字"。
+        return {
+          success: true,
+          ready: true,
+          server_ready: true,
+          models_initialized: this.modelsInitialized,
+          initializing: false,
+        };
       } else {
         // 检查FunASR是否已安装
         const installStatus = await this.checkFunASRInstallation();

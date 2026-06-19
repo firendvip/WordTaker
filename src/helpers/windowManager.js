@@ -37,9 +37,12 @@ class WindowManager {
       },
     });
 
-    // 浮于其他窗口（含全屏）之上
+    // 浮于其他窗口之上：用 "floating"（标准悬浮工具窗层级）。
+    // 之前用 "screen-saver"(层级 1000，高于菜单栏) + visibleOnFullScreen，在 macOS 上
+    // 与透明/不可聚焦窗口组合时可能干扰系统事件路由，导致整屏输入卡死。floating 更安全，
+    // 同样能浮在普通窗口之上，且不会盖过菜单栏/抢系统事件。
     try {
-      this.mainWindow.setAlwaysOnTop(true, "screen-saver");
+      this.mainWindow.setAlwaysOnTop(true, "floating");
       this.mainWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
     } catch (e) {
       // 某些平台不支持时忽略
@@ -144,7 +147,7 @@ class WindowManager {
       width: 1000,
       height: 700,
       show: false,
-      title: "转录历史",
+      title: "历史记录",
       alwaysOnTop: true,
       webPreferences: {
         nodeIntegration: false,

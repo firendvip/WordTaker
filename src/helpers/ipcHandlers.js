@@ -139,25 +139,34 @@ class IPCHandlers {
         return { success: false, error: "streaming-unavailable", pastedAny: false };
       }
 
+      // 流式增量粘贴节流：按"句子边界或攒够 N 字"才贴一次，并对中途粘贴次数设硬上限，
+      // 杜绝长句触发的 Cmd+V/osascript 进程风暴卡死输入法（稳定性优先）。
+      const STREAM_FLUSH_MIN_CHARS = 40;
+      const STREAM_MAX_PASTES = 40;
+      const SENTENCE_BOUNDARY = /[。！？!?；;\n]/;
       const original = this.clipboardManager.captureClipboard();
       let buffer = "";
       let pastedAny = false;
-      const flush = () => {
+      let pasteCount = 0;
+      const flush = (force) => {
         if (!buffer) return;
+        // 达到中途上限后停止逐段粘贴，剩余内容攒到结束时一次性贴出
+        if (!force && pasteCount >= STREAM_MAX_PASTES) return;
         const chunk = buffer;
         buffer = "";
         pastedAny = true;
+        pasteCount++;
         // 投入串行链，不阻塞流读取
         this.clipboardManager.appendChunk(chunk).catch((e) => this.logger.warn("增量粘贴失败:", e?.message || e));
       };
       const onDelta = (d) => {
         buffer += d;
-        if ([...buffer].length >= 6) flush(); // 攒到≥6字再贴一次，控制 Cmd+V 频率
+        if ([...buffer].length >= STREAM_FLUSH_MIN_CHARS || SENTENCE_BOUNDARY.test(d)) flush();
       };
 
       const result = await this.aiService.processTextViaRelayStream(text, "copywriting", relayUrl, onDelta);
       try {
-        flush();
+        flush(true); // 结束：强制贴出剩余缓冲（绕过上限）
         await this.clipboardManager.appendChunk(""); // 等待所有增量贴完
       } catch (e) { /* 忽略 */ }
       // 贴完后稍等再恢复原剪贴板，避免抢在最后一次 Cmd+V 之前
@@ -168,7 +177,12 @@ class IPCHandlers {
 
     // 音频转录相关
     ipcMain.handle("transcribe-audio", async (event, audioData, options) => {
-      return await this.funasrManager.transcribeAudio(audioData, options);
+      try {
+        return await this.funasrManager.transcribeAudio(audioData, options);
+      } catch (error) {
+        this.logger.error("转录失败:", error?.message || error);
+        return { success: false, error: error?.message || "转录失败" };
+      }
     });
 
     // 数据库相关
@@ -186,6 +200,10 @@ class IPCHandlers {
 
     ipcMain.handle("delete-transcription", (event, id) => {
       return this.databaseManager.deleteTranscription(id);
+    });
+
+    ipcMain.handle("update-transcription", (event, id, fields) => {
+      return this.databaseManager.updateTranscription(id, fields);
     });
 
     ipcMain.handle("search-transcriptions", (event, query, limit) => {

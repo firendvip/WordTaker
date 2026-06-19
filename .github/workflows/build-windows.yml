@@ -1,0 +1,74 @@
+name: Build Windows
+
+# 在 windows-latest runner 上产出真正的 Windows .exe（本地 Mac 无 Wine 无法产出）。
+# 手动触发为主；推 tag 时也会跑，便于做发布构建。注意：--publish never，不向 GitHub 发布。
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  build-win:
+    runs-on: windows-latest
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # 仓库只有 pnpm-lock.yaml（无 package-lock.json），故用 pnpm 而非 npm ci。
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      # 嵌入式 Python 构建脚本要用 pip 装 torch/funasr 等，需要 Python 3.11。
+      - name: Setup Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # 安装 JS 依赖。postinstall 会跑 electron-builder install-app-deps
+      # 把 better-sqlite3 等原生模块按 Electron ABI 重建（Windows 需要 MSVC 工具链，
+      # windows-latest 自带）。
+      - name: Install dependencies
+        run: pnpm install --no-frozen-lockfile
+
+      # 下载 Windows 版嵌入式 CPython（python-build-standalone 的
+      # x86_64-pc-windows-msvc-shared install_only 包）并装好 torch/funasr 等依赖。
+      # prepare-embedded-python.js 已按 process.platform === 'win32' 走 Windows 布局。
+      - name: Prepare embedded Python (Windows)
+        run: pnpm run prepare:python:embedded
+
+      # 校验嵌入式 Python 与关键依赖可用（numpy/torch/librosa/funasr）。
+      - name: Verify embedded Python
+        run: pnpm run test:python
+        continue-on-error: true
+
+      - name: Build renderer (Vite)
+        run: pnpm run build:renderer
+
+      # 真正产出 .exe：nsis 安装器 + portable 便携版。--publish never 不发布到 GitHub。
+      - name: Build Windows installer + portable
+        run: pnpm exec electron-builder --win --publish never
+        env:
+          # 关闭代码签名自动发现（CI 无证书）。
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+
+      - name: Upload Windows artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: wordtaker-windows
+          if-no-files-found: error
+          retention-days: 14
+          path: |
+            dist/*.exe
+            dist/*.exe.blockmap
+            dist/latest*.yml

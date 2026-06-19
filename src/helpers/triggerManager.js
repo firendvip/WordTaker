@@ -22,6 +22,14 @@ const KEYCODE_BY_NAME = {
   RightShift: UiohookKey.ShiftRight,
   LeftMeta: UiohookKey.Meta,         // 左 Command
   RightMeta: UiohookKey.MetaRight,
+  // 取消键专用：Esc / 功能键（支持单/双击）。
+  // 注意：底层 uiohook 为"只监听不拦截"模式，因此这些键会被观察到用于触发取消，
+  // 但不会被消费——它们仍会照常送达当前聚焦的应用（可接受）。
+  Escape: UiohookKey.Escape,
+  F1: UiohookKey.F1,
+  F2: UiohookKey.F2,
+  F4: UiohookKey.F4,
+  F8: UiohookKey.F8,
 };
 
 const DEFAULTS = {

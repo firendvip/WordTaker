@@ -71,9 +71,9 @@ class TrayManager {
   buildWaveformTrayIcon() {
     const S = 44;            // 物理像素画布（@2x）
     const buf = Buffer.alloc(S * S * 4, 0); // 全透明
-    const bw = 4;            // 条宽
-    const gap = 6;           // 条间距
-    const heights = [13, 25, 19, 11]; // 4 条柔和起伏，上下留白，观感更轻
+    const bw = 6;            // 条宽（加粗，提升菜单栏可见度）
+    const gap = 4;           // 条间距（收紧，整体更醒目）
+    const heights = [20, 34, 28, 18]; // 4 条更高更实，菜单栏里更容易看到
     const totalW = heights.length * bw + (heights.length - 1) * gap;
     let x = Math.round((S - totalW) / 2);
     for (const h of heights) {

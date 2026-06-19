@@ -2,10 +2,16 @@ import React, { useState, useEffect } from "react";
 import ReactDOM from "react-dom/client";
 import "./index.css";
 import { toast, Toaster } from "sonner";
-import { Settings, Save, Eye, EyeOff, X, Loader2, TestTube, CheckCircle, XCircle, Mic, Shield, Keyboard, Volume2, Play, Sparkles } from "lucide-react";
+import { Settings, Save, Eye, EyeOff, Loader2, TestTube, CheckCircle, XCircle, Mic, Shield, Keyboard, Volume2, Play, Sparkles, Info } from "lucide-react";
 import { usePermissions } from "./hooks/usePermissions";
 import PermissionCard from "./components/ui/permission-card";
 import { SOUND_SCHEMES, previewSound, playEnd } from "./utils/sounds";
+import {
+  buildModifierShortcutOptions,
+  parseModifierShortcutValue,
+  toModifierShortcutValue,
+  CANCEL_KEY_OPTIONS,
+} from "./utils/shortcutOptions";
 
 const SettingsPage = () => {
   const [settings, setSettings] = useState({
@@ -19,7 +25,9 @@ const SettingsPage = () => {
     recording_trigger_key: "LeftOption",
     recording_trigger_taps: 1,
     cancel_key: "Escape",
+    cancel_taps: 1,
     raw_stop_key: "LeftCtrl",
+    raw_stop_taps: 1,
     sound_scheme: "soft",
     sound_volume: 0.3,
     asr_engine: "sensevoice"
@@ -34,6 +42,19 @@ const SettingsPage = () => {
   const [showApiKey, setShowApiKey] = useState(false);
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState(null);
+
+  // 左侧分类导航：当前选中的分类
+  const [activeCategory, setActiveCategory] = useState("permissions");
+
+  // 行标签统一字号（权限行与快捷键行保持一致）
+  const rowLabelClass = "text-[15px] font-medium text-gray-900 dark:text-gray-100";
+
+  const categories = [
+    { id: "permissions", label: "权限", icon: Shield },
+    { id: "shortcuts", label: "快捷键", icon: Keyboard },
+    { id: "sound", label: "提示音", icon: Volume2 },
+    { id: "about", label: "关于", icon: Info },
+  ];
 
   // 权限管理
   const showAlert = (alert) => {
@@ -73,7 +94,9 @@ const SettingsPage = () => {
           recording_trigger_taps: (allSettings.recording_trigger && allSettings.recording_trigger.taps)
             || (isMac ? 1 : 2),
           cancel_key: allSettings.cancel_key || "Escape",
+          cancel_taps: Number(allSettings.cancel_taps) === 2 ? 2 : 1,
           raw_stop_key: allSettings.raw_stop_key || "LeftCtrl",
+          raw_stop_taps: Number(allSettings.raw_stop_taps) === 2 ? 2 : 1,
           sound_scheme: allSettings.sound_scheme || "soft",
           sound_volume: typeof allSettings.sound_volume === "number" ? allSettings.sound_volume : 0.3,
           asr_engine: allSettings.asr_engine || "sensevoice"
@@ -161,12 +184,14 @@ const SettingsPage = () => {
               taps: Number(next.recording_trigger_taps) || 1,
             });
             if (window.electronAPI.reloadRecordingTrigger) await window.electronAPI.reloadRecordingTrigger();
-          } else if (field === "cancel_key") {
-            await window.electronAPI.setSetting("cancel_key", value);
+          } else if (field === "cancel_key" || field === "cancel_taps") {
+            await window.electronAPI.setSetting("cancel_key", next.cancel_key);
+            await window.electronAPI.setSetting("cancel_taps", Number(next.cancel_taps) || 1);
             if (window.electronAPI.reloadRecordingTrigger) await window.electronAPI.reloadRecordingTrigger();
-          } else if (field === "raw_stop_key") {
+          } else if (field === "raw_stop_key" || field === "raw_stop_taps") {
             // 录音期间动态注册，下次录音即生效，无需重载主触发器
-            await window.electronAPI.setSetting("raw_stop_key", value);
+            await window.electronAPI.setSetting("raw_stop_key", next.raw_stop_key);
+            await window.electronAPI.setSetting("raw_stop_taps", Number(next.raw_stop_taps) || 1);
           } else if (field === "sound_scheme") {
             await window.electronAPI.setSetting("sound_scheme", value);
           } else if (field === "sound_volume") {
@@ -213,15 +238,35 @@ const SettingsPage = () => {
     }
   };
 
-  // 触发键可选项（标签随平台调整）
-  const triggerKeyOptions = [
-    { value: "LeftOption", label: isMac ? "左 Option ⌥" : "左 Alt" },
-    { value: "RightOption", label: isMac ? "右 Option ⌥" : "右 Alt" },
-    { value: "LeftMeta", label: isMac ? "左 Command ⌘" : "左 Win" },
-    { value: "RightMeta", label: isMac ? "右 Command ⌘" : "右 Win" },
-    { value: "LeftCtrl", label: "左 Control ⌃" },
-    { value: "LeftShift", label: "左 Shift ⇧" },
-  ];
+  // 统一的"单击/双击 × 修饰键"下拉项（唤醒/取消/原文共用）
+  const modifierShortcutOptions = buildModifierShortcutOptions(isMac);
+
+  // 当前各快捷键的下拉 value（"<Key>:<taps>"）
+  const wakeValue = toModifierShortcutValue(settings.recording_trigger_key, settings.recording_trigger_taps);
+  const rawStopValue = toModifierShortcutValue(settings.raw_stop_key, settings.raw_stop_taps);
+  // 取消键：value = "<Key>:<taps>"（如 "Escape:1"、"F1:2"）
+  const cancelValue = `${settings.cancel_key}:${Number(settings.cancel_taps) === 2 ? 2 : 1}`;
+
+  // 唤醒：写 recording_trigger_key + recording_trigger_taps
+  const handleWakeChange = (value) => {
+    const { key, taps } = parseModifierShortcutValue(value);
+    updateAndSave("recording_trigger_key", key);
+    updateAndSave("recording_trigger_taps", taps);
+  };
+
+  // 原文：写 raw_stop_key + raw_stop_taps
+  const handleRawStopChange = (value) => {
+    const { key, taps } = parseModifierShortcutValue(value);
+    updateAndSave("raw_stop_key", key);
+    updateAndSave("raw_stop_taps", taps);
+  };
+
+  // 取消：value 形如 "Escape:1" / "F1:2"，解析出 key + taps 后两者都写入
+  const handleCancelChange = (value) => {
+    const { key, taps } = parseModifierShortcutValue(value);
+    updateAndSave("cancel_key", key);
+    updateAndSave("cancel_taps", taps);
+  };
 
   // 应用推荐配置
   const applyRecommendedConfig = () => {
@@ -310,13 +355,6 @@ const SettingsPage = () => {
     }
   };
 
-  // 关闭窗口
-  const handleClose = () => {
-    if (window.electronAPI) {
-      window.electronAPI.hideSettingsWindow();
-    }
-  };
-
   if (loading) {
     return (
       <div className="min-h-screen bg-gray-50 dark:bg-neutral-950 flex items-center justify-center">
@@ -330,55 +368,64 @@ const SettingsPage = () => {
 
   return (
     <div className="h-screen bg-gray-50 dark:bg-neutral-950 flex flex-col">
-      {/* 标题栏 - 固定 */}
-      <div className="bg-white/70 dark:bg-neutral-950/70 backdrop-blur-md border-b border-gray-100 dark:border-neutral-900 px-6 py-4 flex-shrink-0">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center space-x-2.5">
-            <span className="inline-block w-2 h-2 rounded-full bg-neutral-400 dark:bg-neutral-500" />
-            <h1 className="text-base font-semibold tracking-tight text-gray-900 dark:text-gray-100 chinese-title">设置</h1>
+      {/* 主要内容 - 左侧分类 + 右侧内容面板 */}
+      <div className="flex-1 flex min-h-0 overflow-hidden">
+        {/* 左侧分类侧边栏 */}
+        <nav className="w-[200px] flex-shrink-0 border-r border-gray-100 dark:border-neutral-900 px-3 py-4 overflow-y-auto">
+          <div className="space-y-1">
+            {categories.map((cat) => {
+              const CatIcon = cat.icon;
+              const isActive = activeCategory === cat.id;
+              return (
+                <button
+                  key={cat.id}
+                  type="button"
+                  onClick={() => setActiveCategory(cat.id)}
+                  className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-[14px] font-medium transition-colors ${
+                    isActive
+                      ? "bg-blue-500/10 dark:bg-blue-500/20 text-gray-900 dark:text-gray-100"
+                      : "text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-neutral-800"
+                  }`}
+                >
+                  <CatIcon className={`w-[18px] h-[18px] flex-shrink-0 ${isActive ? "text-blue-600 dark:text-blue-400" : "text-gray-400 dark:text-gray-500"}`} />
+                  <span className="chinese-title">{cat.label}</span>
+                </button>
+              );
+            })}
           </div>
-          <button
-            onClick={handleClose}
-            className="p-2 hover:bg-gray-100 dark:hover:bg-neutral-800 rounded-lg transition-colors"
-          >
-            <X className="w-5 h-5 text-gray-500 dark:text-gray-400" />
-          </button>
-        </div>
-      </div>
+        </nav>
 
-      {/* 主要内容 - 可滚动 */}
-      <div className="flex-1 overflow-y-auto min-h-0">
-        <div className="max-w-2xl mx-auto p-6 pb-8">
-          {/* 权限管理部分 */}
-          <div className="bg-white dark:bg-neutral-900 rounded-2xl shadow-sm border border-gray-100 dark:border-neutral-800 mb-6">
-            <div className="p-6">
-              <div className="mb-4">
-                <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100 chinese-title">
-                  权限管理
-                </h2>
-              </div>
-              
-              <div className="space-y-2">
-                <PermissionCard
-                  icon={Mic}
-                  title="麦克风权限"
-                  description=""
-                  granted={micPermissionGranted}
-                  onRequest={requestMicPermission}
-                  buttonText="测试麦克风"
-                />
+        {/* 右侧内容面板 - 可滚动 */}
+        <div className="flex-1 overflow-y-auto min-h-0">
+          <div className="max-w-2xl mx-auto p-6 pb-8">
 
-                <PermissionCard
-                  icon={Shield}
-                  title="辅助功能权限"
-                  description=""
-                  granted={accessibilityPermissionGranted}
-                  onRequest={testAccessibilityPermission}
-                  buttonText="测试权限"
-                />
+          {/* 权限 */}
+          {activeCategory === "permissions" && (
+            <div className="bg-white dark:bg-neutral-900 rounded-2xl shadow-sm border border-gray-100 dark:border-neutral-800">
+              <div className="px-6">
+                <div className="py-4 border-b border-gray-100 dark:border-neutral-800">
+                  <PermissionCard
+                    icon={Mic}
+                    title="麦克风权限"
+                    description=""
+                    granted={micPermissionGranted}
+                    onRequest={requestMicPermission}
+                    buttonText="测试麦克风"
+                  />
+                </div>
+                <div className="py-4">
+                  <PermissionCard
+                    icon={Shield}
+                    title="辅助功能权限"
+                    description=""
+                    granted={accessibilityPermissionGranted}
+                    onRequest={testAccessibilityPermission}
+                    buttonText="测试权限"
+                  />
+                </div>
               </div>
             </div>
-          </div>
+          )}
 
           {/* AI配置 / 识别引擎：整体隐藏（功能仍按已保存的默认值生效，key/模型/引擎照常工作） */}
           {false && (<>
@@ -788,113 +835,67 @@ const SettingsPage = () => {
           </div>
           )}
 
-          {/* 录音快捷键 */}
-          <div className="mt-4 bg-white dark:bg-neutral-900 rounded-2xl shadow-sm border border-gray-100 dark:border-neutral-800">
-            <div className="p-6">
-              <div className="mb-4 flex items-center space-x-2">
-                <Keyboard className="w-5 h-5 text-neutral-500 dark:text-neutral-400" />
-                <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100 chinese-title">
-                  快捷键
-                </h2>
-              </div>
-
-              <div className="space-y-4">
-                <div>
-                  <label className="block text-xs font-medium text-gray-700 dark:text-gray-300 mb-1">
-                    开始
-                  </label>
+          {/* 快捷键 */}
+          {activeCategory === "shortcuts" && (
+            <div className="bg-white dark:bg-neutral-900 rounded-2xl shadow-sm border border-gray-100 dark:border-neutral-800">
+              <div className="px-6">
+                {/* 唤醒 */}
+                <div className="flex items-center justify-between gap-4 py-4 border-b border-gray-100 dark:border-neutral-800">
+                  <label className={`${rowLabelClass} chinese-title`}>唤醒/结束</label>
                   <select
-                    value={settings.recording_trigger_key}
-                    onChange={(e) => updateAndSave('recording_trigger_key', e.target.value)}
-                    className="w-full px-3 py-2 text-sm border border-gray-300 dark:border-neutral-700 rounded-lg focus:ring-1 focus:ring-neutral-400 focus:border-transparent bg-white dark:bg-neutral-800 text-gray-900 dark:text-gray-100"
+                    value={wakeValue}
+                    onChange={(e) => handleWakeChange(e.target.value)}
+                    className="w-48 px-3 py-2 text-[15px] border border-gray-300 dark:border-neutral-700 rounded-lg focus:ring-1 focus:ring-neutral-400 focus:border-transparent bg-white dark:bg-neutral-800 text-gray-900 dark:text-gray-100"
                   >
-                    {triggerKeyOptions.map((opt) => (
+                    {modifierShortcutOptions.map((opt) => (
                       <option key={opt.value} value={opt.value}>{opt.label}</option>
                     ))}
                   </select>
                 </div>
 
-                <div>
-                  <label className="block text-xs font-medium text-gray-700 dark:text-gray-300 mb-1">
-                    方式
-                  </label>
-                  <div className="flex items-center space-x-4">
-                    <label className="flex items-center space-x-2 cursor-pointer">
-                      <input
-                        type="radio"
-                        name="trigger-taps"
-                        checked={Number(settings.recording_trigger_taps) === 1}
-                        onChange={() => updateAndSave('recording_trigger_taps', 1)}
-                        className="w-3 h-3 text-neutral-500 dark:text-neutral-400 border-gray-300 focus:ring-neutral-400"
-                      />
-                      <span className="text-xs text-gray-700 dark:text-gray-300">单击</span>
-                    </label>
-                    <label className="flex items-center space-x-2 cursor-pointer">
-                      <input
-                        type="radio"
-                        name="trigger-taps"
-                        checked={Number(settings.recording_trigger_taps) === 2}
-                        onChange={() => updateAndSave('recording_trigger_taps', 2)}
-                        className="w-3 h-3 text-neutral-500 dark:text-neutral-400 border-gray-300 focus:ring-neutral-400"
-                      />
-                      <span className="text-xs text-gray-700 dark:text-gray-300">双击</span>
-                    </label>
-                  </div>
-                </div>
-
-                {/* 取消键 */}
-                <div>
-                  <label className="block text-xs font-medium text-gray-700 dark:text-gray-300 mb-1">
-                    取消
-                  </label>
+                {/* 取消键（仅 Esc / F 键的单/双击） */}
+                <div className="flex items-center justify-between gap-4 py-4 border-b border-gray-100 dark:border-neutral-800">
+                  <label className={`${rowLabelClass} chinese-title`}>取消</label>
                   <select
-                    value={settings.cancel_key}
-                    onChange={(e) => updateAndSave('cancel_key', e.target.value)}
-                    className="w-full px-3 py-2 text-sm border border-gray-300 dark:border-neutral-700 rounded-lg focus:ring-1 focus:ring-neutral-400 focus:border-transparent bg-white dark:bg-neutral-800 text-gray-900 dark:text-gray-100"
+                    value={cancelValue}
+                    onChange={(e) => handleCancelChange(e.target.value)}
+                    className="w-48 px-3 py-2 text-[15px] border border-gray-300 dark:border-neutral-700 rounded-lg focus:ring-1 focus:ring-neutral-400 focus:border-transparent bg-white dark:bg-neutral-800 text-gray-900 dark:text-gray-100"
                   >
-                    <option value="Escape">Esc</option>
-                    <option value="F1">F1</option>
-                    <option value="F2">F2</option>
-                    <option value="F4">F4</option>
-                    <option value="F8">F8</option>
+                    {CANCEL_KEY_OPTIONS.map((opt) => (
+                      <option key={opt.value} value={opt.value}>{opt.label}</option>
+                    ))}
                   </select>
                 </div>
 
                 {/* 不走 AI 的结束键 */}
-                <div>
-                  <label className="block text-xs font-medium text-gray-700 dark:text-gray-300 mb-1">
-                    原文
-                  </label>
+                <div className="flex items-center justify-between gap-4 py-4">
+                  <div className="min-w-0">
+                    <label className={`${rowLabelClass} chinese-title`}>原文</label>
+                    <p className="mt-0.5 text-[13px] text-gray-500 dark:text-neutral-400">
+                      按它结束＝直接贴原文，不走 AI
+                    </p>
+                  </div>
                   <select
-                    value={settings.raw_stop_key}
-                    onChange={(e) => updateAndSave('raw_stop_key', e.target.value)}
-                    className="w-full px-3 py-2 text-sm border border-gray-300 dark:border-neutral-700 rounded-lg focus:ring-1 focus:ring-neutral-400 focus:border-transparent bg-white dark:bg-neutral-800 text-gray-900 dark:text-gray-100"
+                    value={rawStopValue}
+                    onChange={(e) => handleRawStopChange(e.target.value)}
+                    className="w-48 flex-shrink-0 px-3 py-2 text-[15px] border border-gray-300 dark:border-neutral-700 rounded-lg focus:ring-1 focus:ring-neutral-400 focus:border-transparent bg-white dark:bg-neutral-800 text-gray-900 dark:text-gray-100"
                   >
-                    <option value="LeftCtrl">左 Control ⌃</option>
-                    <option value="RightCtrl">右 Control ⌃</option>
-                    <option value="RightOption">{isMac ? "右 Option ⌥" : "右 Alt"}</option>
-                    <option value="RightMeta">{isMac ? "右 Command ⌘" : "右 Win"}</option>
-                    <option value="RightShift">右 Shift ⇧</option>
+                    {modifierShortcutOptions.map((opt) => (
+                      <option key={opt.value} value={opt.value}>{opt.label}</option>
+                    ))}
                   </select>
-                  <p className="mt-1 text-[11px] text-gray-400 dark:text-neutral-500">
-                    按它结束＝直接贴原文，不走 AI
-                  </p>
                 </div>
-
               </div>
             </div>
-          </div>
+          )}
 
           {/* 提示音 */}
-          <div className="mt-4 bg-white dark:bg-neutral-900 rounded-2xl shadow-sm border border-gray-100 dark:border-neutral-800">
-            <div className="p-6">
-              <div className="mb-3 flex items-center space-x-2">
-                <Volume2 className="w-5 h-5 text-neutral-500 dark:text-neutral-400" />
-                <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100 chinese-title">提示音</h2>
-              </div>
-              <div className="space-y-4">
-                <div>
-                  <label className="block text-xs font-medium text-gray-700 dark:text-gray-300 mb-1">声音</label>
+          {activeCategory === "sound" && (
+            <div className="bg-white dark:bg-neutral-900 rounded-2xl shadow-sm border border-gray-100 dark:border-neutral-800">
+              <div className="px-6">
+                {/* 提示音 */}
+                <div className="flex items-center justify-between gap-4 py-4 border-b border-gray-100 dark:border-neutral-800">
+                  <label className={`${rowLabelClass} chinese-title`}>提示音</label>
                   <select
                     value={settings.sound_scheme}
                     onChange={(e) => {
@@ -903,15 +904,16 @@ const SettingsPage = () => {
                       // 切换音色即试听（无需按钮）
                       if (v !== 'none') previewSound(v, settings.sound_volume);
                     }}
-                    className="w-full px-3 py-2 text-sm border border-gray-300 dark:border-neutral-700 rounded-lg focus:ring-1 focus:ring-neutral-400 focus:border-transparent bg-white dark:bg-neutral-800 text-gray-900 dark:text-gray-100"
+                    className="w-48 px-3 py-2 text-[15px] border border-gray-300 dark:border-neutral-700 rounded-lg focus:ring-1 focus:ring-neutral-400 focus:border-transparent bg-white dark:bg-neutral-800 text-gray-900 dark:text-gray-100"
                   >
                     {SOUND_SCHEMES.map((s) => (
                       <option key={s.value} value={s.value}>{s.label}</option>
                     ))}
                   </select>
                 </div>
-                <div>
-                  <label className="block text-xs font-medium text-gray-700 dark:text-gray-300 mb-1">
+                {/* 音量 */}
+                <div className="flex items-center justify-between gap-4 py-4">
+                  <label className={`${rowLabelClass} chinese-title flex-shrink-0`}>
                     音量 {Math.round(Number(settings.sound_volume) * 100)}%
                   </label>
                   <input
@@ -923,35 +925,64 @@ const SettingsPage = () => {
                       // 拖动音量即按当前音色发声，听到对应大小（无需试听按钮）
                       if (settings.sound_scheme !== 'none') playEnd(settings.sound_scheme, v);
                     }}
-                    className="w-full accent-neutral-700 dark:accent-neutral-200"
+                    className="w-48 accent-blue-600 dark:accent-blue-500"
                   />
                 </div>
               </div>
             </div>
-          </div>
+          )}
 
-          {/* 隐私与数据安全（置于最底部） */}
-          <div className="mt-4 bg-white dark:bg-neutral-900 rounded-2xl shadow-sm border border-gray-100 dark:border-neutral-800">
-            <div className="p-6">
-              <div className="mb-3 flex items-center space-x-2">
-                <Shield className="w-5 h-5 text-neutral-500 dark:text-neutral-400" />
-                <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100 chinese-title">
-                  隐私与数据安全
-                </h2>
-              </div>
-              <div className="bg-gray-50 dark:bg-neutral-800/50 rounded-lg p-4 space-y-2">
-                <p className="text-xs text-gray-700 dark:text-neutral-300 flex items-start">
-                  <span className="mr-2">🔒</span>
-                  <span><strong>本地：</strong>转写文本只保存在本机，<strong>不存服务器、不用于训练</strong>。语音识别全程离线。</span>
-                </p>
-                <p className="text-xs text-gray-700 dark:text-neutral-300 flex items-start">
-                  <span className="mr-2">🗑️</span>
-                  <span><strong>删除：</strong>历史记录可随时删除，即从本机彻底移除。</span>
-                </p>
+          {/* 关于 */}
+          {activeCategory === "about" && (
+            <div className="bg-white dark:bg-neutral-900 rounded-2xl shadow-sm border border-gray-100 dark:border-neutral-800">
+              <div className="px-6">
+                {/* 功能建议 / bug反馈 */}
+                <div className="py-5 border-b border-gray-100 dark:border-neutral-800">
+                  <h3 className={`${rowLabelClass} chinese-title mb-3`}>功能建议 / bug反馈：</h3>
+                  <div className="flex justify-center">
+                    <img
+                      src="./feedback-qr.png"
+                      alt="反馈二维码"
+                      width={160}
+                      height={160}
+                      className="w-40 h-40 rounded-xl object-contain border border-gray-100 dark:border-neutral-800"
+                      onError={(e) => {
+                        const img = e.currentTarget;
+                        img.style.display = 'none';
+                        const ph = img.nextElementSibling;
+                        if (ph) ph.style.display = 'flex';
+                      }}
+                    />
+                    <div
+                      style={{ display: 'none' }}
+                      className="w-40 h-40 rounded-xl border-2 border-dashed border-gray-300 dark:border-neutral-700 items-center justify-center text-center p-4"
+                    >
+                      <span className="text-[12px] text-gray-400 dark:text-neutral-500">
+                        将反馈二维码图片放到 assets/feedback-qr.png
+                      </span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* 数据安全 */}
+                <div className="py-5">
+                  <h3 className={`${rowLabelClass} chinese-title mb-3`}>数据安全：</h3>
+                  <div className="bg-gray-50 dark:bg-neutral-800/50 rounded-lg p-4 space-y-2">
+                    <p className="text-[13px] text-gray-700 dark:text-neutral-300 flex items-start">
+                      <span className="mr-2">🔒</span>
+                      <span><strong>本地：</strong>转写文本只保存在本机，<strong>不存服务器、不用于训练</strong>。语音识别全程离线。</span>
+                    </p>
+                    <p className="text-[13px] text-gray-700 dark:text-neutral-300 flex items-start">
+                      <span className="mr-2">🗑️</span>
+                      <span><strong>删除：</strong>历史记录可随时删除，即从本机彻底移除。</span>
+                    </p>
+                  </div>
+                </div>
               </div>
             </div>
-          </div>
+          )}
 
+          </div>
         </div>
       </div>
     </div>

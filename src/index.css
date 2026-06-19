@@ -96,12 +96,14 @@ body {
   -webkit-app-region: drag;
 }
 .recorder-pill {
+  position: relative;
   width: 100%;
   height: 36px;
   background: #0b0b0c;
   border-radius: 999px;
   display: flex;
   align-items: center;
+  justify-content: space-between;
   gap: 7px;
   padding: 0 8px;
   -webkit-app-region: drag;
@@ -124,14 +126,19 @@ body {
   transition: transform 0.12s ease;
 }
 .pill-badge:active { transform: scale(0.9); }
+/* 声波绝对定位：相对整个胶囊左右、上下居中，与左右两侧元素的宽度无关 */
 .pill-wave {
-  flex: 1;
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
   height: 20px;
   display: flex;
   align-items: center;
   justify-content: center;
   gap: 2px;
   overflow: hidden;
+  pointer-events: none;
 }
 .pill-bar {
   width: 2px;

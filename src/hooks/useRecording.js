@@ -215,9 +215,15 @@ export const useRecording = ({ onTranscriptionCompleteRef, onAIOptimizationCompl
               }
             };
             try {
+              // 一次性快照所有设置：把热路径上原本 4~5 次串行 getSetting(IPC+读库)往返
+              // 压成一次 getAllSettings，单句不会中途改设置，快照足够安全且更快。
+              const _settings =
+                (window.electronAPI.getAllSettings ? await window.electronAPI.getAllSettings() : null) || {};
+              const getS = (k, d) => (_settings[k] !== undefined ? _settings[k] : d);
+
               // 文案模式：识别后必走 LLM，贴"模型结果"；旧版优化模式作为兼容回退
-              let copywriting = await window.electronAPI.getSetting('copywriting_mode_enabled', true);
-              let useAI = await window.electronAPI.getSetting('enable_ai_optimization', true);
+              let copywriting = getS('copywriting_mode_enabled', true);
+              let useAI = getS('enable_ai_optimization', true);
               // 按了"不走 API 的结束键"：本句强制跳过大模型，直接贴原始识别
               if (rawOnly) {
                 copywriting = false;
@@ -225,7 +231,7 @@ export const useRecording = ({ onTranscriptionCompleteRef, onAIOptimizationCompl
                 log('info', 'raw 结束键：跳过大模型，直接贴原始识别');
               } else {
                 // 短句优化：很短且干净的识别结果直接贴原文，省去一次 LLM 往返
-                const maxChars = Number(await window.electronAPI.getSetting('skip_polish_max_chars', 6)) || 6;
+                const maxChars = Number(getS('skip_polish_max_chars', 6)) || 6;
                 if (shouldSkipPolish(raw_text, maxChars)) {
                   copywriting = false;
                   useAI = false;
@@ -236,11 +242,24 @@ export const useRecording = ({ onTranscriptionCompleteRef, onAIOptimizationCompl
               let finalData = { ...transcriptionData };
               let emit;
 
+              // 先落库原文（解耦·不阻塞）：识别成功后立即派发入库 IPC（主进程会同步写库），
+              // 即使后续 LLM/流式卡住或异常，历史也不会丢。关键是【不 await】——绝不让一次
+              // 数据库写入的往返挡在"出字"前面。润色完成后再用返回的行 id 异步补写同一行。
+              let savePromise = null;
+              if (window.electronAPI) {
+                savePromise = window.electronAPI
+                  .saveTranscription(transcriptionData)
+                  .catch((err) => {
+                    log('error', '原文落库失败:', err);
+                    return null;
+                  });
+              }
+
               if (copywriting) {
                 // —— 流式优先：开启 Web 函数流式时，边生成边贴(粘贴在主进程完成) ——
                 let streamed = false;
                 try {
-                  const streaming = await window.electronAPI.getSetting('llm_streaming_enabled', false);
+                  const streaming = getS('llm_streaming_enabled', false);
                   if (streaming && window.electronAPI.processTextStream) {
                     const _sT0 = Date.now();
                     const sres = await window.electronAPI.processTextStream(raw_text);
@@ -284,7 +303,7 @@ export const useRecording = ({ onTranscriptionCompleteRef, onAIOptimizationCompl
                   // LLM 失败：
                   //  - 未配置 API Key → 视为"纯听写"，照常粘贴识别原文（保证开箱可用）
                   //  - 已配置但调用失败 → 由 llm_fallback_paste_raw 决定是否回退贴原文（默认是）
-                  const fallback = await window.electronAPI.getSetting('llm_fallback_paste_raw', true);
+                  const fallback = getS('llm_fallback_paste_raw', true);
                   const errMsg = (result && result.error) || 'AI 文案生成失败';
                   const noKey = /API\s*密钥|API\s*Key|api[_\s]?key/i.test(errMsg);
                   log('error', '文案生成失败:', errMsg);
@@ -327,20 +346,29 @@ export const useRecording = ({ onTranscriptionCompleteRef, onAIOptimizationCompl
                 emit = { ...transcriptionResult, text: raw_text, enhanced_by_ai: false, paste: true };
               }
 
-              // 保存转录数据（只保存一次）
-              if (window.electronAPI) {
-                try {
-                  await window.electronAPI.saveTranscription(finalData);
-                } catch (err) {
-                  log('error', '保存转录失败:', err);
-                }
-              }
-
-              // 若期间已有更新的录音，作废本次粘贴（入库仍保留），避免贴出过期内容
+              // 先出字（最高优先级）：尽快把结果贴到光标处，绝不被数据库写入挡住。
+              // 若期间已有更新的录音，作废本次粘贴（入库仍保留），避免贴出过期内容。
               if (myGen !== generationRef.current) {
                 log('info', '已被更新的录音取代，跳过本次粘贴');
               } else if (onAIOptimizationCompleteRef?.current) {
                 onAIOptimizationCompleteRef?.current(emit);
+              }
+
+              // 出字之后再异步补写润色结果到同一行（原文已在前面落库）。不 await，不阻塞出字。
+              // 早先落库失败(行 id 为空)时兜底重新插入完整记录，确保历史不丢。
+              if (window.electronAPI) {
+                Promise.resolve(savePromise)
+                  .then((r) => {
+                    const sid = r && r.lastInsertRowid != null ? r.lastInsertRowid : null;
+                    if (sid != null && window.electronAPI.updateTranscription) {
+                      return window.electronAPI.updateTranscription(sid, {
+                        text: finalData.text,
+                        processed_text: finalData.processed_text,
+                      });
+                    }
+                    return window.electronAPI.saveTranscription(finalData);
+                  })
+                  .catch((err) => log('error', '补写转录失败:', err));
               }
             } catch (err) {
               log('error', '处理和保存转录时出错:', err);

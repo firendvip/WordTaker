@@ -5,7 +5,14 @@ const { spawn } = require('child_process');
 class EmbeddedPythonTester {
   constructor() {
     this.pythonDir = path.join(__dirname, '..', 'python');
-    this.pythonPath = path.join(this.pythonDir, 'bin', 'python3.11');
+    // 跨平台：Windows 为 python/python.exe，其余为 python/bin/python3.11
+    this.isWindows = process.platform === 'win32';
+    this.pythonPath = this.isWindows
+      ? path.join(this.pythonDir, 'python.exe')
+      : path.join(this.pythonDir, 'bin', 'python3.11');
+    this.sitePackages = this.isWindows
+      ? path.join(this.pythonDir, 'Lib', 'site-packages')
+      : path.join(this.pythonDir, 'lib', 'python3.11', 'site-packages');
   }
 
   async runTests() {
@@ -142,12 +149,16 @@ class EmbeddedPythonTester {
       const env = {
         ...process.env,
         PYTHONHOME: this.pythonDir,
-        PYTHONPATH: path.join(this.pythonDir, 'lib', 'python3.11', 'site-packages'),
+        PYTHONPATH: this.sitePackages,
         PYTHONDONTWRITEBYTECODE: '1',
         PYTHONIOENCODING: 'utf-8',
         PYTHONUNBUFFERED: '1'
       };
-      
+      // Windows 原生 DLL 解析需要 python 根目录在 PATH 头部
+      if (this.isWindows) {
+        env.PATH = `${this.pythonDir};${process.env.PATH || ''}`;
+      }
+
       // 清除可能干扰的环境变量
       delete env.PYTHONUSERBASE;
       delete env.PYTHONSTARTUP;

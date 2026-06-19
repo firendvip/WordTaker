@@ -42,8 +42,10 @@ contextBridge.exposeInMainWorld("electronAPI", {
     ipcRenderer.invoke("save-transcription", text, processedText),
   getTranscriptions: (limit, offset) => 
     ipcRenderer.invoke("get-transcriptions", limit, offset),
-  deleteTranscription: (id) => 
+  deleteTranscription: (id) =>
     ipcRenderer.invoke("delete-transcription", id),
+  updateTranscription: (id, fields) =>
+    ipcRenderer.invoke("update-transcription", id, fields),
   clearAllTranscriptions: () => 
     ipcRenderer.invoke("clear-all-transcriptions"),
 

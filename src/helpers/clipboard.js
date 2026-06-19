@@ -1,8 +1,10 @@
 const { clipboard } = require("electron");
 const { spawn } = require("child_process");
 
-// 模拟 Cmd+V 前，等待剪贴板写入稳定的时间
-const PASTE_SETTLE_MS = 120;
+// 模拟 Cmd+V 前，等待剪贴板写入稳定的时间。
+// 剪贴板写入已在 _pasteTextImpl 里做过同步回读校验，这里只需给系统粘贴板很短的传播余量，
+// 故从 120ms 收紧到 60ms 以加快"出字"，仍保留约 2 倍于常见传播耗时的安全边际。
+const PASTE_SETTLE_MS = 60;
 // 模拟 Cmd+V 后，等待目标 App 真正消费完粘贴、再恢复原始剪贴板的时间。
 // 必须足够长：太短会导致目标 App 读到“被恢复的旧内容”，从而粘贴上一次的结果。
 const CLIPBOARD_RESTORE_MS = 700;
@@ -13,6 +15,10 @@ class ClipboardManager {
     this.logger = logger;
     // 串行锁：保证任意时刻只有一个粘贴在执行，杜绝多次粘贴交叠互相污染剪贴板
     this._pasteChain = Promise.resolve();
+    // 辅助功能权限缓存：流式增量粘贴时绝不能每个分片都 spawn 一次 osascript 检查，
+    // 否则一句长文会瞬间派生几十上百个进程把输入法/前台 App 卡死。缓存一段时间即可。
+    this._accessOk = null;
+    this._accessCheckedAt = 0;
     
     // 尝试加载 osascript 模块（仅在 macOS 上）
     this.osascript = null;
@@ -119,9 +125,9 @@ class ClipboardManager {
       }
 
       if (process.platform === "darwin") {
-        // 简化权限检查，直接尝试粘贴
-        this.safeLog("🔍 检查粘贴操作的辅助功能权限");
-        const hasPermissions = await this.checkAccessibilityPermissions();
+        // 权限检查走缓存：避免每次粘贴都多 spawn 一个 osascript 进程拖慢出字。
+        this.safeLog("🔍 检查粘贴操作的辅助功能权限(缓存)");
+        const hasPermissions = await this.ensureAccessibilityCached();
 
         if (!hasPermissions) {
           this.safeLog("⚠️ 没有辅助功能权限 - 文本仅复制到剪贴板");
@@ -437,6 +443,19 @@ class ClipboardManager {
     });
   }
 
+  // 带缓存的辅助功能权限检查：默认 30s 内复用上次结果，避免高频流式粘贴时进程风暴。
+  async ensureAccessibilityCached(ttlMs = 30000) {
+    if (process.platform !== "darwin") return true;
+    const now = Date.now();
+    if (this._accessOk === true && now - this._accessCheckedAt < ttlMs) {
+      return true;
+    }
+    const ok = await this.checkAccessibilityPermissions();
+    this._accessOk = ok;
+    this._accessCheckedAt = now;
+    return ok;
+  }
+
   // 追加一段文本到光标处：写剪贴板→Cmd+V，不恢复。与 pasteText 共用串行链，保证顺序。
   async appendChunk(text) {
     const run = async () => {
@@ -444,7 +463,7 @@ class ClipboardManager {
       clipboard.writeText(text);
       if (clipboard.readText() !== text) clipboard.writeText(text);
       if (process.platform === "darwin") {
-        const ok = await this.checkAccessibilityPermissions();
+        const ok = await this.ensureAccessibilityCached();
         if (!ok) throw new Error("需要辅助功能权限");
       }
       await this._pressPaste();

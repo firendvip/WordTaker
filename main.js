@@ -125,6 +125,8 @@ const triggerManager = new TriggerManager(logger);
 // 第二个触发器：录音期间监听"不走 API 的结束键"（默认左 Ctrl）。
 // uiohook 是单例（TriggerManager._hookRunning 守卫），多个实例可共存、各自挂自己的监听。
 const rawStopTriggerManager = new TriggerManager(logger);
+// 第三个触发器：取消键若被设为裸修饰键（单/双击），则用它监听；否则走 globalShortcut（Esc/F 键）。
+const cancelTriggerManager = new TriggerManager(logger);
 
 // 校验 recording_trigger，非法字段一律回退默认（防止渲染层写入异常对象）
 function validateRecordingTrigger(t, fallback) {
@@ -191,21 +193,93 @@ ipcMain.handle('reload-recording-trigger', () => {
 // 隐藏胶囊（粘贴完成 / 取消后由渲染层调用）
 ipcMain.handle('hide-recorder', () => {
   windowManager.hideMainWindow();
+  // 安全网：胶囊隐藏即视为本次录音结束，确保全局 Esc / 裸结束键被释放，
+  // 即使渲染层漏发 recorder-state(false) 也不会让 Esc 被全局长期吞掉。
+  unregisterCancelKey();
+  unregisterRawStopKey();
   return { success: true };
 });
 
-// Esc（可自定义）取消录音：仅在录音期间注册全局快捷键，避免平时吞掉 Esc
-let cancelKeyRegistered = null;
+// 读取录音触发键的 { key, taps }（用于冲突检测）；非 modifier-tap 时返回 null。
+function getRecordingTriggerModifier() {
+  const trig = databaseManager.getSetting('recording_trigger', null);
+  if (trig && trig.type === 'modifier-tap' && TriggerManager.VALID_KEYS.has(trig.key)) {
+    return { key: trig.key, taps: trig.taps === 2 ? 2 : 1 };
+  }
+  return null;
+}
+
+function isSameModifierTap(a, b) {
+  return !!a && !!b && a.key === b.key && Number(a.taps) === Number(b.taps);
+}
+
+// "不走 API 的结束键"（裸修饰键，默认左 Ctrl）：仅录音期间监听，停止后注销。
+// 触发时通知渲染层走"原始识别、不调用大模型"的结束路径。
+function registerRawStopKey() {
+  try {
+    const key = databaseManager.getSetting('raw_stop_key', 'LeftCtrl') || 'LeftCtrl';
+    const taps = Number(databaseManager.getSetting('raw_stop_taps', 1)) === 2 ? 2 : 1;
+    if (!TriggerManager.VALID_KEYS.has(key)) {
+      logger.warn('raw_stop_key 非法，跳过注册', { key });
+      return;
+    }
+    // 与录音触发键的 {key,taps} 完全相同则跳过，避免同一次按键被两个监听器同时当成结束
+    const trig = getRecordingTriggerModifier();
+    if (isSameModifierTap(trig, { key, taps })) {
+      logger.warn('raw_stop_key 与录音触发键相同，跳过注册', { key, taps });
+      return;
+    }
+    rawStopTriggerManager.start({ type: 'modifier-tap', key, taps }, () => {
+      const win = windowManager.mainWindow;
+      if (win && !win.isDestroyed()) win.webContents.send('raw-stop');
+    });
+  } catch (error) {
+    logger.error('注册 raw 结束键失败:', error);
+  }
+}
+function unregisterRawStopKey() {
+  try { rawStopTriggerManager.stop(); } catch (_) { /* 忽略 */ }
+}
+
+// 取消录音：仅在录音期间注册，避免平时吞掉按键。
+// 取消键现支持 Esc / F1 / F2 / F4 / F8 的单/双击；因 globalShortcut 无法识别"双击"，
+// 这些键已加入 TriggerManager.VALID_KEYS，统一走 uiohook 第三触发器（cancelTriggerManager）。
+// 注意：底层 uiohook 为"只监听不拦截"，因此 Esc/F 键会被观察到用于触发取消，
+// 但不会被消费——它们仍会照常送达当前聚焦的应用（可接受）。
+// 下方 globalShortcut 分支对当前选项已基本不会命中，保留为无害回退。
+let cancelKeyRegistered = null; // 仅记录已注册的 globalShortcut 加速键（回退用）
+function fireCancel() {
+  const win = windowManager.mainWindow;
+  if (win && !win.isDestroyed()) win.webContents.send('cancel-recording');
+  windowManager.hideMainWindow();
+}
 function registerCancelKey() {
   try {
     const key = databaseManager.getSetting('cancel_key', 'Escape') || 'Escape';
+
+    if (TriggerManager.VALID_KEYS.has(key)) {
+      // 裸修饰键形态：用第三触发器监听单/双击
+      const taps = Number(databaseManager.getSetting('cancel_taps', 1)) === 2 ? 2 : 1;
+      const target = { key, taps };
+      const trig = getRecordingTriggerModifier();
+      if (isSameModifierTap(trig, target)) {
+        logger.warn('cancel_key 与录音触发键相同，跳过注册', target);
+        return;
+      }
+      const rawKey = databaseManager.getSetting('raw_stop_key', 'LeftCtrl') || 'LeftCtrl';
+      const rawTaps = Number(databaseManager.getSetting('raw_stop_taps', 1)) === 2 ? 2 : 1;
+      if (isSameModifierTap({ key: rawKey, taps: rawTaps }, target)) {
+        logger.warn('cancel_key 与原文结束键相同，跳过注册', target);
+        return;
+      }
+      cancelTriggerManager.start({ type: 'modifier-tap', key, taps }, fireCancel);
+      return;
+    }
+
+    // 加速键形态（Esc/F 键）：走 Electron globalShortcut
     if (cancelKeyRegistered === key) return;
     if (cancelKeyRegistered) globalShortcut.unregister(cancelKeyRegistered);
-    const ok = globalShortcut.register(key, () => {
-      const win = windowManager.mainWindow;
-      if (win && !win.isDestroyed()) win.webContents.send('cancel-recording');
-      windowManager.hideMainWindow();
-    });
+    const ok = globalShortcut.register(key, fireCancel);
     cancelKeyRegistered = ok ? key : null;
   } catch (error) {
     logger.error('注册取消键失败:', error);
@@ -220,33 +294,7 @@ function unregisterCancelKey() {
   } catch (error) {
     // 忽略
   }
-}
-
-// "不走 API 的结束键"（裸修饰键，默认左 Ctrl）：仅录音期间监听，停止后注销。
-// 触发时通知渲染层走"原始识别、不调用大模型"的结束路径。
-function registerRawStopKey() {
-  try {
-    const key = databaseManager.getSetting('raw_stop_key', 'LeftCtrl') || 'LeftCtrl';
-    if (!TriggerManager.VALID_KEYS.has(key)) {
-      logger.warn('raw_stop_key 非法，跳过注册', { key });
-      return;
-    }
-    // 与录音触发键相同则跳过，避免同一次按键被两个监听器同时当成结束
-    const trig = databaseManager.getSetting('recording_trigger', null);
-    if (trig && trig.type === 'modifier-tap' && trig.key === key) {
-      logger.warn('raw_stop_key 与录音触发键相同，跳过注册', { key });
-      return;
-    }
-    rawStopTriggerManager.start({ type: 'modifier-tap', key, taps: 1 }, () => {
-      const win = windowManager.mainWindow;
-      if (win && !win.isDestroyed()) win.webContents.send('raw-stop');
-    });
-  } catch (error) {
-    logger.error('注册 raw 结束键失败:', error);
-  }
-}
-function unregisterRawStopKey() {
-  try { rawStopTriggerManager.stop(); } catch (_) { /* 忽略 */ }
+  try { cancelTriggerManager.stop(); } catch (_) { /* 忽略 */ }
 }
 
 // 渲染层在录音开始/结束时通知主进程，用于按需注册/注销 Esc 取消键 + raw 结束键
@@ -373,12 +421,10 @@ if (!gotTheLock) {
   // 用户再次尝试启动时，把已有窗口带到前台（后台常驻应用通常无常显窗口，尽力聚焦）
   app.on("second-instance", () => {
     try {
-      const win = BrowserWindow.getAllWindows().find((w) => w && !w.isDestroyed());
-      if (win) {
-        if (win.isMinimized()) win.restore();
-        win.show();
-        win.focus();
-      }
+      // 后台常驻应用：再次启动时打开"设置"这种正常可聚焦窗口，
+      // 绝不要去 show()/focus() 那个 focusable:false 的透明胶囊——对不可聚焦窗口
+      // 强行 focus 在 macOS 上可能造成焦点/事件异常。
+      windowManager.showSettingsWindow();
     } catch (error) {
       logger.error("处理 second-instance 失败:", error);
     }
@@ -406,14 +452,28 @@ app.on("activate", () => {
 
 app.on("will-quit", () => {
   globalShortcut.unregisterAll();
+  // 强杀 FunASR Python 子进程，杜绝孤儿进程堆积拖垮系统
+  try {
+    funasrManager.killServerSync();
+  } catch (error) {
+    logger.error('关闭 FunASR 失败:', error);
+  }
   try {
     rawStopTriggerManager.stop();
+  } catch (_) { /* 忽略 */ }
+  try {
+    cancelTriggerManager.stop();
   } catch (_) { /* 忽略 */ }
   try {
     triggerManager.shutdown();
   } catch (error) {
     logger.error('关闭 triggerManager 失败:', error);
   }
+});
+
+// 退出前再兜底杀一次(防止 will-quit 时机错过)
+app.on("before-quit", () => {
+  try { funasrManager.killServerSync(); } catch (e) { /* 忽略 */ }
 });
 
 // 导出管理器供其他模块使用

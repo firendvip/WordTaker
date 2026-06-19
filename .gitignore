@@ -157,3 +157,22 @@ python
 
 # 中转打包产物
 relay/**/*.zip
+
+# Embedded Python runtime (fetched at build time, not source)
+python/
+.venv/
+
+# Local SQLite data (user history — never commit)
+*.db
+*.db-shm
+*.db-wal
+
+# Mobile build artifacts
+mobile/android/.gradle/
+mobile/android/build/
+mobile/android/app/build/
+mobile/android/local.properties
+mobile/android/.idea/
+mobile/android/captures/
+mobile/ios/build/
+mobile/ios/DerivedData/

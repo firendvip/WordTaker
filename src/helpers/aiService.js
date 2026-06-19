@@ -90,27 +90,47 @@ class AiService {
         return { success: false, error: `中转服务错误: ${response.status}` };
       }
 
+      // 流式空闲看门狗：headers 到达后 fetch 的超时已失效，若上游中途停滞，
+      // 读循环会永久挂起。每收到一个分片就重置计时，超时则取消 reader 解挂。
+      const STREAM_IDLE_TIMEOUT_MS = 20000;
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
       let buf = '';
       let full = '';
-      for (;;) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buf += decoder.decode(value, { stream: true });
-        let idx;
-        while ((idx = buf.indexOf('\n')) >= 0) {
-          const line = buf.slice(0, idx).trim();
-          buf = buf.slice(idx + 1);
-          if (!line) continue;
-          try {
-            const j = JSON.parse(line);
-            if (j.d) { full += j.d; if (typeof onDelta === 'function') onDelta(j.d); }
-            else if (j.done && typeof j.text === 'string' && j.text) full = j.text;
-          } catch { /* 跳过坏行 */ }
+      let idleTimer = null;
+      let timedOut = false;
+      const resetIdle = () => {
+        if (idleTimer) clearTimeout(idleTimer);
+        idleTimer = setTimeout(() => {
+          timedOut = true;
+          try { reader.cancel(); } catch (e) { /* 忽略 */ }
+        }, STREAM_IDLE_TIMEOUT_MS);
+      };
+      try {
+        resetIdle();
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          resetIdle();
+          buf += decoder.decode(value, { stream: true });
+          let idx;
+          while ((idx = buf.indexOf('\n')) >= 0) {
+            const line = buf.slice(0, idx).trim();
+            buf = buf.slice(idx + 1);
+            if (!line) continue;
+            try {
+              const j = JSON.parse(line);
+              if (j.d) { full += j.d; if (typeof onDelta === 'function') onDelta(j.d); }
+              else if (j.done && typeof j.text === 'string' && j.text) full = j.text;
+            } catch { /* 跳过坏行 */ }
+          }
         }
+      } finally {
+        if (idleTimer) clearTimeout(idleTimer);
+        try { reader.cancel(); } catch (e) { /* 忽略 */ }
       }
       const out = full.trim();
+      if (timedOut && !out) return { success: false, error: '流式响应超时' };
       if (!out) return { success: false, error: '流式返回为空' };
       this.logger.info('AI文案处理(中转·流式)完成:', { outputLength: out.length });
       return { success: true, text: out };

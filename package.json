@@ -124,6 +124,7 @@
       "download_models.py",
       "package.json",
       "python/**/*",
+      "models/**/*",
       "node_modules/**/*",
       "src/dist/**/*",
       "src/helpers/**/*",
@@ -138,9 +139,11 @@
       "funasr_server.py",
       "download_models.py",
       "python/**/*",
+      "models/**/*",
       "node_modules/**/*ffmpeg-static*/**/*",
       "node_modules/**/*better-sqlite3*/**/*",
-      "node_modules/**/*bindings*/**/*"
+      "node_modules/**/*bindings*/**/*",
+      "node_modules/**/*uiohook-napi*/**/*"
     ],
     "mac": {
       "category": "public.app-category.productivity",
@@ -154,7 +157,29 @@
       }
     },
     "win": {
-      "icon": "assets/icon.ico"
+      "icon": "assets/icon.ico",
+      "artifactName": "${productName}-${version}-${arch}-${ext}",
+      "target": [
+        {
+          "target": "nsis",
+          "arch": ["x64"]
+        },
+        {
+          "target": "portable",
+          "arch": ["x64"]
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "WordTaker"
+    },
+    "portable": {
+      "artifactName": "${productName}-${version}-portable.exe"
     },
     "linux": {
       "icon": "assets/icon.png",

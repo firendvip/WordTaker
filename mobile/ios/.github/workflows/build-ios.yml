@@ -1,0 +1,57 @@
+name: Build iOS
+
+# Builds the WordTaker iOS app on a macOS runner that has full Xcode.
+# This is the realistic way to produce a real build/artifact, since the local
+# dev machine only has Xcode command-line tools (no xcodebuild).
+
+on:
+  push:
+    paths:
+      - "mobile/ios/**"
+      - ".github/workflows/build-ios.yml"
+  pull_request:
+    paths:
+      - "mobile/ios/**"
+  workflow_dispatch: {}
+
+jobs:
+  build:
+    runs-on: macos-latest
+    defaults:
+      run:
+        working-directory: mobile/ios
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: sudo xcode-select -switch /Applications/Xcode.app
+
+      - name: Show Xcode version
+        run: xcodebuild -version
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        run: xcodegen generate
+
+      - name: Build app (simulator, no code signing)
+        run: |
+          xcodebuild \
+            -project WordTaker.xcodeproj \
+            -scheme WordTaker \
+            -sdk iphonesimulator \
+            -destination 'platform=iOS Simulator,name=iPhone 15' \
+            CODE_SIGNING_ALLOWED=NO \
+            clean build
+
+      - name: Run unit tests (simulator)
+        run: |
+          xcodebuild \
+            -project WordTaker.xcodeproj \
+            -scheme WordTaker \
+            -sdk iphonesimulator \
+            -destination 'platform=iOS Simulator,name=iPhone 15' \
+            CODE_SIGNING_ALLOWED=NO \
+            test
