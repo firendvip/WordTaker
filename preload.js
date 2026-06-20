@@ -111,6 +111,14 @@ contextBridge.exposeInMainWorld("electronAPI", {
     return () => ipcRenderer.removeListener("translate-status", callback);
   },
 
+  // 胶囊皮肤：重载并广播到胶囊窗口（设置变更后调用）
+  reloadPillSkin: () => ipcRenderer.invoke('reload-pill-skin'),
+  // 监听胶囊皮肤变更事件（主进程广播 { skin }）
+  onPillSkinChanged: (callback) => {
+    ipcRenderer.on('pill-skin-changed', callback);
+    return () => ipcRenderer.removeListener('pill-skin-changed', callback);
+  },
+
   // 文件操作
   exportTranscriptions: (format) => ipcRenderer.invoke("export-transcriptions", format),
   importSettings: () => ipcRenderer.invoke("import-settings"),

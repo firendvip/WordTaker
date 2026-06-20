@@ -190,6 +190,9 @@ body {
   border: 1.5px solid rgba(255,255,255,.55);
   animation: pill-badge-ring 1.8s ease-out infinite; pointer-events: none;
 }
+/* VoiceInk 皮肤：15 条白色音频可视化（高度由 rAF 写入） */
+.pill-vk { position:absolute; left:50%; top:50%; transform:translate(-50%,-50%); display:flex; align-items:center; gap:2px; height:30px; pointer-events:none; }
+.pill-vk-bar { width:3px; border-radius:1.5px; background:#fff; height:4px; will-change:height; }
 /* 启动 / 处理中：一行错峰闪烁的小音符（无上下浮动） */
 .pill-note-row {
   position: absolute;

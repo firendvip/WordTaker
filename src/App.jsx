@@ -47,6 +47,31 @@ function RecorderApp() {
   const [showTextArea, setShowTextArea] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [translatePhase, setTranslatePhase] = useState('idle'); // idle | translating | done | error
+  const [pillSkin, setPillSkin] = useState('music'); // music | voiceink
+
+  // 读取胶囊皮肤初始值（沿用现有 getSetting 模式）
+  useEffect(() => {
+    let active = true;
+    (async () => {
+      try {
+        if (!window.electronAPI || !window.electronAPI.getSetting) return;
+        const skin = await window.electronAPI.getSetting('pill_skin', 'music');
+        if (active && skin) setPillSkin(skin);
+      } catch (e) {
+        // 读取失败时使用默认皮肤 music
+      }
+    })();
+    return () => { active = false; };
+  }, []);
+
+  // 订阅皮肤实时变更
+  useEffect(() => {
+    if (!window.electronAPI || !window.electronAPI.onPillSkinChanged) return;
+    const off = window.electronAPI.onPillSkinChanged((_e, data) => {
+      if (data && data.skin) setPillSkin(data.skin);
+    });
+    return () => { if (typeof off === 'function') off(); };
+  }, []);
 
   // 触发键标签（真实触发由主进程的 recording_trigger 决定，如"左 Option"/"双击左 Alt"）
   const [triggerLabel, setTriggerLabel] = useState("左 Option");
@@ -569,6 +594,7 @@ function RecorderApp() {
       modelStatus={modelStatus}
       hotkeyLabel={triggerLabel}
       translateState={translatePhase}
+      pillSkin={pillSkin}
       disabled={micProps.disabled}
       onToggle={toggleRecording}
       onOpenSettings={handleOpenSettings}

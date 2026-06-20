@@ -15,6 +15,8 @@ const ALLOWED_SETTING_KEYS = new Set([
   "llm_relay_enabled", "llm_relay_url", "llm_relay_token", "llm_streaming_enabled",
   // 保留最近一次生成结果到剪贴板（开启后粘贴完不恢复用户原剪贴板）
   "keep_result_in_clipboard",
+  // 胶囊中心动画皮肤（'music' | 'voiceink'）
+  "pill_skin",
 ]);
 // 转录选项白名单：渲染层只能透传这些键到 Python 边界，丢弃未知键（IPCVAL-1）。
 // 与 funasr_server.py 的 default_options 对齐。

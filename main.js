@@ -293,6 +293,18 @@ ipcMain.handle('reload-translate-trigger', () => {
   }
 });
 
+// 胶囊皮肤变更后实时广播到胶囊窗口（主窗口），让中心动画即时切换
+ipcMain.handle('reload-pill-skin', () => {
+  try {
+    const skin = databaseManager.getSetting('pill_skin', 'music');
+    const w = windowManager.mainWindow;
+    if (w && !w.isDestroyed()) w.webContents.send('pill-skin-changed', { skin });
+    return { success: true, skin };
+  } catch (e) {
+    return { success: false, error: String(e && e.message || e) };
+  }
+});
+
 // 隐藏胶囊（粘贴完成 / 取消后由渲染层调用）
 ipcMain.handle('hide-recorder', () => {
   windowManager.hideMainWindow();

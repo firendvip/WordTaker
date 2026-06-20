@@ -2,7 +2,7 @@ import React, { useState, useEffect } from "react";
 import ReactDOM from "react-dom/client";
 import "./index.css";
 import { toast, Toaster } from "sonner";
-import { Settings, Save, Eye, EyeOff, Loader2, TestTube, CheckCircle, XCircle, Mic, Shield, Keyboard, Volume2, Play, Sparkles, Info, Drama } from "lucide-react";
+import { Settings, Save, Eye, EyeOff, Loader2, TestTube, CheckCircle, XCircle, Mic, Shield, Keyboard, Volume2, Play, Sparkles, Info, Drama, Palette } from "lucide-react";
 import { usePermissions } from "./hooks/usePermissions";
 import PermissionCard from "./components/ui/permission-card";
 import { SOUND_SCHEMES, previewSound, playEnd } from "./utils/sounds";
@@ -33,6 +33,7 @@ const SettingsPage = () => {
     asr_engine: "sensevoice",
     llm_streaming_enabled: false,
     llm_active_role: "vibecoding",
+    pill_skin: "music",
     translate_trigger_key: "LeftCtrl",
     translate_trigger_taps: 2,
     translate_fallback_select_all: false,
@@ -59,6 +60,7 @@ const SettingsPage = () => {
     { id: "permissions", label: "权限", icon: Shield },
     { id: "shortcuts", label: "快捷键", icon: Keyboard },
     { id: "sound", label: "提示音", icon: Volume2 },
+    { id: "skin", label: "皮肤", icon: Palette },
     { id: "role", label: "角色", icon: Drama },
     { id: "general", label: "实验", icon: Settings },
     { id: "about", label: "关于", icon: Info },
@@ -112,6 +114,7 @@ const SettingsPage = () => {
           asr_engine: allSettings.asr_engine || "sensevoice",
           llm_streaming_enabled: allSettings.llm_streaming_enabled === true,
           llm_active_role: allSettings.llm_active_role || "vibecoding",
+          pill_skin: allSettings.pill_skin || "music",
           translate_trigger_key: (allSettings.translate_trigger && allSettings.translate_trigger.key) || "LeftCtrl",
           translate_trigger_taps: (allSettings.translate_trigger && allSettings.translate_trigger.taps) || 2,
           translate_fallback_select_all: allSettings.translate_fallback_select_all === true,
@@ -218,6 +221,10 @@ const SettingsPage = () => {
       }
       if (changed.has("llm_active_role")) {
         await window.electronAPI.setSetting("llm_active_role", next.llm_active_role);
+      }
+      if (changed.has("pill_skin")) {
+        await window.electronAPI.setSetting("pill_skin", next.pill_skin);
+        if (window.electronAPI.reloadPillSkin) await window.electronAPI.reloadPillSkin();
       }
       if (changed.has("translate_fallback_select_all")) {
         await window.electronAPI.setSetting("translate_fallback_select_all", next.translate_fallback_select_all === true);
@@ -1029,6 +1036,67 @@ const SettingsPage = () => {
                     className="w-48 accent-blue-600 dark:accent-blue-500"
                   />
                 </div>
+              </div>
+            </div>
+          )}
+
+          {/* 皮肤 */}
+          {activeCategory === "skin" && (
+            <div className="bg-white dark:bg-neutral-900 rounded-2xl shadow-sm border border-gray-100 dark:border-neutral-800">
+              <div className="px-6">
+                <p className="pt-4 text-[13px] text-gray-500 dark:text-neutral-400">
+                  选择胶囊录音时中间的动画风格。
+                </p>
+                {/* 音乐皮肤 */}
+                <button
+                  type="button"
+                  onClick={() => updateAndSave('pill_skin', 'music')}
+                  className="w-full flex items-center justify-between gap-4 py-4 border-b border-gray-100 dark:border-neutral-800 text-left"
+                >
+                  <div className="min-w-0">
+                    <label className={`${rowLabelClass} chinese-title`}>音乐皮肤</label>
+                    <p className="mt-0.5 text-[13px] text-gray-500 dark:text-neutral-400">
+                      默认 · 跳动的彩色音符，随声音律动
+                    </p>
+                  </div>
+                  <span
+                    aria-hidden="true"
+                    className={`flex-shrink-0 w-5 h-5 rounded-full border-2 flex items-center justify-center ${
+                      settings.pill_skin === 'music'
+                        ? 'border-blue-600 dark:border-blue-400'
+                        : 'border-gray-300 dark:border-neutral-600'
+                    }`}
+                  >
+                    {settings.pill_skin === 'music' && (
+                      <span className="w-2.5 h-2.5 rounded-full bg-blue-600 dark:bg-blue-400" />
+                    )}
+                  </span>
+                </button>
+                {/* VoiceInk 风格 */}
+                <button
+                  type="button"
+                  onClick={() => updateAndSave('pill_skin', 'voiceink')}
+                  className="w-full flex items-center justify-between gap-4 py-4 text-left"
+                >
+                  <div className="min-w-0">
+                    <label className={`${rowLabelClass} chinese-title`}>VoiceInk 风格</label>
+                    <p className="mt-0.5 text-[13px] text-gray-500 dark:text-neutral-400">
+                      15 根白色声波条，随音量起伏
+                    </p>
+                  </div>
+                  <span
+                    aria-hidden="true"
+                    className={`flex-shrink-0 w-5 h-5 rounded-full border-2 flex items-center justify-center ${
+                      settings.pill_skin === 'voiceink'
+                        ? 'border-blue-600 dark:border-blue-400'
+                        : 'border-gray-300 dark:border-neutral-600'
+                    }`}
+                  >
+                    {settings.pill_skin === 'voiceink' && (
+                      <span className="w-2.5 h-2.5 rounded-full bg-blue-600 dark:bg-blue-400" />
+                    )}
+                  </span>
+                </button>
               </div>
             </div>
           )}

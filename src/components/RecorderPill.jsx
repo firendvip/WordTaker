@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import {
   Check,
   Sparkles,
@@ -46,6 +46,7 @@ export function RecorderPill({
   modelStatus,
   hotkeyLabel,
   translateState = "idle",
+  pillSkin = "music",
   disabled,
   onToggle,
   onOpenSettings,
@@ -65,6 +66,39 @@ export function RecorderPill({
     if (translateState === "done") setTranslateProgress(100);
     if (translateState === "idle" || translateState === "error") setTranslateProgress(0);
   }, [translateState]);
+
+  // VoiceInk 15-bar 可视化：用 ref 直接写 DOM 高度，避免每帧 setState
+  const vkBarsRef = useRef([]);          // array of 15 span refs
+  const vkLevelRef = useRef(0);
+  const vkRecordingRef = useRef(false);
+  useEffect(() => { vkLevelRef.current = audioLevel || 0; }, [audioLevel]);
+  useEffect(() => { vkRecordingRef.current = micState === "recording"; }, [micState]);
+  useEffect(() => {
+    if (pillSkin !== 'voiceink') return;
+    let raf, cancelled = false;
+    const tick = () => {
+      if (cancelled) return;
+      const t = performance.now() / 1000;
+      const lvl = Math.min(1, Math.max(0, vkLevelRef.current));
+      const amp = Math.pow(lvl, 0.7);
+      for (let i = 0; i < 15; i++) {
+        const el = vkBarsRef.current[i];
+        if (!el) continue;
+        let h;
+        if (vkRecordingRef.current) {
+          const wave = Math.sin(t * 8 + i * 0.4) * 0.5 + 0.5;
+          const centerBoost = 1 - (Math.abs(i - 7) / 7) * 0.4;
+          h = 4 + amp * wave * centerBoost * 24;   // 4..28px
+        } else {
+          h = 4;                                    // idle flat
+        }
+        el.style.height = `${h.toFixed(1)}px`;
+      }
+      raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => { cancelled = true; if (raf) cancelAnimationFrame(raf); };
+  }, [pillSkin]);
 
   const isTranslating = translateState === "translating";
   const isTranslateActive = isTranslating || translateState === "done";
@@ -126,7 +160,7 @@ export function RecorderPill({
           aria-label={needDownload ? "下载模型" : isRecording ? "停止录音" : "开始录音"}
           disabled={disabled && !needDownload}
         >
-          {isRecording && (<>
+          {isRecording && pillSkin !== "voiceink" && (<>
             <span className="pill-badge-ring" aria-hidden="true" />
             <span className="pill-badge-ring" style={{ animationDelay: '0.9s' }} aria-hidden="true" />
           </>)}
@@ -143,6 +177,22 @@ export function RecorderPill({
                 style={{ width: translateProgress + "%" }}
               />
             </div>
+          </div>
+        ) : pillSkin === "voiceink" ? (
+          // VoiceInk 皮肤：15 条音频可视化（高度由 rAF 直接写 DOM）
+          <div
+            className="pill-vk"
+            aria-hidden="true"
+            style={{ opacity: isBusy ? 0.6 : isRecording ? 0.85 : 0.5 }}
+          >
+            {Array.from({ length: 15 }).map((_, i) => (
+              <span
+                key={i}
+                ref={(el) => (vkBarsRef.current[i] = el)}
+                className="pill-vk-bar"
+                style={{ height: "4px" }}
+              />
+            ))}
           </div>
         ) : isBusy ? (
           // 忙碌：一行错峰上下弹跳的彩色音符（行进波）
