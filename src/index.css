@@ -113,6 +113,7 @@ body {
   -webkit-app-region: no-drag;
 }
 .pill-badge {
+  position: relative;
   width: 16px;
   height: 16px;
   border-radius: 999px;
@@ -170,31 +171,26 @@ body {
   0%, 100% { transform: scaleY(0.25); }
   50% { transform: scaleY(1); }
 }
-/* 说话中：胶囊中部底→顶上浮渐隐的彩色音符。容器加宽并居中，横跨 ~x=41..159（避开左徽章/右金星） */
-.pill-notes {
-  position: absolute;
-  left: 50%;
-  top: 50%;
-  transform: translate(-50%, -50%);
-  width: 88px;
-  height: 30px;
-  overflow: hidden;
-  pointer-events: none;
+/* 录音 / 空闲：胶囊中部一行轻柔呼吸的彩色音符；整行透明度由音量反向驱动（在 JSX inline 设置） */
+@keyframes pill-note-breathe { 0%,100% { opacity: .22; } 50% { opacity: 1; } }
+.pill-breathe-row {
+  position: absolute; left: 50%; top: 50%; transform: translate(-50%,-50%);
+  width: 92px; display: flex; align-items: center; justify-content: space-between;
+  pointer-events: none; transition: opacity 500ms ease;
 }
-.pill-note {
-  position: absolute;
-  bottom: 4px;
-  line-height: 1;
-  will-change: transform, opacity;
+.pill-breathe-note {
+  font-size: 12px; line-height: 1; will-change: opacity;
   text-shadow: 0 0 6px currentColor;
+  animation: pill-note-breathe 2.2s ease-in-out infinite;
 }
-@keyframes pill-note-float {
-  0%   { transform: translate(-50%, 14px) scale(.6) rotate(var(--r)); opacity: 0; }
-  22%  { opacity: 1; }
-  55%  { transform: translate(-50%, -4px) scale(1) rotate(0deg); opacity: 1; }
-  100% { transform: translate(-50%, -24px) scale(.78) rotate(calc(var(--r) * -1)); opacity: 0; }
+/* 录音中：从徽章向外扩散的半透明圆环（错峰两道） */
+@keyframes pill-badge-ring { 0% { transform: scale(1); opacity: .5; } 100% { transform: scale(1.9); opacity: 0; } }
+.pill-badge-ring {
+  position: absolute; inset: 0; border-radius: 50%;
+  border: 1.5px solid rgba(255,255,255,.55);
+  animation: pill-badge-ring 1.8s ease-out infinite; pointer-events: none;
 }
-/* 静音 / 启动 / 处理中：一行错峰闪烁的小音符（无上下浮动） */
+/* 启动 / 处理中：一行错峰闪烁的小音符（无上下浮动） */
 .pill-note-row {
   position: absolute;
   left: 50%;
@@ -206,18 +202,6 @@ body {
   justify-content: center;
   gap: 8px;
   pointer-events: none;
-}
-.pill-note-blink {
-  font-size: 14px;
-  line-height: 1;
-  opacity: .28;
-  text-shadow: 0 0 6px currentColor;
-  will-change: opacity;
-  animation: pill-note-blink 1.4s ease-in-out infinite;
-}
-@keyframes pill-note-blink {
-  0%, 100% { opacity: .28; }
-  50%      { opacity: 1; }
 }
 /* 忙碌：一行错峰上下弹跳的彩色音符（行进波） */
 .pill-note-bounce-row {
