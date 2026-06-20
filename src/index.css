@@ -113,8 +113,8 @@ body {
   -webkit-app-region: no-drag;
 }
 .pill-badge {
-  width: 22px;
-  height: 22px;
+  width: 25px;
+  height: 25px;
   border-radius: 999px;
   background: #ffffff;
   display: flex;
@@ -170,13 +170,13 @@ body {
   0%, 100% { transform: scaleY(0.25); }
   50% { transform: scaleY(1); }
 }
-/* 录音中：胶囊中部漂浮的彩色音符（纯 CSS，不依赖音量） */
+/* 说话中：胶囊中部底→顶上浮渐隐的彩色音符。容器加宽并居中，横跨 ~x=41..159（避开左徽章/右金星） */
 .pill-notes {
   position: absolute;
   left: 50%;
   top: 50%;
   transform: translate(-50%, -50%);
-  width: 66px;
+  width: 118px;
   height: 30px;
   overflow: hidden;
   pointer-events: none;
@@ -193,6 +193,31 @@ body {
   22%  { opacity: 1; }
   55%  { transform: translate(-50%, -4px) scale(1) rotate(0deg); opacity: 1; }
   100% { transform: translate(-50%, -24px) scale(.78) rotate(calc(var(--r) * -1)); opacity: 0; }
+}
+/* 静音 / 启动 / 处理中：一行错峰闪烁的小音符（无上下浮动） */
+.pill-note-row {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  pointer-events: none;
+}
+.pill-note-blink {
+  font-size: 14px;
+  line-height: 1;
+  opacity: .28;
+  text-shadow: 0 0 6px currentColor;
+  will-change: opacity;
+  animation: pill-note-blink 1.4s ease-in-out infinite;
+}
+@keyframes pill-note-blink {
+  0%, 100% { opacity: .28; }
+  50%      { opacity: 1; }
 }
 .pill-actions {
   display: flex;

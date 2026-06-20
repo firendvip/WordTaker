@@ -120,6 +120,7 @@ export const useRecording = ({ onTranscriptionCompleteRef, onAIOptimizationCompl
 
         const smoothBands = createZeroBands();
         let lastBands = createZeroBands();
+        let lastLevel = -1;
         let lastEmit = 0;
 
         // 单个频段电平：对其覆盖的频点取均值 → 归一化 0..1 → 增益+钳制 → 噪声门
@@ -149,11 +150,26 @@ export const useRecording = ({ onTranscriptionCompleteRef, onAIOptimizationCompl
             smoothBands[b] = smoothBands[b] * BAND_SMOOTH_OLD + cur * BAND_SMOOTH_NEW;
             rounded[b] = Math.round(smoothBands[b] * 100) / 100;
           }
+          // 平滑后整体音量电平（0..1）：取各频段最大值，驱动音符的"说话/静音"与数量
+          let maxBand = 0;
+          for (let b = 0; b < BAND_COUNT; b++) {
+            if (rounded[b] > maxBand) maxBand = rounded[b];
+          }
           const now = performance.now();
-          if (now - lastEmit >= BAND_RENDER_INTERVAL_MS && hasMeaningfulChange(rounded)) {
-            lastEmit = now;
-            lastBands = rounded;
-            setAudioBands(rounded);
+          if (now - lastEmit >= BAND_RENDER_INTERVAL_MS) {
+            const levelChanged = maxBand !== lastLevel;
+            const bandsChanged = hasMeaningfulChange(rounded);
+            if (levelChanged || bandsChanged) {
+              lastEmit = now;
+              if (bandsChanged) {
+                lastBands = rounded;
+                setAudioBands(rounded);
+              }
+              if (levelChanged) {
+                lastLevel = maxBand;
+                setAudioLevel(maxBand);
+              }
+            }
           }
           levelRafRef.current = requestAnimationFrame(tick);
         };

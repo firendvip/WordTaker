@@ -8,13 +8,16 @@ import {
   AlertTriangle,
 } from "lucide-react";
 
-const BAR_COUNT = 13; // 与 useRecording 的 BAND_COUNT 保持一致
-const SILENT_FLOOR = 0.3; // 静止时柱子读作较长的竖线
-
-// 录音中：胶囊中部漂浮的彩色音符（纯 CSS 动画，不依赖音量输入）
+// 音符调色板与字形（说话/静音两种中部动画共用）
 const NOTE_GLYPHS = ['♪','♫','♬','♩','♭'];
 const NOTE_COLORS = ['#7DB4FF','#5FD8C4','#F7A8CB','#FFD36B','#B9A6FF','#9FE89A','#FFFFFF'];
-const NOTE_COUNT = 10;
+
+// 说话时上升音符：最多 14 个，按音量裁切；预生成稳定池，下标 i 的视觉属性整段录音保持不变
+const MAX_NOTES = 14;
+// 音量阈值：高于此值视为"正在说话"→ 上升音符；否则 → 静止闪烁音符行
+const SPEAK_THRESHOLD = 0.06;
+// 静音/启动/处理中：一行闪烁的小音符（约 5 个）
+const ROW_NOTE_COUNT = 5;
 
 /**
  * 悬浮胶囊录音条（出现在光标附近）。
@@ -22,6 +25,7 @@ const NOTE_COUNT = 10;
  *
  * @param {{
  *   micState: 'idle'|'hover'|'recording'|'processing'|'optimizing',
+ *   audioLevel?: number,
  *   audioBands?: number[],
  *   modelStatus: object,
  *   hotkeyLabel: string,
@@ -87,18 +91,18 @@ export function RecorderPill({
   let badge;
   if (isTranslateActive) {
     badge = isTranslating ? (
-      <Loader2 className="w-3 h-3 animate-spin text-gray-900" />
+      <Loader2 size={15} className="animate-spin text-gray-900" />
     ) : (
-      <Check className="w-3 h-3 text-gray-900" strokeWidth={3} />
+      <Check size={15} className="text-gray-900" strokeWidth={3} />
     );
   } else if (modelFailed) {
-    badge = <AlertTriangle className="w-3 h-3 text-gray-900" strokeWidth={2.5} />;
+    badge = <AlertTriangle size={15} className="text-gray-900" strokeWidth={2.5} />;
   } else if (downloading || isBusy || modelLoading) {
-    badge = <Loader2 className="w-3 h-3 animate-spin text-gray-900" />;
+    badge = <Loader2 size={15} className="animate-spin text-gray-900" />;
   } else if (needDownload) {
-    badge = <Download className="w-3 h-3 text-gray-900" />;
+    badge = <Download size={15} className="text-gray-900" />;
   } else {
-    badge = <Check className="w-3 h-3 text-gray-900" strokeWidth={3} />;
+    badge = <Check size={15} className="text-gray-900" strokeWidth={3} />;
   }
 
   const handleBadge = () => {
@@ -109,24 +113,43 @@ export function RecorderPill({
     if (!disabled) onToggle && onToggle();
   };
 
-  const waveClass = isBusy ? "is-busy" : "";
+  // 是否"正在说话"：录音中且平滑音量超过阈值 → 上升音符；否则 → 静止闪烁行
+  const speaking = isRecording && (audioLevel || 0) > SPEAK_THRESHOLD;
+  // 注：忙碌(processing/optimizing)状态暂复用静止闪烁行，不单独造动画
 
-  // 录音开始时重新生成随机音符配置（位置/颜色/字形/时长随机）
-  const notes = useMemo(() => {
+  // 音量越大、上升的音符越多（3..14）。乘 1.4 让中等音量也能铺满。
+  const activeCount = Math.max(
+    3,
+    Math.min(MAX_NOTES, Math.round((audioLevel || 0) * MAX_NOTES * 1.4))
+  );
+
+  // 上升音符稳定池：以 isRecording 为 key 记忆，整段录音内下标 i 的字形/颜色/位置/尺寸/时长/相位/旋转不变。
+  // 渲染前 activeCount 个，按下标 key → 数量变化时从尾部增减，已显示的音符不会跳变。
+  const notePool = useMemo(() => {
     if (!isRecording) return [];
-    return Array.from({ length: NOTE_COUNT }).map(() => {
+    return Array.from({ length: MAX_NOTES }).map(() => {
       const dur = 1.3 + Math.random() * 1.4;
       return {
         glyph: NOTE_GLYPHS[Math.floor(Math.random() * NOTE_GLYPHS.length)],
         color: NOTE_COLORS[Math.floor(Math.random() * NOTE_COLORS.length)],
-        left: 5 + Math.random() * 90,
-        size: 12 + Math.random() * 7,
+        left: Math.random() * 100, // 0..100% 跨容器（容器宽 ~118px，居中于胶囊）
+        size: 12 + Math.random() * 7, // 12..19px
         dur,
-        delay: -(Math.random() * dur),
+        delay: -(Math.random() * dur), // 负延迟：起始即处于动画中段，避免整齐起跳
         rot: Math.random() * 44 - 22,
       };
     });
   }, [isRecording]);
+
+  // 静止闪烁行：固定的小音符（颜色/字形稳定），错峰闪烁形成柔和波浪
+  const rowNotes = useMemo(
+    () =>
+      Array.from({ length: ROW_NOTE_COUNT }).map((_, i) => ({
+        glyph: NOTE_GLYPHS[i % NOTE_GLYPHS.length],
+        color: NOTE_COLORS[i % NOTE_COLORS.length],
+      })),
+    []
+  );
 
   return (
     <div className="pill-root">
@@ -153,9 +176,10 @@ export function RecorderPill({
               />
             </div>
           </div>
-        ) : isRecording ? (
+        ) : speaking ? (
+          // 正在说话：底部升起、上浮渐隐的彩色音符，数量随音量增减
           <div className="pill-notes" aria-hidden="true">
-            {notes.map((n, i) => (
+            {notePool.slice(0, activeCount).map((n, i) => (
               <span
                 key={i}
                 className="pill-note"
@@ -172,10 +196,16 @@ export function RecorderPill({
             ))}
           </div>
         ) : (
-          <div className={`pill-wave ${waveClass}`} aria-hidden="true">
-            {Array.from({ length: BAR_COUNT }).map((_, i) => (
-              // 非录音 / 处理中：沿用 CSS 关键帧动画（按 animationDelay 错峰）
-              <span key={i} className="pill-bar" style={{ animationDelay: `${i * 55}ms` }} />
+          // 静音 / 启动 / 处理中：一行错峰闪烁的小音符（无上下浮动）
+          <div className="pill-note-row" aria-hidden="true">
+            {rowNotes.map((n, i) => (
+              <span
+                key={i}
+                className="pill-note-blink"
+                style={{ color: n.color, animationDelay: `${i * 160}ms` }}
+              >
+                {n.glyph}
+              </span>
             ))}
           </div>
         )}
