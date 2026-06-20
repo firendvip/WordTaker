@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useMemo } from "react";
 import {
   Check,
   Sparkles,
@@ -10,6 +10,11 @@ import {
 
 const BAR_COUNT = 13; // 与 useRecording 的 BAND_COUNT 保持一致
 const SILENT_FLOOR = 0.3; // 静止时柱子读作较长的竖线
+
+// 录音中：胶囊中部漂浮的彩色音符（纯 CSS 动画，不依赖音量输入）
+const NOTE_GLYPHS = ['♪','♫','♬','♩','♭'];
+const NOTE_COLORS = ['#7DB4FF','#5FD8C4','#F7A8CB','#FFD36B','#B9A6FF','#9FE89A','#FFFFFF'];
+const NOTE_COUNT = 10;
 
 /**
  * 悬浮胶囊录音条（出现在光标附近）。
@@ -106,6 +111,23 @@ export function RecorderPill({
 
   const waveClass = isBusy ? "is-busy" : "";
 
+  // 录音开始时重新生成随机音符配置（位置/颜色/字形/时长随机）
+  const notes = useMemo(() => {
+    if (!isRecording) return [];
+    return Array.from({ length: NOTE_COUNT }).map(() => {
+      const dur = 1.3 + Math.random() * 1.4;
+      return {
+        glyph: NOTE_GLYPHS[Math.floor(Math.random() * NOTE_GLYPHS.length)],
+        color: NOTE_COLORS[Math.floor(Math.random() * NOTE_COLORS.length)],
+        left: 5 + Math.random() * 90,
+        size: 12 + Math.random() * 7,
+        dur,
+        delay: -(Math.random() * dur),
+        rot: Math.random() * 44 - 22,
+      };
+    });
+  }, [isRecording]);
+
   return (
     <div className="pill-root">
       <div className={`recorder-pill${modelFailed ? " is-error" : ""}`} title={statusText}>
@@ -131,24 +153,30 @@ export function RecorderPill({
               />
             </div>
           </div>
+        ) : isRecording ? (
+          <div className="pill-notes" aria-hidden="true">
+            {notes.map((n, i) => (
+              <span
+                key={i}
+                className="pill-note"
+                style={{
+                  left: `${n.left}%`,
+                  color: n.color,
+                  fontSize: `${n.size}px`,
+                  '--r': `${n.rot}deg`,
+                  animation: `pill-note-float ${n.dur.toFixed(2)}s ease-in-out ${n.delay.toFixed(2)}s infinite`,
+                }}
+              >
+                {n.glyph}
+              </span>
+            ))}
+          </div>
         ) : (
           <div className={`pill-wave ${waveClass}`} aria-hidden="true">
-            {Array.from({ length: BAR_COUNT }).map((_, i) => {
-              // 录音中：每根柱子由其对应频段独立驱动（音乐均衡器/钢琴键效果）。
-              // 静音时所有频段≈0 → 全部停在 SILENT_FLOOR，呈平直长线。
-              if (isRecording) {
-                const band = audioBands[i] || 0;
-                const raw = SILENT_FLOOR + band * (1 - SILENT_FLOOR);
-                const scale = Math.min(1, Math.max(SILENT_FLOOR, raw));
-                return (
-                  <span key={i} className="pill-bar" style={{ transform: `scaleY(${scale})` }} />
-                );
-              }
+            {Array.from({ length: BAR_COUNT }).map((_, i) => (
               // 非录音 / 处理中：沿用 CSS 关键帧动画（按 animationDelay 错峰）
-              return (
-                <span key={i} className="pill-bar" style={{ animationDelay: `${i * 55}ms` }} />
-              );
-            })}
+              <span key={i} className="pill-bar" style={{ animationDelay: `${i * 55}ms` }} />
+            ))}
           </div>
         )}
 

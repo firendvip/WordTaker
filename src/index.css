@@ -170,6 +170,30 @@ body {
   0%, 100% { transform: scaleY(0.25); }
   50% { transform: scaleY(1); }
 }
+/* 录音中：胶囊中部漂浮的彩色音符（纯 CSS，不依赖音量） */
+.pill-notes {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: 66px;
+  height: 30px;
+  overflow: hidden;
+  pointer-events: none;
+}
+.pill-note {
+  position: absolute;
+  bottom: 4px;
+  line-height: 1;
+  will-change: transform, opacity;
+  text-shadow: 0 0 6px currentColor;
+}
+@keyframes pill-note-float {
+  0%   { transform: translate(-50%, 14px) scale(.6) rotate(var(--r)); opacity: 0; }
+  22%  { opacity: 1; }
+  55%  { transform: translate(-50%, -4px) scale(1) rotate(0deg); opacity: 1; }
+  100% { transform: translate(-50%, -24px) scale(.78) rotate(calc(var(--r) * -1)); opacity: 0; }
+}
 .pill-actions {
   display: flex;
   align-items: center;
