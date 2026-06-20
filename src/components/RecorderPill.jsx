@@ -88,7 +88,7 @@ export function RecorderPill({
         if (vkRecordingRef.current) {
           const wave = Math.sin(t * 8 + i * 0.4) * 0.5 + 0.5;
           const centerBoost = 1 - (Math.abs(i - 7) / 7) * 0.4;
-          h = 4 + amp * wave * centerBoost * 24;   // 4..28px
+          h = 4 + amp * wave * centerBoost * 14;   // 4..18px
         } else {
           h = 4;                                    // idle flat
         }
@@ -210,10 +210,10 @@ export function RecorderPill({
         ) : (
           // 录音 / 空闲：一行轻柔呼吸的彩色音符；说话时整行随音量渐隐，静音时渐显
           <div className="pill-breathe-row" aria-hidden="true"
-               style={{ opacity: isRecording ? Math.max(0, 1 - Math.min(1,(audioLevel||0)*2.2)) : 1 }}>
+               style={{ opacity: 1 }}>
             {ROW_GLYPHS.map((g, i) => (
               <span key={i} className="pill-breathe-note"
-                    style={{ color: ROW_COLORS[i % ROW_COLORS.length], animationDelay: `${(i*0.18).toFixed(2)}s` }}>
+                    style={{ color: ROW_COLORS[i % ROW_COLORS.length], animationDelay: `${(i*0.18).toFixed(2)}s`, '--amp': `${Math.min(4, (audioLevel||0) * 8).toFixed(1)}px` }}>
                 {g}
               </span>
             ))}

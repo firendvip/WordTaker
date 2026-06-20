@@ -1044,9 +1044,6 @@ const SettingsPage = () => {
           {activeCategory === "skin" && (
             <div className="bg-white dark:bg-neutral-900 rounded-2xl shadow-sm border border-gray-100 dark:border-neutral-800">
               <div className="px-6">
-                <p className="pt-4 text-[13px] text-gray-500 dark:text-neutral-400">
-                  选择胶囊录音时中间的动画风格。
-                </p>
                 {/* 音乐皮肤 */}
                 <button
                   type="button"
@@ -1079,7 +1076,7 @@ const SettingsPage = () => {
                   className="w-full flex items-center justify-between gap-4 py-4 text-left"
                 >
                   <div className="min-w-0">
-                    <label className={`${rowLabelClass} chinese-title`}>VoiceInk 风格</label>
+                    <label className={`${rowLabelClass} chinese-title`}>常规</label>
                     <p className="mt-0.5 text-[13px] text-gray-500 dark:text-neutral-400">
                       15 根白色声波条，随音量起伏
                     </p>

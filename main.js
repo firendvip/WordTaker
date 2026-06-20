@@ -138,6 +138,8 @@ let isTranslating = false;
 // 应用是否已完成启动初始化（转英文触发器已挂载）。用于防止早期/边缘的 recorder-state(true)
 // 在触发器尚未挂载前就误调用 stop() 造成的状态错乱。
 let appFullyInitialized = false;
+// 录音开始时间戳：用于最小录音时长守卫，忽略录音刚开始(<800ms)的取消，防止胶囊误消失。
+let recordStartedAt = 0;
 
 // 校验 recording_trigger，非法字段一律回退默认（防止渲染层写入异常对象）
 function validateRecordingTrigger(t, fallback) {
@@ -364,6 +366,10 @@ function unregisterRawStopKey() {
 // 下方 globalShortcut 分支对当前选项已基本不会命中，保留为无害回退。
 let cancelKeyRegistered = null; // 仅记录已注册的 globalShortcut 加速键（回退用）
 function fireCancel() {
+  if (Date.now() - recordStartedAt < 800) {
+    logger.info('忽略过早的取消(录音不足800ms)，防止胶囊误消失');
+    return;
+  }
   const win = windowManager.mainWindow;
   if (win && !win.isDestroyed()) win.webContents.send('cancel-recording');
   windowManager.hideMainWindow();
@@ -417,6 +423,7 @@ ipcMain.on('recorder-state', (event, recording) => {
   // 记录录音状态：转英文键在录音中让位给 raw-stop（见 handleTranslateHotkey）。
   isRecording = !!recording;
   if (recording) {
+    recordStartedAt = Date.now();
     registerCancelKey();
     registerRawStopKey();
     // 录音期间左 Ctrl 必须让位给 raw-stop：停掉转英文触发器，避免裸修饰键被双重监听。

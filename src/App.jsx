@@ -146,6 +146,9 @@ function RecorderApp() {
 
   // 防重复粘贴的引用
   const lastPasteRef = useRef({ text: '', timestamp: 0 });
+  // 录音开始时间戳：忽略录音刚开始(<800ms)的二次 toggle（单击左 Option 偶发双触发），
+  // 防止刚唤醒就 start→立即 stop→空音频→胶囊消失。
+  const recordingStartRef = useRef(0);
   const PASTE_DEBOUNCE_TIME = 1000; // 1秒内相同文本不重复粘贴
 
   // 安全粘贴函数
@@ -402,8 +405,13 @@ function RecorderApp() {
     }
 
     if (!isRecording && !isRecordingProcessing) {
+      recordingStartRef.current = Date.now();
       startRecording();
     } else if (isRecording) {
+      if (Date.now() - recordingStartRef.current < 800) {
+        // ignore accidental immediate toggle (double-fire) so the pill doesn't vanish right after waking
+        return;
+      }
       stopRecording();
     }
   }, [modelStatus, isRecording, isRecordingProcessing, startRecording, stopRecording]);
