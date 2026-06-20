@@ -204,6 +204,13 @@ ipcMain.handle('reload-recording-trigger', () => {
 // 「转英文」热键处理：捕获选中文本 → 翻译为地道英文 → 粘贴回去。
 // 录音中（左 Ctrl 走 raw-stop）或上一次仍在进行时直接跳过。全程在主进程编排，串行防风暴。
 async function handleTranslateHotkey() {
+  const sendTranslateStatus = (phase, extra = {}) => {
+    try {
+      const w = windowManager.mainWindow;
+      if (w && !w.isDestroyed()) w.webContents.send('translate-status', { phase, ...extra });
+    } catch (_) {}
+  };
+  const hidePillLater = (ms) => setTimeout(() => { try { windowManager.hideMainWindow(); } catch (_) {} }, ms);
   logger.info('转英文快捷键触发');
   if (isRecording) return; // 录音中按 Ctrl = 结束(raw-stop)，不触发转英文
   if (isTranslating) return; // 重入守卫
@@ -212,6 +219,7 @@ async function handleTranslateHotkey() {
     return;
   }
   isTranslating = true;
+  windowManager.showRecorderAtBottom(); sendTranslateStatus('start');
   try {
     // 新增设置：允许在未选中文本时回退到「整框全选」翻译
     const allowSelectAll = await databaseManager.getSetting('translate_fallback_select_all', false);
@@ -220,17 +228,22 @@ async function handleTranslateHotkey() {
     logger.info('转英文：捕获文本长度=' + (src ? src.length : 0));
     if (!src.trim()) {
       logger.info('转英文：未选中文本且未开启整框翻译，跳过');
+      sendTranslateStatus('cancel'); hidePillLater(600);
       return;
     }
     const res = await ipcHandlers.aiService.translateToEnglish(src);
     if (res && res.success && res.text && res.text.trim()) {
       logger.info('转英文：翻译完成，粘贴中');
+      sendTranslateStatus('done');
       await clipboardManager.pasteText(res.text);
+      hidePillLater(650);
     } else {
       logger.warn('转英文失败:', res && res.error);
+      sendTranslateStatus('error', { message: (res && res.error) || '翻译失败' }); hidePillLater(1200);
     }
   } catch (e) {
     logger.error('handleTranslateHotkey error:', e);
+    sendTranslateStatus('error', { message: String(e && e.message || e) }); hidePillLater(1200);
   } finally {
     isTranslating = false;
   }

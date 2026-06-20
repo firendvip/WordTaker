@@ -105,6 +105,12 @@ contextBridge.exposeInMainWorld("electronAPI", {
     return () => ipcRenderer.removeListener("hotkey-triggered", callback);
   },
 
+  // 「转英文」状态事件监听（start/done/cancel/error）
+  onTranslateStatus: (callback) => {
+    ipcRenderer.on("translate-status", callback);
+    return () => ipcRenderer.removeListener("translate-status", callback);
+  },
+
   // 文件操作
   exportTranscriptions: (format) => ipcRenderer.invoke("export-transcriptions", format),
   importSettings: () => ipcRenderer.invoke("import-settings"),

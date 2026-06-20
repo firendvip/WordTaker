@@ -207,6 +207,40 @@ body {
 }
 .pill-sparkle:hover { background: rgba(245, 196, 81, 0.16); }
 
+/* ===== 翻译进度条（替代声波，深色胶囊 + 白色进度）===== */
+.pill-translate {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+  min-width: 0;
+  padding: 0 8px;
+}
+.pill-translate-label {
+  font-size: 11px;
+  line-height: 1;
+  color: rgba(255, 255, 255, 0.85);
+  white-space: nowrap;
+}
+.pill-progress {
+  position: relative;
+  flex: 1;
+  height: 3px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.16);
+  overflow: hidden;
+}
+.pill-progress-fill {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  border-radius: 999px;
+  background: #ffffff;
+  width: 0;
+  transition: width 140ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
 /* 中文文本优化 - 基于WCAG 2.1标准 */
 .chinese-text {
   font-family: 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'WenQuanYi Micro Hei', system-ui, -apple-system, sans-serif;

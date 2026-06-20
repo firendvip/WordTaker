@@ -46,6 +46,7 @@ function RecorderApp() {
   const [processedText, setProcessedText] = useState("");
   const [showTextArea, setShowTextArea] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
+  const [translatePhase, setTranslatePhase] = useState('idle'); // idle | translating | done | error
 
   // 触发键标签（真实触发由主进程的 recording_trigger 决定，如"左 Option"/"双击左 Alt"）
   const [triggerLabel, setTriggerLabel] = useState("左 Option");
@@ -257,6 +258,23 @@ function RecorderApp() {
       if (typeof off === "function") off();
     };
   }, [requestRawStop]);
+
+  // 监听"转换为英文"状态：驱动胶囊的翻译进度 UI
+  useEffect(() => {
+    if (!window.electronAPI || !window.electronAPI.onTranslateStatus) return;
+    const off = window.electronAPI.onTranslateStatus((_e, data) => {
+      const phase = data && data.phase;
+      if (phase === 'start') setTranslatePhase('translating');
+      else if (phase === 'done') {
+        setTranslatePhase('done');
+        setTimeout(() => setTranslatePhase('idle'), 600);
+      } else if (phase === 'error' || phase === 'cancel') {
+        setTranslatePhase(phase === 'error' ? 'error' : 'idle');
+        if (phase === 'error') setTimeout(() => setTranslatePhase('idle'), 900);
+      }
+    });
+    return () => { if (typeof off === 'function') off(); };
+  }, []);
 
   // 把最新的回调写入 ref，供 useRecording 在录音完成时调用（替代 window 全局回调）
   useEffect(() => {
@@ -546,6 +564,7 @@ function RecorderApp() {
       micState={micState}
       modelStatus={modelStatus}
       hotkeyLabel={triggerLabel}
+      translateState={translatePhase}
       disabled={micProps.disabled}
       onToggle={toggleRecording}
       onOpenSettings={handleOpenSettings}

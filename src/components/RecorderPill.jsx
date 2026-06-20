@@ -1,4 +1,4 @@
-import React from "react";
+import React, { useState, useEffect } from "react";
 import {
   Check,
   Sparkles,
@@ -18,6 +18,7 @@ const BAR_COUNT = 9;
  *   micState: 'idle'|'hover'|'recording'|'processing'|'optimizing',
  *   modelStatus: object,
  *   hotkeyLabel: string,
+ *   translateState?: 'idle'|'translating'|'done'|'error',
  *   disabled?: boolean,
  *   onToggle: () => void,
  *   onOpenSettings: () => void,
@@ -29,12 +30,29 @@ export function RecorderPill({
   micState,
   modelStatus,
   hotkeyLabel,
+  translateState = "idle",
   disabled,
   onToggle,
   onOpenSettings,
   onOpenHistory,
   onDownloadModels,
 }) {
+  // 假进度条：快速冲到前段，再减速逼近 ~90%，完成时直接补满到 100%
+  const [translateProgress, setTranslateProgress] = useState(0);
+  useEffect(() => {
+    if (translateState === "translating") {
+      setTranslateProgress(10);
+      const id = setInterval(() => {
+        setTranslateProgress((p) => (p < 90 ? p + Math.max(0.6, (90 - p) * 0.07) : p));
+      }, 50);
+      return () => clearInterval(id);
+    }
+    if (translateState === "done") setTranslateProgress(100);
+    if (translateState === "idle" || translateState === "error") setTranslateProgress(0);
+  }, [translateState]);
+
+  const isTranslating = translateState === "translating";
+  const isTranslateActive = isTranslating || translateState === "done";
   const stage = modelStatus && modelStatus.stage;
   const isReady = modelStatus && modelStatus.isReady;
   const modelFailed = Boolean(modelStatus && modelStatus.modelFailed);
@@ -58,7 +76,13 @@ export function RecorderPill({
   else statusText = `按 ${hotkeyLabel || "左 Option"} 说话`;
 
   let badge;
-  if (modelFailed) {
+  if (isTranslateActive) {
+    badge = isTranslating ? (
+      <Loader2 className="w-3 h-3 animate-spin text-gray-900" />
+    ) : (
+      <Check className="w-3 h-3 text-gray-900" strokeWidth={3} />
+    );
+  } else if (modelFailed) {
     badge = <AlertTriangle className="w-3 h-3 text-gray-900" strokeWidth={2.5} />;
   } else if (downloading || isBusy || modelLoading) {
     badge = <Loader2 className="w-3 h-3 animate-spin text-gray-900" />;
@@ -92,12 +116,24 @@ export function RecorderPill({
           {badge}
         </button>
 
-        {/* 中：声波 */}
-        <div className={`pill-wave ${waveClass}`} aria-hidden="true">
-          {Array.from({ length: BAR_COUNT }).map((_, i) => (
-            <span key={i} className="pill-bar" style={{ animationDelay: `${i * 55}ms` }} />
-          ))}
-        </div>
+        {/* 中：翻译时显示进度条，否则显示声波 */}
+        {isTranslateActive ? (
+          <div className="pill-translate">
+            <span className="pill-translate-label">转换为英文…</span>
+            <div className="pill-progress" aria-hidden="true">
+              <div
+                className="pill-progress-fill"
+                style={{ width: translateProgress + "%" }}
+              />
+            </div>
+          </div>
+        ) : (
+          <div className={`pill-wave ${waveClass}`} aria-hidden="true">
+            {Array.from({ length: BAR_COUNT }).map((_, i) => (
+              <span key={i} className="pill-bar" style={{ animationDelay: `${i * 55}ms` }} />
+            ))}
+          </div>
+        )}
 
         {/* 右：历史（悬停显示）+ 金色 ✨（打开设置） */}
         <div className="pill-actions">
