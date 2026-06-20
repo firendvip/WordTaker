@@ -127,6 +127,14 @@ const triggerManager = new TriggerManager(logger);
 const rawStopTriggerManager = new TriggerManager(logger);
 // 第三个触发器：取消键若被设为裸修饰键（单/双击），则用它监听；否则走 globalShortcut（Esc/F 键）。
 const cancelTriggerManager = new TriggerManager(logger);
+// 第四个触发器：「转英文」全局键（默认单击左 Ctrl）。仅在非录音时生效，
+// 录音中按左 Ctrl 走「不走 API 的结束键(raw-stop)」，二者由 isRecording 互斥。
+const translateTriggerManager = new TriggerManager(logger);
+
+// 录音状态（由 recorder-state 同步）：转英文键在录音中必须让位给 raw-stop。
+let isRecording = false;
+// 「转英文」重入守卫：一次捕获→翻译→粘贴未完成前，忽略再次触发，避免键盘风暴。
+let isTranslating = false;
 
 // 校验 recording_trigger，非法字段一律回退默认（防止渲染层写入异常对象）
 function validateRecordingTrigger(t, fallback) {
@@ -188,6 +196,76 @@ function setupRecordingTrigger() {
 ipcMain.handle('reload-recording-trigger', () => {
   setupRecordingTrigger();
   return { success: true };
+});
+
+// 「转英文」热键处理：捕获选中文本 → 翻译为地道英文 → 粘贴回去。
+// 录音中（左 Ctrl 走 raw-stop）或上一次仍在进行时直接跳过。全程在主进程编排，串行防风暴。
+async function handleTranslateHotkey() {
+  if (isRecording) return; // 录音中按 Ctrl = 结束(raw-stop)，不触发转英文
+  if (isTranslating) return; // 重入守卫
+  if (!ipcHandlers || !ipcHandlers.aiService || !clipboardManager) {
+    logger.error('转英文：服务未就绪');
+    return;
+  }
+  isTranslating = true;
+  try {
+    const cap = await clipboardManager.captureSelectionText();
+    const src = cap && cap.text ? cap.text : '';
+    if (!src.trim()) {
+      logger.info('转英文：未捕获到文本，跳过');
+      return;
+    }
+    const res = await ipcHandlers.aiService.translateToEnglish(src);
+    if (res && res.success && res.text && res.text.trim()) {
+      await clipboardManager.pasteText(res.text);
+    } else {
+      logger.warn('转英文失败:', res && res.error);
+    }
+  } catch (e) {
+    logger.error('handleTranslateHotkey error:', e);
+  } finally {
+    isTranslating = false;
+  }
+}
+
+// 设置「转英文」触发键（默认单击左 Ctrl，裸修饰键经 uiohook 监听）。
+function setupTranslateTrigger() {
+  try {
+    const fallback = { type: 'modifier-tap', key: 'LeftCtrl', taps: 1 };
+    const stored = databaseManager.getSetting('translate_trigger', fallback);
+    // 复用录音触发键的校验：非法字段一律回退默认
+    const trigger = validateRecordingTrigger(stored, fallback);
+    if (trigger !== stored) {
+      logger.warn('translate_trigger 非法或缺失，已回退默认', { stored });
+    }
+
+    // 先清掉旧的触发（便于设置变更后重载）
+    translateTriggerManager.stop();
+
+    if (trigger.type === 'accelerator' && trigger.accelerator) {
+      // 组合键走 Electron globalShortcut
+      hotkeyManager.registerHotkey(trigger.accelerator, () => { handleTranslateHotkey(); });
+      logger.info('转英文触发使用组合键', trigger.accelerator);
+    } else {
+      // 裸修饰键走 uiohook
+      const ok = translateTriggerManager.start(trigger, () => { handleTranslateHotkey(); });
+      if (!ok) {
+        logger.warn('转英文裸修饰键触发启动失败，请确认已授予“辅助功能”权限');
+      }
+    }
+  } catch (error) {
+    logger.error('设置转英文触发失败:', error);
+  }
+}
+
+// 设置变更后重载「转英文」触发键
+ipcMain.handle('reload-translate-trigger', () => {
+  try {
+    setupTranslateTrigger();
+    return { success: true };
+  } catch (e) {
+    return { success: false, error: String(e) };
+  }
 });
 
 // 隐藏胶囊（粘贴完成 / 取消后由渲染层调用）
@@ -299,12 +377,22 @@ function unregisterCancelKey() {
 
 // 渲染层在录音开始/结束时通知主进程，用于按需注册/注销 Esc 取消键 + raw 结束键
 ipcMain.on('recorder-state', (event, recording) => {
+  // 记录录音状态：转英文键在录音中让位给 raw-stop（见 handleTranslateHotkey）。
+  isRecording = !!recording;
   if (recording) {
     registerCancelKey();
     registerRawStopKey();
+    // 录音期间左 Ctrl 必须让位给 raw-stop：停掉转英文触发器，避免裸修饰键被双重监听。
+    try {
+      translateTriggerManager.stop();
+    } catch (_) { /* 忽略 */ }
   } else {
     unregisterCancelKey();
     unregisterRawStopKey();
+    // 录音结束后重新挂回转英文触发器。
+    try {
+      setupTranslateTrigger();
+    } catch (_) { /* 忽略 */ }
   }
 });
 
@@ -436,6 +524,10 @@ async function startApp() {
   logger.info('设置录音触发键...');
   setupRecordingTrigger();
 
+  // 设置「转英文」全局触发键
+  logger.info('设置转英文触发键...');
+  setupTranslateTrigger();
+
   logger.info('应用启动完成');
 }
 
@@ -492,6 +584,9 @@ app.on("will-quit", () => {
   } catch (_) { /* 忽略 */ }
   try {
     cancelTriggerManager.stop();
+  } catch (_) { /* 忽略 */ }
+  try {
+    translateTriggerManager.stop();
   } catch (_) { /* 忽略 */ }
   try {
     triggerManager.shutdown();

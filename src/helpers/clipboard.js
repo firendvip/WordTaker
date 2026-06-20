@@ -15,6 +15,7 @@ const PASTE_CONSUME_MS = 90;
 const CLIPBOARD_RESTORE_MS = 700;
 // 粘贴子进程的兜底超时：超过该时间仍未结束则 SIGKILL，避免挂死的粘贴进程堆积（ROB-4）。
 const PASTE_KILL_TIMEOUT_MS = 3000;
+const COPY_SETTLE_MS = 320; // 等待目标应用把选区写入剪贴板（大段选区/慢机器需要更久）
 
 // 简单的等待工具：用于粘贴前的稳定窗口与粘贴后的消费窗口。
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -496,6 +497,106 @@ class ClipboardManager {
       p.on("close", (code) => { clearTimeout(to); code === 0 ? resolve() : reject(new Error("paste " + code)); });
       p.on("error", (e) => { clearTimeout(to); reject(e); });
     });
+  }
+
+  // 按一次复制键（Cmd/Ctrl+C），不动剪贴板恢复，平台通用。结构与 _pressPaste 一致。
+  _pressCopy() {
+    return new Promise((resolve, reject) => {
+      let cmd, args;
+      if (process.platform === "darwin") {
+        cmd = "osascript"; args = ["-e", 'tell application "System Events" to keystroke "c" using command down'];
+      } else if (process.platform === "win32") {
+        cmd = "powershell"; args = ["-Command", 'Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.SendKeys]::SendWait("^c")'];
+      } else {
+        cmd = "xdotool"; args = ["key", "ctrl+c"];
+      }
+      const p = spawn(cmd, args);
+      let hasTimedOut = false;
+      const to = setTimeout(() => { hasTimedOut = true; try { p.kill("SIGKILL"); } catch (e) {} reject(new Error("copy timeout")); }, PASTE_KILL_TIMEOUT_MS);
+      p.on("close", (code) => { if (hasTimedOut) return; clearTimeout(to); code === 0 ? resolve() : reject(new Error("copy " + code)); });
+      p.on("error", (e) => { if (hasTimedOut) return; clearTimeout(to); reject(e); });
+    });
+  }
+
+  // 按一次全选键（Cmd/Ctrl+A），平台通用。结构与 _pressPaste 一致。
+  _pressSelectAll() {
+    return new Promise((resolve, reject) => {
+      let cmd, args;
+      if (process.platform === "darwin") {
+        cmd = "osascript"; args = ["-e", 'tell application "System Events" to keystroke "a" using command down'];
+      } else if (process.platform === "win32") {
+        cmd = "powershell"; args = ["-Command", 'Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.SendKeys]::SendWait("^a")'];
+      } else {
+        cmd = "xdotool"; args = ["key", "ctrl+a"];
+      }
+      const p = spawn(cmd, args);
+      let hasTimedOut = false;
+      const to = setTimeout(() => { hasTimedOut = true; try { p.kill("SIGKILL"); } catch (e) {} reject(new Error("selectall timeout")); }, PASTE_KILL_TIMEOUT_MS);
+      p.on("close", (code) => { if (hasTimedOut) return; clearTimeout(to); code === 0 ? resolve() : reject(new Error("selectall " + code)); });
+      p.on("error", (e) => { if (hasTimedOut) return; clearTimeout(to); reject(e); });
+    });
+  }
+
+  // 捕获当前聚焦应用里「已选中」的文本：复制走串行链，与粘贴互不交叠（杜绝键盘风暴卡死）。
+  // 没有选中时回退「全选→复制」。用哨兵串判断本次复制是否真正写入剪贴板。
+  // 始终在 finally 恢复用户原始剪贴板，即便中途出错。返回 { text, usedSelectAll }。
+  async captureSelectionText() {
+    const run = async () => {
+      // 用户原始剪贴板：流程结束（含出错）后必须恢复，避免污染用户剪贴板。
+      const original = clipboard.readText();
+      const SENTINEL = "__WT_CAP_" + Date.now() + "_" + Math.random().toString(36).slice(2);
+      let usedSelectAll = false;
+      try {
+        clipboard.writeText(SENTINEL);
+
+        // macOS 下走缓存的辅助功能权限检查；未授权则恢复原剪贴板并抛出与 _pasteText 相同的错误。
+        if (process.platform === "darwin") {
+          const ok = await this.ensureAccessibilityCached();
+          if (!ok) {
+            throw new Error(
+              "需要辅助功能权限才能自动粘贴。文本已复制到剪贴板 - 请手动使用 Cmd+V 粘贴。"
+            );
+          }
+        }
+
+        // 复制后轮询剪贴板：慢机器/大段选区可能 >150ms 才写入，单次读取易误判“无选区”。
+        // 最多读 3 次，一旦剪贴板不再是哨兵串且非空即返回；全程仍是哨兵串才算“无选区”。
+        const readAfterCopy = async () => {
+          for (let i = 0; i < 3; i++) {
+            await sleep(i === 0 ? COPY_SETTLE_MS : 110);
+            const c = clipboard.readText();
+            if (c !== SENTINEL && c.trim()) return c;
+          }
+          return clipboard.readText();
+        };
+
+        await sleep(PASTE_SETTLE_MS);
+        await this._pressCopy();
+        let captured = await readAfterCopy();
+
+        if (captured === SENTINEL || !captured.trim()) {
+          // 经过多次轮询仍是哨兵串 → 确实没有选中文本 → 全选后再复制（至多一次，无递归）
+          clipboard.writeText(SENTINEL);
+          await this._pressSelectAll();
+          await sleep(PASTE_CONSUME_MS);
+          await this._pressCopy();
+          captured = await readAfterCopy();
+          usedSelectAll = true;
+        }
+
+        if (captured === SENTINEL || !captured.trim()) {
+          return { text: "", usedSelectAll };
+        }
+        return { text: captured, usedSelectAll };
+      } finally {
+        // 无论成功失败，恢复用户原始剪贴板，使后续 pasteText 能正确保存/恢复它。
+        try { clipboard.writeText(original); } catch (e) { /* 忽略恢复失败 */ }
+      }
+    };
+    // 投入与粘贴共用的串行链，确保捕获过程永不与任何粘贴交叠。
+    const resultPromise = this._pasteChain.then(run, run);
+    this._pasteChain = resultPromise.then(() => undefined, () => undefined);
+    return resultPromise;
   }
 
   // 带缓存的辅助功能权限检查：默认 30s 内复用上次结果，避免高频流式粘贴时进程风暴。

@@ -2,7 +2,7 @@ import React, { useState, useEffect } from "react";
 import ReactDOM from "react-dom/client";
 import "./index.css";
 import { toast, Toaster } from "sonner";
-import { Settings, Save, Eye, EyeOff, Loader2, TestTube, CheckCircle, XCircle, Mic, Shield, Keyboard, Volume2, Play, Sparkles, Info } from "lucide-react";
+import { Settings, Save, Eye, EyeOff, Loader2, TestTube, CheckCircle, XCircle, Mic, Shield, Keyboard, Volume2, Play, Sparkles, Info, Drama } from "lucide-react";
 import { usePermissions } from "./hooks/usePermissions";
 import PermissionCard from "./components/ui/permission-card";
 import { SOUND_SCHEMES, previewSound, playEnd } from "./utils/sounds";
@@ -31,7 +31,10 @@ const SettingsPage = () => {
     sound_scheme: "soft",
     sound_volume: 0.3,
     asr_engine: "sensevoice",
-    llm_streaming_enabled: false
+    llm_streaming_enabled: false,
+    llm_active_role: "vibecoding",
+    translate_trigger_key: "LeftCtrl",
+    translate_trigger_taps: 1
   });
 
   const isMac = typeof navigator !== "undefined" && !!navigator.platform && navigator.platform.toLowerCase().includes("mac");
@@ -54,6 +57,7 @@ const SettingsPage = () => {
     { id: "permissions", label: "权限", icon: Shield },
     { id: "shortcuts", label: "快捷键", icon: Keyboard },
     { id: "sound", label: "提示音", icon: Volume2 },
+    { id: "role", label: "角色", icon: Drama },
     { id: "general", label: "实验", icon: Settings },
     { id: "about", label: "关于", icon: Info },
   ];
@@ -104,7 +108,10 @@ const SettingsPage = () => {
           sound_scheme: allSettings.sound_scheme || "soft",
           sound_volume: typeof allSettings.sound_volume === "number" ? allSettings.sound_volume : 0.3,
           asr_engine: allSettings.asr_engine || "sensevoice",
-          llm_streaming_enabled: allSettings.llm_streaming_enabled === true
+          llm_streaming_enabled: allSettings.llm_streaming_enabled === true,
+          llm_active_role: allSettings.llm_active_role || "vibecoding",
+          translate_trigger_key: (allSettings.translate_trigger && allSettings.translate_trigger.key) || "LeftCtrl",
+          translate_trigger_taps: (allSettings.translate_trigger && allSettings.translate_trigger.taps) || 1
         };
         setSettings(prev => ({ ...prev, ...loadedSettings }));
 
@@ -205,6 +212,19 @@ const SettingsPage = () => {
       if (changed.has("llm_streaming_enabled")) {
         await window.electronAPI.setSetting("llm_streaming_enabled", next.llm_streaming_enabled === true);
       }
+      if (changed.has("llm_active_role")) {
+        await window.electronAPI.setSetting("llm_active_role", next.llm_active_role);
+      }
+      if (changed.has("translate_trigger_key") || changed.has("translate_trigger_taps")) {
+        await window.electronAPI.setSetting("translate_trigger", {
+          type: "modifier-tap",
+          key: next.translate_trigger_key,
+          taps: Number(next.translate_trigger_taps) || 1,
+        });
+        if (window.electronAPI.reloadTranslateTrigger) {
+          await window.electronAPI.reloadTranslateTrigger();
+        }
+      }
     } catch (e) {
       console.error("自动保存失败:", e);
     }
@@ -281,6 +301,13 @@ const SettingsPage = () => {
   const handleRawStopChange = (value) => {
     const { key, taps } = parseModifierShortcutValue(value);
     updateAndSave({ raw_stop_key: key, raw_stop_taps: taps });
+  };
+
+  // 转英文：原子地写 translate_trigger_key + translate_trigger_taps（SET-2）
+  const translateValue = toModifierShortcutValue(settings.translate_trigger_key, settings.translate_trigger_taps);
+  const handleTranslateChange = (value) => {
+    const { key, taps } = parseModifierShortcutValue(value);
+    updateAndSave({ translate_trigger_key: key, translate_trigger_taps: taps });
   };
 
   // 取消：value 形如 "Escape:1" / "F1:2"，解析出 key + taps 后原子写入（SET-2）
@@ -889,7 +916,7 @@ const SettingsPage = () => {
                 </div>
 
                 {/* 不走 AI 的结束键 */}
-                <div className="flex items-center justify-between gap-4 py-4">
+                <div className="flex items-center justify-between gap-4 py-4 border-b border-gray-100 dark:border-neutral-800">
                   <div className="min-w-0">
                     <label className={`${rowLabelClass} chinese-title`}>原文</label>
                     <p className="mt-0.5 text-[13px] text-gray-500 dark:text-neutral-400">
@@ -899,6 +926,25 @@ const SettingsPage = () => {
                   <select
                     value={rawStopValue}
                     onChange={(e) => handleRawStopChange(e.target.value)}
+                    className="w-48 flex-shrink-0 px-3 py-2 text-[15px] border border-gray-300 dark:border-neutral-700 rounded-lg focus:ring-1 focus:ring-neutral-400 focus:border-transparent bg-white dark:bg-neutral-800 text-gray-900 dark:text-gray-100"
+                  >
+                    {modifierShortcutOptions.map((opt) => (
+                      <option key={opt.value} value={opt.value}>{opt.label}</option>
+                    ))}
+                  </select>
+                </div>
+
+                {/* 转英文 */}
+                <div className="flex items-center justify-between gap-4 py-4">
+                  <div className="min-w-0">
+                    <label className={`${rowLabelClass} chinese-title`}>转英文</label>
+                    <p className="mt-0.5 text-[13px] text-gray-500 dark:text-neutral-400">
+                      选中文字后按此键，AI 翻译为地道英文并替换；未选中则翻译当前输入框全部文字
+                    </p>
+                  </div>
+                  <select
+                    value={translateValue}
+                    onChange={(e) => handleTranslateChange(e.target.value)}
                     className="w-48 flex-shrink-0 px-3 py-2 text-[15px] border border-gray-300 dark:border-neutral-700 rounded-lg focus:ring-1 focus:ring-neutral-400 focus:border-transparent bg-white dark:bg-neutral-800 text-gray-900 dark:text-gray-100"
                   >
                     {modifierShortcutOptions.map((opt) => (
@@ -949,6 +995,69 @@ const SettingsPage = () => {
                     className="w-48 accent-blue-600 dark:accent-blue-500"
                   />
                 </div>
+              </div>
+            </div>
+          )}
+
+          {/* 角色 */}
+          {activeCategory === "role" && (
+            <div className="bg-white dark:bg-neutral-900 rounded-2xl shadow-sm border border-gray-100 dark:border-neutral-800">
+              <div className="px-6">
+                <div className="py-4 border-b border-gray-100 dark:border-neutral-800">
+                  <p className="text-[13px] text-gray-500 dark:text-neutral-400">
+                    选择语音转文字后使用的改写风格。
+                  </p>
+                </div>
+                {/* VibeCoding 专用 */}
+                <button
+                  type="button"
+                  onClick={() => updateAndSave('llm_active_role', 'vibecoding')}
+                  className="w-full flex items-center justify-between gap-4 py-4 border-b border-gray-100 dark:border-neutral-800 text-left"
+                >
+                  <div className="min-w-0">
+                    <label className={`${rowLabelClass} chinese-title`}>VibeCoding 专用</label>
+                    <p className="mt-0.5 text-[13px] text-gray-500 dark:text-neutral-400">
+                      使用默认的中文润色模板
+                    </p>
+                  </div>
+                  <span
+                    aria-hidden="true"
+                    className={`flex-shrink-0 w-5 h-5 rounded-full border-2 flex items-center justify-center ${
+                      settings.llm_active_role === 'vibecoding'
+                        ? 'border-blue-600 dark:border-blue-400'
+                        : 'border-gray-300 dark:border-neutral-600'
+                    }`}
+                  >
+                    {settings.llm_active_role === 'vibecoding' && (
+                      <span className="w-2.5 h-2.5 rounded-full bg-blue-600 dark:bg-blue-400" />
+                    )}
+                  </span>
+                </button>
+                {/* 高情商 */}
+                <button
+                  type="button"
+                  onClick={() => updateAndSave('llm_active_role', 'gaoeq')}
+                  className="w-full flex items-center justify-between gap-4 py-4 text-left"
+                >
+                  <div className="min-w-0">
+                    <label className={`${rowLabelClass} chinese-title`}>高情商</label>
+                    <p className="mt-0.5 text-[13px] text-gray-500 dark:text-neutral-400">
+                      将你的话改写成得体、有温度的高情商表达
+                    </p>
+                  </div>
+                  <span
+                    aria-hidden="true"
+                    className={`flex-shrink-0 w-5 h-5 rounded-full border-2 flex items-center justify-center ${
+                      settings.llm_active_role === 'gaoeq'
+                        ? 'border-blue-600 dark:border-blue-400'
+                        : 'border-gray-300 dark:border-neutral-600'
+                    }`}
+                  >
+                    {settings.llm_active_role === 'gaoeq' && (
+                      <span className="w-2.5 h-2.5 rounded-full bg-blue-600 dark:bg-blue-400" />
+                    )}
+                  </span>
+                </button>
               </div>
             </div>
           )}

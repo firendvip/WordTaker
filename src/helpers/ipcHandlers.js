@@ -9,6 +9,8 @@ const ALLOWED_SETTING_KEYS = new Set([
   "recording_trigger", "cancel_key", "cancel_taps", "raw_stop_key", "raw_stop_taps",
   "sound_scheme", "sound_volume",
   "asr_engine", "skip_polish_max_chars",
+  // 润色角色 + 「转英文」触发键
+  "llm_active_role", "translate_trigger",
   // 文案优化中转（key 留在服务器端，客户端只存中转地址与令牌）
   "llm_relay_enabled", "llm_relay_url", "llm_relay_token", "llm_streaming_enabled",
 ]);
@@ -134,7 +136,10 @@ class IPCHandlers {
       if (text.length > MAX_TEXT_LENGTH) {
         return { success: false, error: '文本过长' };
       }
-      return await this.aiService.processTextWithAI(text, mode);
+      // 润色模式（copywriting）按当前「角色」解析：vibecoding→copywriting / gaoeq→gaoeq。
+      // 其它模式（如 optimize）保持原样透传。
+      const effectiveMode = mode === 'copywriting' ? await this.aiService.getPolishMode() : mode;
+      return await this.aiService.processTextWithAI(text, effectiveMode);
     });
 
     ipcMain.handle("check-ai-status", async (event, testConfig = null) => {
@@ -196,7 +201,9 @@ class IPCHandlers {
         if (len >= STREAM_FLUSH_MIN_CHARS || SENTENCE_BOUNDARY.test(d)) flush();
       };
 
-      const result = await this.aiService.processTextViaRelayStream(text, "copywriting", relayUrl, onDelta);
+      // 润色模式按当前「角色」决定：vibecoding→copywriting / gaoeq→gaoeq
+      const polishMode = await this.aiService.getPolishMode();
+      const result = await this.aiService.processTextViaRelayStream(text, polishMode, relayUrl, onDelta);
       let flushError = null;
       try {
         flush(true); // 结束：强制贴出剩余缓冲（绕过上限）
