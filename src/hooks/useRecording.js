@@ -13,10 +13,15 @@ export const useRecording = ({ onTranscriptionCompleteRef, onAIOptimizationCompl
   const [error, setError] = useState(null);
   const [audioData, setAudioData] = useState(null);
 
+  const [audioLevel, setAudioLevel] = useState(0);
+
   const mediaRecorderRef = useRef(null);
   const audioChunksRef = useRef([]);
   const streamRef = useRef(null);
-  
+  const audioCtxRef = useRef(null);
+  const analyserRef = useRef(null);
+  const levelRafRef = useRef(null);
+
   // 添加防重复处理机制
   const processingRef = useRef({ isProcessingAudio: false, lastProcessTime: 0 });
   // 取消标记：为 true 时停止录音不进行识别（用于 Esc 取消）
@@ -28,6 +33,17 @@ export const useRecording = ({ onTranscriptionCompleteRef, onAIOptimizationCompl
 
   // 使用模型状态Hook
   const modelStatus = useModelStatus();
+
+  // 停止实时音频电平分析并释放 AudioContext（停止与取消都必须调用，避免泄漏）
+  const stopAudioAnalysis = () => {
+    try { if (levelRafRef.current) cancelAnimationFrame(levelRafRef.current); } catch (_) {}
+    levelRafRef.current = null;
+    try { if (analyserRef.current) analyserRef.current.disconnect(); } catch (_) {}
+    analyserRef.current = null;
+    try { if (audioCtxRef.current) audioCtxRef.current.close(); } catch (_) {}
+    audioCtxRef.current = null;
+    setAudioLevel(0);
+  };
 
   // 开始录音
   const startRecording = useCallback(async () => {
@@ -66,6 +82,38 @@ export const useRecording = ({ onTranscriptionCompleteRef, onAIOptimizationCompl
       streamRef.current = stream;
       audioChunksRef.current = [];
 
+      // 实时音频电平分析（驱动胶囊声波）。防重复启动：已有 AudioContext 时先清理。
+      if (audioCtxRef.current) stopAudioAnalysis();
+      try {
+        const AC = window.AudioContext || window.webkitAudioContext;
+        const audioCtx = new AC();
+        const source = audioCtx.createMediaStreamSource(stream);
+        const analyser = audioCtx.createAnalyser();
+        analyser.fftSize = 256;
+        analyser.smoothingTimeConstant = 0.7;
+        source.connect(analyser);
+        audioCtxRef.current = audioCtx;
+        analyserRef.current = analyser;
+        const buf = new Uint8Array(analyser.fftSize);
+        let smooth = 0;
+        let last = -1;
+        const tick = () => {
+          analyser.getByteTimeDomainData(buf);
+          let sum = 0;
+          for (let i = 0; i < buf.length; i++) { const v = (buf[i] - 128) / 128; sum += v * v; }
+          const rms = Math.sqrt(sum / buf.length);
+          let level = Math.min(1, rms * 3.4);
+          if (level < 0.045) level = 0;
+          smooth = smooth * 0.55 + level * 0.45;
+          const rounded = Math.round(smooth * 100) / 100;
+          if (rounded !== last) { last = rounded; setAudioLevel(rounded); }
+          levelRafRef.current = requestAnimationFrame(tick);
+        };
+        levelRafRef.current = requestAnimationFrame(tick);
+      } catch (e) {
+        // audio analysis is best-effort; never block recording
+      }
+
       // 创建MediaRecorder
       const mediaRecorder = new MediaRecorder(stream, {
         mimeType: 'audio/webm;codecs=opus'
@@ -82,6 +130,8 @@ export const useRecording = ({ onTranscriptionCompleteRef, onAIOptimizationCompl
 
       mediaRecorder.onstop = async () => {
         setIsRecording(false);
+        // 录音结束：停止实时电平分析并释放 AudioContext（不泄漏）
+        stopAudioAnalysis();
 
         // 已取消（Esc）：丢弃音频，不识别、不粘贴
         if (cancelledRef.current) {
@@ -141,6 +191,9 @@ export const useRecording = ({ onTranscriptionCompleteRef, onAIOptimizationCompl
   const stopRecording = useCallback(() => {
     if (mediaRecorderRef.current && isRecording) {
       mediaRecorderRef.current.stop();
+
+      // 停止实时电平分析并释放 AudioContext（不泄漏）
+      stopAudioAnalysis();
 
       // 停止所有音频轨道
       if (streamRef.current) {
@@ -526,6 +579,9 @@ export const useRecording = ({ onTranscriptionCompleteRef, onAIOptimizationCompl
       }
     }
 
+    // 停止实时电平分析并释放 AudioContext（取消路径同样不泄漏）
+    stopAudioAnalysis();
+
     if (streamRef.current) {
       streamRef.current.getTracks().forEach(track => track.stop());
       streamRef.current = null;
@@ -557,6 +613,7 @@ export const useRecording = ({ onTranscriptionCompleteRef, onAIOptimizationCompl
     isOptimizing,
     error,
     audioData,
+    audioLevel,
     startRecording,
     stopRecording,
     cancelRecording,

@@ -104,6 +104,7 @@ function RecorderApp() {
     isRecording,
     isProcessing: isRecordingProcessing,
     isOptimizing,
+    audioLevel,
     startRecording,
     stopRecording,
     cancelRecording,
@@ -562,6 +563,7 @@ function RecorderApp() {
   return (
     <RecorderPill
       micState={micState}
+      audioLevel={audioLevel}
       modelStatus={modelStatus}
       hotkeyLabel={triggerLabel}
       translateState={translatePhase}

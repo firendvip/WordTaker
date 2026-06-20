@@ -142,7 +142,7 @@ body {
   left: 50%;
   top: 50%;
   transform: translate(-50%, -50%);
-  height: 20px;
+  height: 26px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -152,11 +152,12 @@ body {
 }
 .pill-bar {
   width: 2px;
-  height: 70%;
+  height: 92%;
   border-radius: 999px;
   background: rgba(255, 255, 255, 0.85);
   transform: scaleY(0.3);
   transform-origin: center;
+  transition: transform 80ms ease-out;
 }
 .pill-wave.is-recording .pill-bar {
   animation: wordtaker-eq 0.9s ease-in-out infinite;

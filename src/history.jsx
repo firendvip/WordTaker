@@ -195,7 +195,7 @@ const HistoryContent = ({ onCopy }) => {
                 value={fromDate}
                 max={toDate || undefined}
                 onChange={(e) => setFromDate(e.target.value)}
-                className="px-3 py-1.5 rounded-lg text-sm border border-gray-300 dark:border-neutral-700 bg-white dark:bg-neutral-800 text-gray-900 dark:text-gray-100"
+                className="px-3 py-1.5 rounded-lg text-sm border border-gray-300 dark:border-neutral-700 bg-white dark:bg-neutral-800 text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-blue-500/40 focus:border-blue-500 dark:focus:border-blue-400"
                 title="开始日期"
               />
               <span className="text-sm text-gray-400 dark:text-gray-500">至</span>
@@ -204,7 +204,7 @@ const HistoryContent = ({ onCopy }) => {
                 value={toDate}
                 min={fromDate || undefined}
                 onChange={(e) => setToDate(e.target.value)}
-                className="px-3 py-1.5 rounded-lg text-sm border border-gray-300 dark:border-neutral-700 bg-white dark:bg-neutral-800 text-gray-900 dark:text-gray-100"
+                className="px-3 py-1.5 rounded-lg text-sm border border-gray-300 dark:border-neutral-700 bg-white dark:bg-neutral-800 text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-blue-500/40 focus:border-blue-500 dark:focus:border-blue-400"
                 title="结束日期"
               />
               {(fromDate || toDate) && (
@@ -229,7 +229,7 @@ const HistoryContent = ({ onCopy }) => {
                 placeholder="搜索转录内容..."
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
-                className="w-full pl-10 pr-4 py-2 border border-gray-300 dark:border-neutral-700 bg-white dark:bg-neutral-800 text-gray-900 dark:text-white rounded-xl focus:ring-1 focus:ring-neutral-400 focus:border-transparent chinese-text text-sm"
+                className="w-full pl-10 pr-4 py-2 border border-gray-300 dark:border-neutral-700 bg-white dark:bg-neutral-800 text-gray-900 dark:text-white rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500/40 focus:border-blue-500 dark:focus:border-blue-400 chinese-text text-sm"
               />
             </div>
             <div className="flex items-center space-x-2">

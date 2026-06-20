@@ -9,6 +9,8 @@ import {
 } from "lucide-react";
 
 const BAR_COUNT = 9;
+const BAR_PATTERN = [0.45, 0.65, 0.85, 1.0, 0.9, 1.0, 0.85, 0.65, 0.45]; // length BAR_COUNT
+const SILENT_FLOOR = 0.16;
 
 /**
  * 悬浮胶囊录音条（出现在光标附近）。
@@ -28,6 +30,7 @@ const BAR_COUNT = 9;
  */
 export function RecorderPill({
   micState,
+  audioLevel = 0,
   modelStatus,
   hotkeyLabel,
   translateState = "idle",
@@ -100,7 +103,7 @@ export function RecorderPill({
     if (!disabled) onToggle && onToggle();
   };
 
-  const waveClass = isRecording ? "is-recording" : isBusy ? "is-busy" : "";
+  const waveClass = isBusy ? "is-busy" : "";
 
   return (
     <div className="pill-root">
@@ -129,9 +132,18 @@ export function RecorderPill({
           </div>
         ) : (
           <div className={`pill-wave ${waveClass}`} aria-hidden="true">
-            {Array.from({ length: BAR_COUNT }).map((_, i) => (
-              <span key={i} className="pill-bar" style={{ animationDelay: `${i * 55}ms` }} />
-            ))}
+            {Array.from({ length: BAR_COUNT }).map((_, i) => {
+              let scale = SILENT_FLOOR;
+              if (isRecording) {
+                scale = audioLevel > 0
+                  ? Math.min(1, SILENT_FLOOR + audioLevel * BAR_PATTERN[i] * 1.35)
+                  : SILENT_FLOOR;
+              }
+              const barStyle = isRecording
+                ? { transform: `scaleY(${scale})` }
+                : { animationDelay: `${i * 55}ms` };
+              return <span key={i} className="pill-bar" style={barStyle} />;
+            })}
           </div>
         )}
 
