@@ -113,8 +113,8 @@ body {
   -webkit-app-region: no-drag;
 }
 .pill-badge {
-  width: 25px;
-  height: 25px;
+  width: 16px;
+  height: 16px;
   border-radius: 999px;
   background: #ffffff;
   display: flex;
@@ -176,7 +176,7 @@ body {
   left: 50%;
   top: 50%;
   transform: translate(-50%, -50%);
-  width: 118px;
+  width: 88px;
   height: 30px;
   overflow: hidden;
   pointer-events: none;
@@ -221,7 +221,8 @@ body {
 }
 /* 忙碌：一行错峰上下弹跳的彩色音符（行进波） */
 .pill-note-bounce-row {
-  gap: 9px;
+  gap: 6.5px;
+  max-width: 80px;
 }
 @keyframes pill-note-bounce {
   0%, 100% { transform: translateY(5px) scale(.9); opacity: .55; }

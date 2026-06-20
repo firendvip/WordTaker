@@ -21,12 +21,11 @@ const ROW_NOTE_COUNT = 5;
 
 // 忙碌(processing/optimizing)：一行错峰上下弹跳的彩色音符（行进波，像钢琴键）
 const BOUNCE_NOTES = [
-  { glyph: '♪', color: '#7DB4FF', size: 15 },
-  { glyph: '♫', color: '#5FD8C4', size: 18 },
-  { glyph: '♬', color: '#F7A8CB', size: 15 },
-  { glyph: '♩', color: '#FFD36B', size: 18 },
-  { glyph: '♫', color: '#B9A6FF', size: 15 },
-  { glyph: '♪', color: '#9FE89A', size: 18 },
+  { glyph: '♪', color: '#7DB4FF', size: 11 },
+  { glyph: '♫', color: '#5FD8C4', size: 13 },
+  { glyph: '♬', color: '#F7A8CB', size: 11 },
+  { glyph: '♩', color: '#FFD36B', size: 13 },
+  { glyph: '♫', color: '#B9A6FF', size: 11 },
 ];
 
 /**
@@ -101,18 +100,18 @@ export function RecorderPill({
   let badge;
   if (isTranslateActive) {
     badge = isTranslating ? (
-      <Loader2 size={15} className="animate-spin text-gray-900" />
+      <Loader2 size={10} className="animate-spin text-gray-900" />
     ) : (
-      <Check size={15} className="text-gray-900" strokeWidth={3} />
+      <Check size={10} className="text-gray-900" strokeWidth={3} />
     );
   } else if (modelFailed) {
-    badge = <AlertTriangle size={15} className="text-gray-900" strokeWidth={2.5} />;
+    badge = <AlertTriangle size={10} className="text-gray-900" strokeWidth={2.5} />;
   } else if (downloading || isBusy || modelLoading) {
-    badge = <Loader2 size={15} className="animate-spin text-gray-900" />;
+    badge = <Loader2 size={10} className="animate-spin text-gray-900" />;
   } else if (needDownload) {
-    badge = <Download size={15} className="text-gray-900" />;
+    badge = <Download size={10} className="text-gray-900" />;
   } else {
-    badge = <Check size={15} className="text-gray-900" strokeWidth={3} />;
+    badge = <Check size={10} className="text-gray-900" strokeWidth={3} />;
   }
 
   const handleBadge = () => {
@@ -142,8 +141,8 @@ export function RecorderPill({
       return {
         glyph: NOTE_GLYPHS[Math.floor(Math.random() * NOTE_GLYPHS.length)],
         color: NOTE_COLORS[Math.floor(Math.random() * NOTE_COLORS.length)],
-        left: Math.random() * 100, // 0..100% 跨容器（容器宽 ~118px，居中于胶囊）
-        size: 12 + Math.random() * 7, // 12..19px
+        left: Math.random() * 100, // 0..100% 跨容器（容器宽 ~88px，居中于胶囊）
+        size: 11 + Math.random() * 6, // 11..17px
         dur,
         delay: -(Math.random() * dur), // 负延迟：起始即处于动画中段，避免整齐起跳
         rot: Math.random() * 44 - 22,
@@ -218,8 +217,11 @@ export function RecorderPill({
               </span>
             ))}
           </div>
+        ) : isRecording ? (
+          // 录音中但未说话（静默）：中部留空，不显示任何音符
+          null
         ) : (
-          // 静音 / 启动 / 处理中：一行错峰闪烁的小音符（无上下浮动）
+          // 空闲 / 启动（未录音）：一行错峰闪烁的小音符（无上下浮动）
           <div className="pill-note-row" aria-hidden="true">
             {rowNotes.map((n, i) => (
               <span
