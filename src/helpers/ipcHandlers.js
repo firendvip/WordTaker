@@ -13,6 +13,8 @@ const ALLOWED_SETTING_KEYS = new Set([
   "llm_active_role", "translate_trigger", "translate_fallback_select_all",
   // 文案优化中转（key 留在服务器端，客户端只存中转地址与令牌）
   "llm_relay_enabled", "llm_relay_url", "llm_relay_token", "llm_streaming_enabled",
+  // 保留最近一次生成结果到剪贴板（开启后粘贴完不恢复用户原剪贴板）
+  "keep_result_in_clipboard",
 ]);
 // 转录选项白名单：渲染层只能透传这些键到 Python 边界，丢弃未知键（IPCVAL-1）。
 // 与 funasr_server.py 的 default_options 对齐。
@@ -213,8 +215,18 @@ class IPCHandlers {
         flushError = e?.message || String(e);
         this.logger.error("流式增量粘贴收尾失败:", flushError);
       }
-      // 贴完后稍等再恢复原剪贴板，避免抢在最后一次 Cmd+V 之前
-      setTimeout(() => this.clipboardManager.restoreClipboard(original), 500);
+      // 贴完后稍等再恢复原剪贴板，避免抢在最后一次 Cmd+V 之前。
+      // 「保留最近一次生成结果到剪贴板」开启时跳过恢复，把生成文本留在剪贴板；
+      // 读取设置失败一律回退到默认行为（恢复），绝不因读设置异常而破坏原有恢复逻辑。
+      let keepResult = false;
+      try {
+        keepResult = await this.databaseManager.getSetting("keep_result_in_clipboard", false);
+      } catch (e) {
+        keepResult = false;
+      }
+      if (!keepResult) {
+        setTimeout(() => this.clipboardManager.restoreClipboard(original), 500);
+      }
 
       if (flushError) {
         return { success: false, error: flushError, text: result.text || "", pastedAny };

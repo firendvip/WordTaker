@@ -185,7 +185,9 @@ class DatabaseManager {
       // 本机匿名设备标识：用于中转端按设备限流（不含任何个人信息，仅一串随机 UUID）
       device_id: crypto.randomUUID(),
       // 流式润色（边生成边上屏）：需中转为「Web 函数」版才支持；默认关，部署后再开
-      llm_streaming_enabled: false
+      llm_streaming_enabled: false,
+      // 保留最近一次生成结果到剪贴板：开启后粘贴完不恢复用户原剪贴板，留下最新生成文本；默认关（保持原"粘贴后恢复"行为）
+      keep_result_in_clipboard: false
     };
     try {
       const existsStmt = this.db.prepare('SELECT 1 FROM settings WHERE key = ?');

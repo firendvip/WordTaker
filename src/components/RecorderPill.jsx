@@ -8,9 +8,8 @@ import {
   AlertTriangle,
 } from "lucide-react";
 
-const BAR_COUNT = 9;
-const BAR_PATTERN = [0.45, 0.65, 0.85, 1.0, 0.9, 1.0, 0.85, 0.65, 0.45]; // length BAR_COUNT
-const SILENT_FLOOR = 0.16;
+const BAR_COUNT = 13; // 与 useRecording 的 BAND_COUNT 保持一致
+const SILENT_FLOOR = 0.3; // 静止时柱子读作较长的竖线
 
 /**
  * 悬浮胶囊录音条（出现在光标附近）。
@@ -18,6 +17,7 @@ const SILENT_FLOOR = 0.16;
  *
  * @param {{
  *   micState: 'idle'|'hover'|'recording'|'processing'|'optimizing',
+ *   audioBands?: number[],
  *   modelStatus: object,
  *   hotkeyLabel: string,
  *   translateState?: 'idle'|'translating'|'done'|'error',
@@ -31,6 +31,7 @@ const SILENT_FLOOR = 0.16;
 export function RecorderPill({
   micState,
   audioLevel = 0,
+  audioBands = [],
   modelStatus,
   hotkeyLabel,
   translateState = "idle",
@@ -133,16 +134,20 @@ export function RecorderPill({
         ) : (
           <div className={`pill-wave ${waveClass}`} aria-hidden="true">
             {Array.from({ length: BAR_COUNT }).map((_, i) => {
-              let scale = SILENT_FLOOR;
+              // 录音中：每根柱子由其对应频段独立驱动（音乐均衡器/钢琴键效果）。
+              // 静音时所有频段≈0 → 全部停在 SILENT_FLOOR，呈平直长线。
               if (isRecording) {
-                scale = audioLevel > 0
-                  ? Math.min(1, SILENT_FLOOR + audioLevel * BAR_PATTERN[i] * 1.35)
-                  : SILENT_FLOOR;
+                const band = audioBands[i] || 0;
+                const raw = SILENT_FLOOR + band * (1 - SILENT_FLOOR);
+                const scale = Math.min(1, Math.max(SILENT_FLOOR, raw));
+                return (
+                  <span key={i} className="pill-bar" style={{ transform: `scaleY(${scale})` }} />
+                );
               }
-              const barStyle = isRecording
-                ? { transform: `scaleY(${scale})` }
-                : { animationDelay: `${i * 55}ms` };
-              return <span key={i} className="pill-bar" style={barStyle} />;
+              // 非录音 / 处理中：沿用 CSS 关键帧动画（按 animationDelay 错峰）
+              return (
+                <span key={i} className="pill-bar" style={{ animationDelay: `${i * 55}ms` }} />
+              );
             })}
           </div>
         )}

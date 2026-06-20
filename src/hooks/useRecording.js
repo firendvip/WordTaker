@@ -2,6 +2,20 @@ import { useState, useRef, useCallback, useEffect } from 'react';
 import { useModelStatus } from './useModelStatus';
 import { shouldSkipPolish } from '../utils/skipPolish';
 
+// 频谱声波：把音频频谱拆成 BAND_COUNT 个独立频段，驱动胶囊里每根柱子各自起伏。
+export const BAND_COUNT = 13;
+const FFT_SIZE = 512;
+const SMOOTHING_TIME_CONSTANT = 0.6;
+const SPECTRUM_USABLE_RATIO = 0.7; // 只取较低的 ~70% 频段（语音能量主要集中在这里）
+const BAND_GAIN = 1.6; // 归一化后的增益
+const BAND_NOISE_GATE = 0.06; // 噪声门限：低于该值视为静音 → 该频段归零
+const BAND_SMOOTH_OLD = 0.55; // 平滑：保留旧值比例
+const BAND_SMOOTH_NEW = 0.45; // 平滑：吸收新值比例
+const BAND_RENDER_FPS = 30; // 限制重渲染频率
+const BAND_RENDER_INTERVAL_MS = 1000 / BAND_RENDER_FPS;
+
+const createZeroBands = () => new Array(BAND_COUNT).fill(0);
+
 /**
  * 录音功能Hook
  * 提供录音、停止录音、音频处理等功能
@@ -14,6 +28,8 @@ export const useRecording = ({ onTranscriptionCompleteRef, onAIOptimizationCompl
   const [audioData, setAudioData] = useState(null);
 
   const [audioLevel, setAudioLevel] = useState(0);
+  // 频谱声波：BAND_COUNT 个 0..1 的频段电平，每根柱子独立起伏
+  const [audioBands, setAudioBands] = useState(createZeroBands);
 
   const mediaRecorderRef = useRef(null);
   const audioChunksRef = useRef([]);
@@ -43,6 +59,8 @@ export const useRecording = ({ onTranscriptionCompleteRef, onAIOptimizationCompl
     try { if (audioCtxRef.current) audioCtxRef.current.close(); } catch (_) {}
     audioCtxRef.current = null;
     setAudioLevel(0);
+    // 静音/停止：频段全部归零，柱子静止呈平直线
+    setAudioBands(createZeroBands());
   };
 
   // 开始录音
@@ -89,24 +107,54 @@ export const useRecording = ({ onTranscriptionCompleteRef, onAIOptimizationCompl
         const audioCtx = new AC();
         const source = audioCtx.createMediaStreamSource(stream);
         const analyser = audioCtx.createAnalyser();
-        analyser.fftSize = 256;
-        analyser.smoothingTimeConstant = 0.7;
+        analyser.fftSize = FFT_SIZE;
+        analyser.smoothingTimeConstant = SMOOTHING_TIME_CONSTANT;
         source.connect(analyser);
         audioCtxRef.current = audioCtx;
         analyserRef.current = analyser;
-        const buf = new Uint8Array(analyser.fftSize);
-        let smooth = 0;
-        let last = -1;
-        const tick = () => {
-          analyser.getByteTimeDomainData(buf);
+
+        // 频域缓冲：取较低 ~70% 的频段（语音能量集中区），等分成 BAND_COUNT 段
+        const freqBuf = new Uint8Array(analyser.frequencyBinCount);
+        const usableBins = Math.max(BAND_COUNT, Math.floor(freqBuf.length * SPECTRUM_USABLE_RATIO));
+        const binsPerBand = Math.max(1, Math.floor(usableBins / BAND_COUNT));
+
+        const smoothBands = createZeroBands();
+        let lastBands = createZeroBands();
+        let lastEmit = 0;
+
+        // 单个频段电平：对其覆盖的频点取均值 → 归一化 0..1 → 增益+钳制 → 噪声门
+        const computeBandLevel = (bandIndex) => {
+          const start = bandIndex * binsPerBand;
+          const end = Math.min(start + binsPerBand, usableBins);
           let sum = 0;
-          for (let i = 0; i < buf.length; i++) { const v = (buf[i] - 128) / 128; sum += v * v; }
-          const rms = Math.sqrt(sum / buf.length);
-          let level = Math.min(1, rms * 3.4);
-          if (level < 0.045) level = 0;
-          smooth = smooth * 0.55 + level * 0.45;
-          const rounded = Math.round(smooth * 100) / 100;
-          if (rounded !== last) { last = rounded; setAudioLevel(rounded); }
+          for (let i = start; i < end; i++) sum += freqBuf[i];
+          const avg = sum / Math.max(1, end - start);
+          const normalized = Math.min(1, (avg / 255) * BAND_GAIN);
+          return normalized < BAND_NOISE_GATE ? 0 : normalized;
+        };
+
+        // 节流提交 + 仅在四舍五入后数组变化时 setState，降低重渲染压力
+        const hasMeaningfulChange = (rounded) => {
+          for (let b = 0; b < BAND_COUNT; b++) {
+            if (rounded[b] !== lastBands[b]) return true;
+          }
+          return false;
+        };
+
+        const tick = () => {
+          analyser.getByteFrequencyData(freqBuf);
+          const rounded = new Array(BAND_COUNT);
+          for (let b = 0; b < BAND_COUNT; b++) {
+            const cur = computeBandLevel(b);
+            smoothBands[b] = smoothBands[b] * BAND_SMOOTH_OLD + cur * BAND_SMOOTH_NEW;
+            rounded[b] = Math.round(smoothBands[b] * 100) / 100;
+          }
+          const now = performance.now();
+          if (now - lastEmit >= BAND_RENDER_INTERVAL_MS && hasMeaningfulChange(rounded)) {
+            lastEmit = now;
+            lastBands = rounded;
+            setAudioBands(rounded);
+          }
           levelRafRef.current = requestAnimationFrame(tick);
         };
         levelRafRef.current = requestAnimationFrame(tick);
@@ -614,6 +662,7 @@ export const useRecording = ({ onTranscriptionCompleteRef, onAIOptimizationCompl
     error,
     audioData,
     audioLevel,
+    audioBands,
     startRecording,
     stopRecording,
     cancelRecording,

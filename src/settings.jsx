@@ -35,7 +35,8 @@ const SettingsPage = () => {
     llm_active_role: "vibecoding",
     translate_trigger_key: "LeftCtrl",
     translate_trigger_taps: 1,
-    translate_fallback_select_all: false
+    translate_fallback_select_all: false,
+    keep_result_in_clipboard: false
   });
 
   const isMac = typeof navigator !== "undefined" && !!navigator.platform && navigator.platform.toLowerCase().includes("mac");
@@ -113,7 +114,8 @@ const SettingsPage = () => {
           llm_active_role: allSettings.llm_active_role || "vibecoding",
           translate_trigger_key: (allSettings.translate_trigger && allSettings.translate_trigger.key) || "LeftCtrl",
           translate_trigger_taps: (allSettings.translate_trigger && allSettings.translate_trigger.taps) || 1,
-          translate_fallback_select_all: allSettings.translate_fallback_select_all === true
+          translate_fallback_select_all: allSettings.translate_fallback_select_all === true,
+          keep_result_in_clipboard: allSettings.keep_result_in_clipboard === true
         };
         setSettings(prev => ({ ...prev, ...loadedSettings }));
 
@@ -219,6 +221,9 @@ const SettingsPage = () => {
       }
       if (changed.has("translate_fallback_select_all")) {
         await window.electronAPI.setSetting("translate_fallback_select_all", next.translate_fallback_select_all === true);
+      }
+      if (changed.has("keep_result_in_clipboard")) {
+        await window.electronAPI.setSetting("keep_result_in_clipboard", next.keep_result_in_clipboard === true);
       }
       if (changed.has("translate_trigger_key") || changed.has("translate_trigger_taps")) {
         await window.electronAPI.setSetting("translate_trigger", {
@@ -944,7 +949,7 @@ const SettingsPage = () => {
                   <div className="min-w-0">
                     <label className={`${rowLabelClass} chinese-title`}>转英文</label>
                     <p className="mt-0.5 text-[13px] text-gray-500 dark:text-neutral-400">
-                      选中文字后按此键，AI 翻译为地道英文并替换
+                      选中文字后按此键，AI 为您翻译为地道英文并替换
                     </p>
                   </div>
                   <select
@@ -960,9 +965,9 @@ const SettingsPage = () => {
                 {/* 未选中时翻译整个输入框 */}
                 <div className="flex items-center justify-between gap-4 py-4 border-t border-gray-100 dark:border-neutral-800">
                   <div className="min-w-0">
-                    <label className={`${rowLabelClass} chinese-title`}>未选中时翻译整个输入框</label>
+                    <label className={`${rowLabelClass} chinese-title`}>无选中翻译</label>
                     <p className="mt-0.5 text-[13px] text-gray-500 dark:text-neutral-400">
-                      勾选后，未选中任何文字时会翻译当前输入框的全部内容
+                      开启后，未选中任何文字时会翻译当前输入框的全部文本
                     </p>
                   </div>
                   <button
@@ -1109,6 +1114,29 @@ const SettingsPage = () => {
                     <span
                       className={`inline-block h-5 w-5 transform rounded-full bg-white transition-transform ${
                         settings.llm_streaming_enabled ? 'translate-x-5' : 'translate-x-0.5'
+                      }`}
+                    />
+                  </button>
+                </div>
+                <div className="flex items-center justify-between gap-4 py-4 border-t border-gray-100 dark:border-neutral-800">
+                  <div className="min-w-0">
+                    <label className={`${rowLabelClass} chinese-title`}>保留结果到剪贴板</label>
+                    <p className="mt-0.5 text-[13px] text-gray-500 dark:text-neutral-400">
+                      开启后，最近一次生成的内容会保留在系统剪贴板，下次生成时自动替换
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    role="switch"
+                    aria-checked={settings.keep_result_in_clipboard}
+                    onClick={() => updateAndSave('keep_result_in_clipboard', !settings.keep_result_in_clipboard)}
+                    className={`relative inline-flex h-6 w-11 flex-shrink-0 items-center rounded-full transition-colors ${
+                      settings.keep_result_in_clipboard ? 'bg-blue-600' : 'bg-gray-300 dark:bg-gray-600'
+                    }`}
+                  >
+                    <span
+                      className={`inline-block h-5 w-5 transform rounded-full bg-white transition-transform ${
+                        settings.keep_result_in_clipboard ? 'translate-x-5' : 'translate-x-0.5'
                       }`}
                     />
                   </button>

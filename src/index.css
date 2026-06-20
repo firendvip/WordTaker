@@ -142,7 +142,7 @@ body {
   left: 50%;
   top: 50%;
   transform: translate(-50%, -50%);
-  height: 26px;
+  height: 30px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -152,7 +152,7 @@ body {
 }
 .pill-bar {
   width: 2px;
-  height: 92%;
+  height: 100%;
   border-radius: 999px;
   background: rgba(255, 255, 255, 0.85);
   transform: scaleY(0.3);
