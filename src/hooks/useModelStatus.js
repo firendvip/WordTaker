@@ -1,4 +1,7 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
+
+// 模型就绪超时阈值：持续非就绪状态超过此时长则判定为失败
+const MODEL_READY_TIMEOUT_MS = 60000;
 
 // 检查是否为控制面板或设置页面
 const isControlPanelOrSettings = () => {
@@ -22,6 +25,11 @@ export const useModelStatus = () => {
     missingModels: [],
     stage: 'checking' // checking, downloading, loading, ready, error
   });
+
+  // 记录“持续非就绪”窗口的起始时间戳（下载与就绪都会清零）
+  const nonReadyStartRef = useRef(null);
+  // 每次轮询自增，强制重新渲染以重算 modelFailed 派生值
+  const [tick, setTick] = useState(0);
 
   // 检查模型文件状态
   const checkModelFiles = useCallback(async () => {
@@ -247,6 +255,8 @@ export const useModelStatus = () => {
 
     const interval = setInterval(() => {
       if (!modelStatus.isReady && !modelStatus.isDownloading) {
+        // 自增 tick 触发重渲染，使派生的 modelFailed 在超时后能够及时重算
+        setTick(t => t + 1);
         checkModelStatus();
       }
     }, 3000); // 减少间隔，确保及时检测到状态变化
@@ -288,8 +298,39 @@ export const useModelStatus = () => {
     }
   }, []);
 
+  // 维护“持续非就绪”窗口的起始时间戳
+  // - 就绪或下载中：清零（下载可合理地耗时较久，不应计入超时）
+  // - 其余非就绪状态：若尚未开始计时则记录起点
+  if (modelStatus.isReady || modelStatus.isDownloading) {
+    nonReadyStartRef.current = null;
+  } else if (nonReadyStartRef.current === null) {
+    nonReadyStartRef.current = Date.now();
+  }
+
+  // 真实的后端错误（优先于超时呈现）
+  const hasHardError = Boolean(modelStatus.error);
+
+  // tick 仅用于驱动重渲染，使下方基于 Date.now() 的派生值得以及时重算
+  void tick;
+
+  // 超时判定：非就绪、非下载，且窗口已超过阈值
+  const timedOut =
+    !modelStatus.isReady &&
+    !modelStatus.isDownloading &&
+    nonReadyStartRef.current !== null &&
+    Date.now() - nonReadyStartRef.current >= MODEL_READY_TIMEOUT_MS;
+
+  // 超时，或在非就绪期间出现硬错误，均视为失败
+  const isNonReady = !modelStatus.isReady && !modelStatus.isDownloading;
+  const modelFailed = timedOut || (isNonReady && hasHardError);
+
+  // 面向用户的错误信息：优先真实错误，否则为 null
+  const modelError = modelStatus.error || null;
+
   return {
     ...modelStatus,
+    modelFailed,
+    modelError,
     checkModelStatus,
     downloadModels,
     getDownloadProgress,

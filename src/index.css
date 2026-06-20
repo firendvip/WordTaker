@@ -126,6 +126,16 @@ body {
   transition: transform 0.12s ease;
 }
 .pill-badge:active { transform: scale(0.9); }
+/* 语音引擎超时/失败：红色边框提示，徽章保持白底（内含警告图标） */
+.recorder-pill.is-error {
+  box-shadow: inset 0 0 0 1px hsl(var(--destructive));
+}
+.recorder-pill.is-error .pill-badge {
+  background: hsl(var(--destructive));
+}
+.recorder-pill.is-error .pill-badge svg {
+  color: hsl(var(--destructive-foreground));
+}
 /* 声波绝对定位：相对整个胶囊左右、上下居中，与左右两侧元素的宽度无关 */
 .pill-wave {
   position: absolute;

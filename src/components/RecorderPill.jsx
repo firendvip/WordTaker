@@ -5,6 +5,7 @@ import {
   History as HistoryIcon,
   Loader2,
   Download,
+  AlertTriangle,
 } from "lucide-react";
 
 const BAR_COUNT = 9;
@@ -36,14 +37,18 @@ export function RecorderPill({
 }) {
   const stage = modelStatus && modelStatus.stage;
   const isReady = modelStatus && modelStatus.isReady;
+  const modelFailed = Boolean(modelStatus && modelStatus.modelFailed);
+  const modelError = (modelStatus && modelStatus.modelError) || null;
   const isRecording = micState === "recording";
   const isBusy = micState === "processing" || micState === "optimizing";
   const needDownload = stage === "need_download";
   const downloading = stage === "downloading";
-  const modelLoading = stage === "loading" || (modelStatus && !isReady && !needDownload && !downloading);
+  // 失败时不再视为“加载中”，避免无限旋转
+  const modelLoading = !modelFailed && (stage === "loading" || (modelStatus && !isReady && !needDownload && !downloading));
 
   let statusText;
-  if (needDownload) statusText = "需要下载语音模型";
+  if (modelFailed) statusText = modelError || "语音引擎未启动，请重启应用";
+  else if (needDownload) statusText = "需要下载语音模型";
   else if (downloading) statusText = `下载模型 ${modelStatus.downloadProgress || 0}%`;
   else if (modelLoading) statusText = "模型加载中…";
   else if (stage === "error") statusText = "模型出错";
@@ -53,7 +58,9 @@ export function RecorderPill({
   else statusText = `按 ${hotkeyLabel || "左 Option"} 说话`;
 
   let badge;
-  if (downloading || isBusy || modelLoading) {
+  if (modelFailed) {
+    badge = <AlertTriangle className="w-3 h-3 text-gray-900" strokeWidth={2.5} />;
+  } else if (downloading || isBusy || modelLoading) {
     badge = <Loader2 className="w-3 h-3 animate-spin text-gray-900" />;
   } else if (needDownload) {
     badge = <Download className="w-3 h-3 text-gray-900" />;
@@ -73,7 +80,7 @@ export function RecorderPill({
 
   return (
     <div className="pill-root">
-      <div className="recorder-pill" title={statusText}>
+      <div className={`recorder-pill${modelFailed ? " is-error" : ""}`} title={statusText}>
         {/* 左：白色对勾徽章（点按开始/停止录音） */}
         <button
           type="button"
