@@ -10,7 +10,7 @@ const ALLOWED_SETTING_KEYS = new Set([
   "sound_scheme", "sound_volume",
   "asr_engine", "skip_polish_max_chars",
   // 润色角色 + 「转英文」触发键
-  "llm_active_role", "translate_trigger",
+  "llm_active_role", "translate_trigger", "translate_fallback_select_all",
   // 文案优化中转（key 留在服务器端，客户端只存中转地址与令牌）
   "llm_relay_enabled", "llm_relay_url", "llm_relay_token", "llm_streaming_enabled",
 ]);

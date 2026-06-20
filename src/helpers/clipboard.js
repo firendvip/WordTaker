@@ -540,7 +540,10 @@ class ClipboardManager {
   // 捕获当前聚焦应用里「已选中」的文本：复制走串行链，与粘贴互不交叠（杜绝键盘风暴卡死）。
   // 没有选中时回退「全选→复制」。用哨兵串判断本次复制是否真正写入剪贴板。
   // 始终在 finally 恢复用户原始剪贴板，即便中途出错。返回 { text, usedSelectAll }。
-  async captureSelectionText() {
+  async captureSelectionText(options = {}) {
+    // 全选回退现在是可选项：仅当调用方显式传入 allowSelectAll === true 时才允许“无选区→全选→复制”。
+    // 默认（无参数或未显式开启）为安全模式：不全选，避免误翻译整段输入框内容。
+    const allowSelectAll = options && options.allowSelectAll === true;
     const run = async () => {
       // 用户原始剪贴板：流程结束（含出错）后必须恢复，避免污染用户剪贴板。
       const original = clipboard.readText();
@@ -575,13 +578,19 @@ class ClipboardManager {
         let captured = await readAfterCopy();
 
         if (captured === SENTINEL || !captured.trim()) {
-          // 经过多次轮询仍是哨兵串 → 确实没有选中文本 → 全选后再复制（至多一次，无递归）
-          clipboard.writeText(SENTINEL);
-          await this._pressSelectAll();
-          await sleep(PASTE_CONSUME_MS);
-          await this._pressCopy();
-          captured = await readAfterCopy();
-          usedSelectAll = true;
+          if (allowSelectAll) {
+            // 经过多次轮询仍是哨兵串 → 确实没有选中文本 → 全选后再复制（至多一次，无递归）
+            clipboard.writeText(SENTINEL);
+            await this._pressSelectAll();
+            await sleep(PASTE_CONSUME_MS);
+            await this._pressCopy();
+            captured = await readAfterCopy();
+            usedSelectAll = true;
+          } else {
+            // 未开启全选回退：视为“无选区”，跳过全选，不翻译整段输入。
+            // finally 仍会恢复用户原始剪贴板。
+            return { text: "", usedSelectAll: false };
+          }
         }
 
         if (captured === SENTINEL || !captured.trim()) {

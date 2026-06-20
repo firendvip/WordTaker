@@ -135,6 +135,9 @@ const translateTriggerManager = new TriggerManager(logger);
 let isRecording = false;
 // 「转英文」重入守卫：一次捕获→翻译→粘贴未完成前，忽略再次触发，避免键盘风暴。
 let isTranslating = false;
+// 应用是否已完成启动初始化（转英文触发器已挂载）。用于防止早期/边缘的 recorder-state(true)
+// 在触发器尚未挂载前就误调用 stop() 造成的状态错乱。
+let appFullyInitialized = false;
 
 // 校验 recording_trigger，非法字段一律回退默认（防止渲染层写入异常对象）
 function validateRecordingTrigger(t, fallback) {
@@ -201,6 +204,7 @@ ipcMain.handle('reload-recording-trigger', () => {
 // 「转英文」热键处理：捕获选中文本 → 翻译为地道英文 → 粘贴回去。
 // 录音中（左 Ctrl 走 raw-stop）或上一次仍在进行时直接跳过。全程在主进程编排，串行防风暴。
 async function handleTranslateHotkey() {
+  logger.info('转英文快捷键触发');
   if (isRecording) return; // 录音中按 Ctrl = 结束(raw-stop)，不触发转英文
   if (isTranslating) return; // 重入守卫
   if (!ipcHandlers || !ipcHandlers.aiService || !clipboardManager) {
@@ -209,14 +213,18 @@ async function handleTranslateHotkey() {
   }
   isTranslating = true;
   try {
-    const cap = await clipboardManager.captureSelectionText();
+    // 新增设置：允许在未选中文本时回退到「整框全选」翻译
+    const allowSelectAll = await databaseManager.getSetting('translate_fallback_select_all', false);
+    const cap = await clipboardManager.captureSelectionText({ allowSelectAll });
     const src = cap && cap.text ? cap.text : '';
+    logger.info('转英文：捕获文本长度=' + (src ? src.length : 0));
     if (!src.trim()) {
-      logger.info('转英文：未捕获到文本，跳过');
+      logger.info('转英文：未选中文本且未开启整框翻译，跳过');
       return;
     }
     const res = await ipcHandlers.aiService.translateToEnglish(src);
     if (res && res.success && res.text && res.text.trim()) {
+      logger.info('转英文：翻译完成，粘贴中');
       await clipboardManager.pasteText(res.text);
     } else {
       logger.warn('转英文失败:', res && res.error);
@@ -246,11 +254,15 @@ function setupTranslateTrigger() {
       // 组合键走 Electron globalShortcut
       hotkeyManager.registerHotkey(trigger.accelerator, () => { handleTranslateHotkey(); });
       logger.info('转英文触发使用组合键', trigger.accelerator);
+      logger.info('转英文触发器已挂载:', JSON.stringify(trigger));
     } else {
       // 裸修饰键走 uiohook
       const ok = translateTriggerManager.start(trigger, () => { handleTranslateHotkey(); });
       if (!ok) {
         logger.warn('转英文裸修饰键触发启动失败，请确认已授予“辅助功能”权限');
+        logger.warn('转英文触发器挂载失败');
+      } else {
+        logger.info('转英文触发器已挂载:', JSON.stringify(trigger));
       }
     }
   } catch (error) {
@@ -383,9 +395,10 @@ ipcMain.on('recorder-state', (event, recording) => {
     registerCancelKey();
     registerRawStopKey();
     // 录音期间左 Ctrl 必须让位给 raw-stop：停掉转英文触发器，避免裸修饰键被双重监听。
-    try {
-      translateTriggerManager.stop();
-    } catch (_) { /* 忽略 */ }
+    // 仅在应用完成初始化（触发器已挂载）后才停用，避免早期/边缘的 recorder-state(true) 误调用。
+    if (appFullyInitialized) {
+      try { translateTriggerManager.stop(); } catch (_) {}
+    }
   } else {
     unregisterCancelKey();
     unregisterRawStopKey();
@@ -527,6 +540,8 @@ async function startApp() {
   // 设置「转英文」全局触发键
   logger.info('设置转英文触发键...');
   setupTranslateTrigger();
+  // 触发器已挂载，标记应用完成初始化（允许 recorder-state 在录音时停用转英文触发器）
+  appFullyInitialized = true;
 
   logger.info('应用启动完成');
 }

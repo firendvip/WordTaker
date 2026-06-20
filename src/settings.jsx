@@ -34,7 +34,8 @@ const SettingsPage = () => {
     llm_streaming_enabled: false,
     llm_active_role: "vibecoding",
     translate_trigger_key: "LeftCtrl",
-    translate_trigger_taps: 1
+    translate_trigger_taps: 1,
+    translate_fallback_select_all: false
   });
 
   const isMac = typeof navigator !== "undefined" && !!navigator.platform && navigator.platform.toLowerCase().includes("mac");
@@ -111,7 +112,8 @@ const SettingsPage = () => {
           llm_streaming_enabled: allSettings.llm_streaming_enabled === true,
           llm_active_role: allSettings.llm_active_role || "vibecoding",
           translate_trigger_key: (allSettings.translate_trigger && allSettings.translate_trigger.key) || "LeftCtrl",
-          translate_trigger_taps: (allSettings.translate_trigger && allSettings.translate_trigger.taps) || 1
+          translate_trigger_taps: (allSettings.translate_trigger && allSettings.translate_trigger.taps) || 1,
+          translate_fallback_select_all: allSettings.translate_fallback_select_all === true
         };
         setSettings(prev => ({ ...prev, ...loadedSettings }));
 
@@ -214,6 +216,9 @@ const SettingsPage = () => {
       }
       if (changed.has("llm_active_role")) {
         await window.electronAPI.setSetting("llm_active_role", next.llm_active_role);
+      }
+      if (changed.has("translate_fallback_select_all")) {
+        await window.electronAPI.setSetting("translate_fallback_select_all", next.translate_fallback_select_all === true);
       }
       if (changed.has("translate_trigger_key") || changed.has("translate_trigger_taps")) {
         await window.electronAPI.setSetting("translate_trigger", {
@@ -939,7 +944,7 @@ const SettingsPage = () => {
                   <div className="min-w-0">
                     <label className={`${rowLabelClass} chinese-title`}>转英文</label>
                     <p className="mt-0.5 text-[13px] text-gray-500 dark:text-neutral-400">
-                      选中文字后按此键，AI 翻译为地道英文并替换；未选中则翻译当前输入框全部文字
+                      选中文字后按此键，AI 翻译为地道英文并替换
                     </p>
                   </div>
                   <select
@@ -951,6 +956,30 @@ const SettingsPage = () => {
                       <option key={opt.value} value={opt.value}>{opt.label}</option>
                     ))}
                   </select>
+                </div>
+                {/* 未选中时翻译整个输入框 */}
+                <div className="flex items-center justify-between gap-4 py-4 border-t border-gray-100 dark:border-neutral-800">
+                  <div className="min-w-0">
+                    <label className={`${rowLabelClass} chinese-title`}>未选中时翻译整个输入框</label>
+                    <p className="mt-0.5 text-[13px] text-gray-500 dark:text-neutral-400">
+                      勾选后，未选中任何文字时会翻译当前输入框的全部内容
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    role="switch"
+                    aria-checked={settings.translate_fallback_select_all}
+                    onClick={() => updateAndSave('translate_fallback_select_all', !settings.translate_fallback_select_all)}
+                    className={`relative inline-flex h-6 w-11 flex-shrink-0 items-center rounded-full transition-colors ${
+                      settings.translate_fallback_select_all ? 'bg-blue-600' : 'bg-gray-300 dark:bg-gray-600'
+                    }`}
+                  >
+                    <span
+                      className={`inline-block h-5 w-5 transform rounded-full bg-white transition-transform ${
+                        settings.translate_fallback_select_all ? 'translate-x-5' : 'translate-x-0.5'
+                      }`}
+                    />
+                  </button>
                 </div>
               </div>
             </div>
@@ -1003,11 +1032,6 @@ const SettingsPage = () => {
           {activeCategory === "role" && (
             <div className="bg-white dark:bg-neutral-900 rounded-2xl shadow-sm border border-gray-100 dark:border-neutral-800">
               <div className="px-6">
-                <div className="py-4 border-b border-gray-100 dark:border-neutral-800">
-                  <p className="text-[13px] text-gray-500 dark:text-neutral-400">
-                    选择语音转文字后使用的改写风格。
-                  </p>
-                </div>
                 {/* VibeCoding 专用 */}
                 <button
                   type="button"
@@ -1015,9 +1039,9 @@ const SettingsPage = () => {
                   className="w-full flex items-center justify-between gap-4 py-4 border-b border-gray-100 dark:border-neutral-800 text-left"
                 >
                   <div className="min-w-0">
-                    <label className={`${rowLabelClass} chinese-title`}>VibeCoding 专用</label>
+                    <label className={`${rowLabelClass} chinese-title`}>VibeCoding专用</label>
                     <p className="mt-0.5 text-[13px] text-gray-500 dark:text-neutral-400">
-                      使用默认的中文润色模板
+                      将你的话改写成让AI更能看懂的语言
                     </p>
                   </div>
                   <span
