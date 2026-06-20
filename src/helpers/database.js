@@ -171,7 +171,7 @@ class DatabaseManager {
       // 润色「角色」：vibecoding（默认，走 llm_prompt_template）/ gaoeq（高情商改写）
       llm_active_role: 'vibecoding',
       // 「转英文」全局触发键：默认单击左 Ctrl（裸修饰键经 uiohook 监听）
-      translate_trigger: { type: 'modifier-tap', key: 'LeftCtrl', taps: 1 },
+      translate_trigger: { type: 'modifier-tap', key: 'LeftCtrl', taps: 2 },
       translate_fallback_select_all: false,
       // 提示音：唤起/结束的合成音方案与音量（none 为无声）
       sound_scheme: 'soft',

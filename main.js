@@ -252,7 +252,7 @@ async function handleTranslateHotkey() {
 // 设置「转英文」触发键（默认单击左 Ctrl，裸修饰键经 uiohook 监听）。
 function setupTranslateTrigger() {
   try {
-    const fallback = { type: 'modifier-tap', key: 'LeftCtrl', taps: 1 };
+    const fallback = { type: 'modifier-tap', key: 'LeftCtrl', taps: 2 };
     const stored = databaseManager.getSetting('translate_trigger', fallback);
     // 复用录音触发键的校验：非法字段一律回退默认
     const trigger = validateRecordingTrigger(stored, fallback);

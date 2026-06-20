@@ -34,7 +34,7 @@ const SettingsPage = () => {
     llm_streaming_enabled: false,
     llm_active_role: "vibecoding",
     translate_trigger_key: "LeftCtrl",
-    translate_trigger_taps: 1,
+    translate_trigger_taps: 2,
     translate_fallback_select_all: false,
     keep_result_in_clipboard: false
   });
@@ -113,7 +113,7 @@ const SettingsPage = () => {
           llm_streaming_enabled: allSettings.llm_streaming_enabled === true,
           llm_active_role: allSettings.llm_active_role || "vibecoding",
           translate_trigger_key: (allSettings.translate_trigger && allSettings.translate_trigger.key) || "LeftCtrl",
-          translate_trigger_taps: (allSettings.translate_trigger && allSettings.translate_trigger.taps) || 1,
+          translate_trigger_taps: (allSettings.translate_trigger && allSettings.translate_trigger.taps) || 2,
           translate_fallback_select_all: allSettings.translate_fallback_select_all === true,
           keep_result_in_clipboard: allSettings.keep_result_in_clipboard === true
         };
@@ -967,7 +967,7 @@ const SettingsPage = () => {
                   <div className="min-w-0">
                     <label className={`${rowLabelClass} chinese-title`}>无选中翻译</label>
                     <p className="mt-0.5 text-[13px] text-gray-500 dark:text-neutral-400">
-                      开启后，未选中任何文字时会翻译当前输入框的全部文本
+                      开启后，未选中任何文字时，在按下转英文键后，会翻译当前输入框的全部文本
                     </p>
                   </div>
                   <button
