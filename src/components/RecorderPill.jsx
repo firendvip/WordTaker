@@ -19,6 +19,16 @@ const SPEAK_THRESHOLD = 0.06;
 // 静音/启动/处理中：一行闪烁的小音符（约 5 个）
 const ROW_NOTE_COUNT = 5;
 
+// 忙碌(processing/optimizing)：一行错峰上下弹跳的彩色音符（行进波，像钢琴键）
+const BOUNCE_NOTES = [
+  { glyph: '♪', color: '#7DB4FF', size: 15 },
+  { glyph: '♫', color: '#5FD8C4', size: 18 },
+  { glyph: '♬', color: '#F7A8CB', size: 15 },
+  { glyph: '♩', color: '#FFD36B', size: 18 },
+  { glyph: '♫', color: '#B9A6FF', size: 15 },
+  { glyph: '♪', color: '#9FE89A', size: 18 },
+];
+
 /**
  * 悬浮胶囊录音条（出现在光标附近）。
  * 纯展示组件：状态与回调由父级 App 注入。
@@ -190,6 +200,19 @@ export function RecorderPill({
                   '--r': `${n.rot}deg`,
                   animation: `pill-note-float ${n.dur.toFixed(2)}s ease-in-out ${n.delay.toFixed(2)}s infinite`,
                 }}
+              >
+                {n.glyph}
+              </span>
+            ))}
+          </div>
+        ) : isBusy ? (
+          // 忙碌：一行错峰上下弹跳的彩色音符（行进波）
+          <div className="pill-note-row pill-note-bounce-row" aria-hidden="true">
+            {BOUNCE_NOTES.map((n, i) => (
+              <span
+                key={i}
+                className="pill-note-bounce"
+                style={{ color: n.color, fontSize: `${n.size}px`, animationDelay: `${(i * 0.12).toFixed(2)}s` }}
               >
                 {n.glyph}
               </span>

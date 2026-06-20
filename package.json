@@ -1,6 +1,6 @@
 {
   "name": "wordtaker",
-  "version": "1.1.13",
+  "version": "1.1.14",
   "description": "WordTaker — 基于 FunASR 本地识别与 DeepSeek 润色的本地中文语音输入工具",
   "main": "main.js",
   "private": true,
