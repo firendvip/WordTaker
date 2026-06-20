@@ -27,7 +27,7 @@ class WindowManager {
 
     // 紧凑"胶囊"录音条：frameless + 透明 + 置顶 + 不抢焦点（避免抢走目标输入框的焦点导致粘贴失败）
     this.mainWindow = new BrowserWindow({
-      width: 200,
+      width: 180,
       height: 44,
       frame: false,
       transparent: true,

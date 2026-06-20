@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from "react";
+import React, { useState, useEffect, useMemo, useRef } from "react";
 import {
   Check,
   Sparkles,
@@ -12,10 +12,6 @@ import {
 const NOTE_GLYPHS = ['♪','♫','♬','♩','♭'];
 const NOTE_COLORS = ['#7DB4FF','#5FD8C4','#F7A8CB','#FFD36B','#B9A6FF','#9FE89A','#FFFFFF'];
 
-// 说话时上升音符：最多 14 个，按音量裁切；预生成稳定池，下标 i 的视觉属性整段录音保持不变
-const MAX_NOTES = 14;
-// 音量阈值：高于此值视为"正在说话"→ 上升音符；否则 → 静止闪烁音符行
-const SPEAK_THRESHOLD = 0.06;
 // 静音/启动/处理中：一行闪烁的小音符（约 5 个）
 const ROW_NOTE_COUNT = 5;
 
@@ -59,6 +55,10 @@ export function RecorderPill({
   onOpenHistory,
   onDownloadModels,
 }) {
+  // 音量镜像 ref：让 spawn 循环读取最新音量，而不依赖重新渲染
+  const audioLevelRef = useRef(0);
+  useEffect(() => { audioLevelRef.current = audioLevel || 0; }, [audioLevel]);
+
   // 假进度条：快速冲到前段，再减速逼近 ~90%，完成时直接补满到 100%
   const [translateProgress, setTranslateProgress] = useState(0);
   useEffect(() => {
@@ -122,32 +122,37 @@ export function RecorderPill({
     if (!disabled) onToggle && onToggle();
   };
 
-  // 是否"正在说话"：录音中且平滑音量超过阈值 → 上升音符；否则 → 静止闪烁行
-  const speaking = isRecording && (audioLevel || 0) > SPEAK_THRESHOLD;
-  // 注：忙碌(processing/optimizing)状态暂复用静止闪烁行，不单独造动画
-
-  // 音量越大、上升的音符越多（3..14）。乘 1.4 让中等音量也能铺满。
-  const activeCount = Math.max(
-    3,
-    Math.min(MAX_NOTES, Math.round((audioLevel || 0) * MAX_NOTES * 1.4))
-  );
-
-  // 上升音符稳定池：以 isRecording 为 key 记忆，整段录音内下标 i 的字形/颜色/位置/尺寸/时长/相位/旋转不变。
-  // 渲染前 activeCount 个，按下标 key → 数量变化时从尾部增减，已显示的音符不会跳变。
-  const notePool = useMemo(() => {
-    if (!isRecording) return [];
-    return Array.from({ length: MAX_NOTES }).map(() => {
-      const dur = 1.3 + Math.random() * 1.4;
-      return {
-        glyph: NOTE_GLYPHS[Math.floor(Math.random() * NOTE_GLYPHS.length)],
-        color: NOTE_COLORS[Math.floor(Math.random() * NOTE_COLORS.length)],
-        left: Math.random() * 100, // 0..100% 跨容器（容器宽 ~88px，居中于胶囊）
-        size: 11 + Math.random() * 6, // 11..17px
+  // 录音中的“生成式”音符场：每个音符独立 spawn，完整播放一次 fade-in→上浮→fade-out，
+  // 完全淡出后才移除。音量越大、生成越密、音符越大。
+  const [liveNotes, setLiveNotes] = useState([]);
+  useEffect(() => {
+    if (!isRecording) { setLiveNotes([]); return; }
+    let cancelled = false, id = 0, timer = null;
+    const spawn = () => {
+      const lvl = Math.min(1, (audioLevelRef.current || 0) * 1.4);
+      const nid = ++id;
+      const dur = 1.7 + Math.random() * 0.9;
+      const size = 9 + lvl * 7 + Math.random() * 2;
+      const note = {
+        id: nid,
+        glyph: NOTE_GLYPHS[Math.floor(Math.random()*NOTE_GLYPHS.length)],
+        color: NOTE_COLORS[Math.floor(Math.random()*NOTE_COLORS.length)],
+        left: 6 + Math.random() * 88,
+        size: Math.min(17, size),
         dur,
-        delay: -(Math.random() * dur), // 负延迟：起始即处于动画中段，避免整齐起跳
-        rot: Math.random() * 44 - 22,
+        rot: Math.random() * 40 - 20,
       };
-    });
+      setLiveNotes(n => [...n, note]);
+      setTimeout(() => { if (!cancelled) setLiveNotes(n => n.filter(x => x.id !== nid)); }, dur * 1000 + 80);
+    };
+    const schedule = () => {
+      const lvl = Math.min(1, (audioLevelRef.current || 0) * 1.4);
+      const interval = 120 + (1 - lvl) * 800;
+      timer = setTimeout(() => { if (cancelled) return; spawn(); schedule(); }, interval);
+    };
+    spawn();
+    schedule();
+    return () => { cancelled = true; if (timer) clearTimeout(timer); };
   }, [isRecording]);
 
   // 静止闪烁行：固定的小音符（颜色/字形稳定），错峰闪烁形成柔和波浪
@@ -185,19 +190,19 @@ export function RecorderPill({
               />
             </div>
           </div>
-        ) : speaking ? (
-          // 正在说话：底部升起、上浮渐隐的彩色音符，数量随音量增减
+        ) : isRecording ? (
+          // 录音中：生成式上浮音符场，每个音符独立完整淡入→上浮→淡出一次
           <div className="pill-notes" aria-hidden="true">
-            {notePool.slice(0, activeCount).map((n, i) => (
+            {liveNotes.map(n => (
               <span
-                key={i}
+                key={n.id}
                 className="pill-note"
                 style={{
                   left: `${n.left}%`,
                   color: n.color,
                   fontSize: `${n.size}px`,
                   '--r': `${n.rot}deg`,
-                  animation: `pill-note-float ${n.dur.toFixed(2)}s ease-in-out ${n.delay.toFixed(2)}s infinite`,
+                  animation: `pill-note-float ${n.dur.toFixed(2)}s ease-out forwards`,
                 }}
               >
                 {n.glyph}
@@ -217,9 +222,6 @@ export function RecorderPill({
               </span>
             ))}
           </div>
-        ) : isRecording ? (
-          // 录音中但未说话（静默）：中部留空，不显示任何音符
-          null
         ) : (
           // 空闲 / 启动（未录音）：一行错峰闪烁的小音符（无上下浮动）
           <div className="pill-note-row" aria-hidden="true">
