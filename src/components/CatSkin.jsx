@@ -28,6 +28,8 @@ export default function CatSkin({ micState, audioLevel = 0, isBusy = false }) {
   useEffect(() => {
     const root = rootRef.current;
     if (!root) return;
+    // 清空 root，杜绝 StrictMode(dev) 两次执行 effect 残留的第二只猫
+    root.innerHTML = "";
     const runner = document.createElement("div"); runner.className = "cs-runner";
     const flip = document.createElement("div"); runner.appendChild(flip);
     const notes = document.createElement("div"); notes.className = "cs-notes";
@@ -96,7 +98,7 @@ export default function CatSkin({ micState, audioLevel = 0, isBusy = false }) {
       raf = requestAnimationFrame(frame);
     }
     raf = requestAnimationFrame(frame);
-    return () => { cancelled = true; cancelAnimationFrame(raf); };
+    return () => { cancelled = true; cancelAnimationFrame(raf); root.innerHTML = ""; };
   }, []);
 
   return <div ref={rootRef} className="cat-skin" aria-hidden="true" />;

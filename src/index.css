@@ -771,7 +771,7 @@ body {
 .cs-runner{position:absolute;bottom:6px;left:0;transform-origin:center bottom;will-change:transform}
 .cs-notes{position:absolute;bottom:22px;left:0}
 .cs-note{position:absolute;font-size:11px;animation:cs-np 1.3s ease-out infinite}
-.cs-zz{position:absolute;font-size:9px;color:#cbd5e1;animation:cs-zf 2.4s ease-in-out infinite}
+.cs-zz{position:absolute;font-size:10px;font-weight:600;color:rgba(255,255,255,.85);text-shadow:0 1px 2px rgba(0,0,0,.35);animation:cs-zf 2.4s ease-in-out infinite}
 .cs-leg{transform-box:fill-box;transform-origin:50% 0}
 .cs-la{animation:cs-legA .3s ease-in-out infinite}
 .cs-lb{animation:cs-legB .3s ease-in-out infinite}

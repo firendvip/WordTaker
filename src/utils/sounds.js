@@ -39,70 +39,101 @@ function tone({ freq = 660, dur = 0.12, type = "sine", vol = 0.3, when = 0 }) {
   osc.stop(t0 + dur + 0.03);
 }
 
-// 可爱合成"喵"（小奶猫）：双振荡器(triangle+sawtooth微失谐) + 颤音LFO + 带通共振峰扫频，
-// 音高上扬后下滑，约 0.34s。完全 Web Audio 合成，无音频文件、无版权问题。
-function meow({ vol = 0.3, when = 0, base = 1, dur = 0.34 } = {}) {
+// 可爱合成"喵"（小奶猫）：源-共振峰(formant)元音合成。
+// 锯齿波声源 + 颤音LFO 作为"声带"，经 3 个并联带通"共振峰"滤波器塑形，
+// 三个共振峰中心频率随时间在元音 mi(ee) → a → ow 之间滑动，模拟猫张口/闭口的"喵～"。
+// 音高先升后降，约 0.4s。完全 Web Audio 合成，无音频文件、无版权问题。
+function meow({ vol = 0.3, when = 0, base = 1, dur = 0.4 } = {}) {
   const ac = ctx();
   if (!ac) return;
+  // 整体上移 ~7% 增加奶猫感
+  const kitten = 1.07;
   const t0 = ac.currentTime + when;
+  const tMid = t0 + dur * 0.4; // 元音 a 的时刻
   const tEnd = t0 + dur;
 
-  // 共振峰带通滤波（formant），频率随时间扫描，制造"喵"的张口/闭口感
-  const filter = ac.createBiquadFilter();
-  filter.type = "bandpass";
-  filter.Q.setValueAtTime(6, t0);
-  filter.frequency.setValueAtTime(850 * base, t0);
-  filter.frequency.linearRampToValueAtTime(1350 * base, t0 + dur * 0.35);
-  filter.frequency.linearRampToValueAtTime(750 * base, tEnd);
+  // --- 声源：锯齿波 + 微失谐第二振荡器，音高 600→760→400（先升后降）---
+  const pSrc = (f) => f * base * kitten;
+  const p0 = pSrc(600);
+  const p1 = pSrc(760);
+  const p2 = pSrc(400);
 
-  // 主增益（幅度包络）：快速起音 → 柔和衰减到 0
-  const g = ac.createGain();
-  g.gain.setValueAtTime(0.0001, t0);
-  g.gain.linearRampToValueAtTime(vol, t0 + 0.012);
-  g.gain.exponentialRampToValueAtTime(0.0001, tEnd);
-
-  // 颤音 LFO：约 16Hz、深度约 12Hz，作用到两个振荡器的 frequency
+  // 颤音 LFO：~14Hz、深度 ~10Hz，作用到声源 frequency
   const lfo = ac.createOscillator();
   lfo.type = "sine";
-  lfo.frequency.setValueAtTime(16, t0);
+  lfo.frequency.setValueAtTime(14, t0);
   const lfoGain = ac.createGain();
-  lfoGain.gain.setValueAtTime(12 * base, t0);
+  lfoGain.gain.setValueAtTime(10 * base * kitten, t0);
   lfo.connect(lfoGain);
 
-  // 音高轮廓：560 → 820（上扬）→ 430（下滑）
-  const f0 = 560 * base;
-  const f1 = 820 * base;
-  const f2 = 430 * base;
-
   const oscs = [
-    { type: "triangle", detune: 0, mix: 0.9 },
-    { type: "sawtooth", detune: 6, mix: 0.45 },
-  ].map(({ type, detune, mix }) => {
+    { detune: 0, mix: 1.0 },
+    { detune: 7, mix: 0.45 }, // +7 cents 微失谐
+  ].map(({ detune, mix }) => {
     const osc = ac.createOscillator();
-    osc.type = type;
+    osc.type = "sawtooth";
     osc.detune.setValueAtTime(detune, t0);
-    osc.frequency.setValueAtTime(f0, t0);
-    osc.frequency.linearRampToValueAtTime(f1, t0 + dur * 0.28);
-    osc.frequency.exponentialRampToValueAtTime(f2, tEnd);
+    osc.frequency.setValueAtTime(p0, t0);
+    osc.frequency.linearRampToValueAtTime(p1, t0 + dur * 0.3);
+    osc.frequency.linearRampToValueAtTime(p2, tEnd);
     lfoGain.connect(osc.frequency);
     const mg = ac.createGain();
     mg.gain.setValueAtTime(mix, t0);
     osc.connect(mg);
-    mg.connect(filter);
     return { osc, mg };
   });
 
-  filter.connect(g);
+  // 声源汇总节点（喂给 3 个并联共振峰）
+  const srcBus = ac.createGain();
+  srcBus.gain.setValueAtTime(1, t0);
+  oscs.forEach(({ mg }) => mg.connect(srcBus));
+
+  // --- 三个并联带通"共振峰"，中心频率滑过元音 mi→a→ow ---
+  // F1 最响、F2 中等、F3 最轻
+  const FORMANTS = [
+    { Q: 8, gain: 1.0, start: 320, mid: 720, end: 380 }, // F1
+    { Q: 9, gain: 0.5, start: 2300, mid: 1200, end: 800 }, // F2
+    { Q: 10, gain: 0.28, start: 3000, mid: 2600, end: 2400 }, // F3
+  ].map(({ Q, gain, start, mid, end }) => {
+    const bp = ac.createBiquadFilter();
+    bp.type = "bandpass";
+    bp.Q.setValueAtTime(Q, t0);
+    bp.frequency.setValueAtTime(start * base * kitten, t0);
+    bp.frequency.linearRampToValueAtTime(mid * base * kitten, tMid);
+    bp.frequency.linearRampToValueAtTime(end * base * kitten, tEnd);
+    const fg = ac.createGain();
+    fg.gain.setValueAtTime(gain, t0);
+    srcBus.connect(bp);
+    bp.connect(fg);
+    return { bp, fg };
+  });
+
+  // --- 起音"m"辅音：短暂低通收口，~30ms 内打开 ---
+  const onset = ac.createBiquadFilter();
+  onset.type = "lowpass";
+  onset.Q.setValueAtTime(0.7, t0);
+  onset.frequency.setValueAtTime(500 * base * kitten, t0);
+  onset.frequency.linearRampToValueAtTime(6000 * base * kitten, t0 + 0.03);
+  FORMANTS.forEach(({ fg }) => fg.connect(onset));
+
+  // --- 幅度包络：快起音 ~15ms 到峰值，短保持，~0.42s 平滑衰减到 0 ---
+  const g = ac.createGain();
+  const peak = vol * 0.9;
+  g.gain.setValueAtTime(0.0001, t0);
+  g.gain.linearRampToValueAtTime(peak, t0 + 0.015);
+  g.gain.setValueAtTime(peak, t0 + 0.1); // 短保持
+  g.gain.exponentialRampToValueAtTime(0.0001, t0 + Math.max(dur, 0.42) + 0.02);
+  onset.connect(g);
   g.connect(ac.destination);
 
   const startAt = t0;
-  const stopAt = tEnd + 0.04;
+  const stopAt = t0 + Math.max(dur, 0.42) + 0.06;
   lfo.start(startAt);
   oscs.forEach(({ osc }) => osc.start(startAt));
   lfo.stop(stopAt);
   oscs.forEach(({ osc }) => osc.stop(stopAt));
 
-  // 清理：结束后断开所有节点，避免泄漏
+  // 清理：结束后停止/断开所有节点，避免泄漏
   const cleanup = () => {
     try {
       lfo.disconnect();
@@ -111,7 +142,12 @@ function meow({ vol = 0.3, when = 0, base = 1, dur = 0.34 } = {}) {
         osc.disconnect();
         mg.disconnect();
       });
-      filter.disconnect();
+      srcBus.disconnect();
+      FORMANTS.forEach(({ bp, fg }) => {
+        bp.disconnect();
+        fg.disconnect();
+      });
+      onset.disconnect();
       g.disconnect();
     } catch (e) {
       // 忽略
