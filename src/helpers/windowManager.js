@@ -19,6 +19,17 @@ class WindowManager {
     }
   }
 
+  // Windows 可见窗口（设置/历史/控制面板）的窗口与任务栏图标：仅 win32 返回彩色 .ico 路径。
+  // 解析方式与托盘一致：开发期取项目内 assets/，打包后取 process.resourcesPath/assets。
+  _winIconOption() {
+    if (process.platform !== "win32") return {};
+    const isDev = process.env.NODE_ENV === "development";
+    const iconPath = isDev
+      ? path.join(__dirname, "..", "..", "assets", "icon.ico")
+      : path.join(process.resourcesPath, "assets", "icon.ico");
+    return { icon: iconPath };
+  }
+
   async createMainWindow() {
     if (this.mainWindow) {
       this.mainWindow.focus();
@@ -122,6 +133,7 @@ class WindowManager {
       width: 800,
       height: 600,
       show: false,
+      ...this._winIconOption(),
       webPreferences: {
         nodeIntegration: false,
         contextIsolation: true,
@@ -159,6 +171,7 @@ class WindowManager {
       show: false,
       title: "",
       alwaysOnTop: true,
+      ...this._winIconOption(),
       webPreferences: {
         nodeIntegration: false,
         contextIsolation: true,
@@ -195,6 +208,7 @@ class WindowManager {
       show: false,
       title: "",
       alwaysOnTop: true,
+      ...this._winIconOption(),
       webPreferences: {
         nodeIntegration: false,
         contextIsolation: true,

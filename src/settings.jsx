@@ -478,16 +478,18 @@ const SettingsPage = () => {
                     buttonText="测试麦克风"
                   />
                 </div>
-                <div className="py-4">
-                  <PermissionCard
-                    icon={Shield}
-                    title="辅助功能权限"
-                    description=""
-                    granted={accessibilityPermissionGranted}
-                    onRequest={testAccessibilityPermission}
-                    buttonText="测试权限"
-                  />
-                </div>
+                {isMac && (
+                  <div className="py-4">
+                    <PermissionCard
+                      icon={Shield}
+                      title="辅助功能权限"
+                      description=""
+                      granted={accessibilityPermissionGranted}
+                      onRequest={testAccessibilityPermission}
+                      buttonText="测试权限"
+                    />
+                  </div>
+                )}
               </div>
             </div>
           )}

@@ -189,7 +189,7 @@ function setupRecordingTrigger() {
       // 裸修饰键走 uiohook
       const ok = triggerManager.start(trigger, fire);
       if (!ok) {
-        logger.warn('裸修饰键触发启动失败，请确认已授予“辅助功能”权限');
+        logger.error('[trigger] uiohook 启动失败，全局快捷键将不可用');
       }
     }
   } catch (error) {

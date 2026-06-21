@@ -39,6 +39,10 @@ class TrayManager {
         // macOS 菜单栏：代码生成透明底的单色波形模板图标（避免 SVG 渲染丢失透明度）
         trayIcon = this.buildWaveformTrayIcon();
         trayIcon.setTemplateImage(true);
+      } else if (process.platform === "win32" && iconPath && require("fs").existsSync(iconPath)) {
+        // Windows 托盘：彩色 .ico，缩放到 16px 并关闭模板图（否则会被渲染成单色）
+        trayIcon = nativeImage.createFromPath(iconPath).resize({ width: 16, height: 16 });
+        trayIcon.setTemplateImage(false);
       } else if (iconPath && require("fs").existsSync(iconPath)) {
         trayIcon = nativeImage.createFromPath(iconPath);
       } else {
@@ -91,8 +95,12 @@ class TrayManager {
 
   getTrayIconPath() {
     const isDev = process.env.NODE_ENV === "development";
-    // macOS 菜单栏用单色模板图标（仅波形条、透明底）；其它平台用应用图标
-    const iconFile = process.platform === "darwin" ? "trayTemplate.png" : "icon.png";
+    // macOS 菜单栏用单色模板图标（仅波形条、透明底）；Windows 用彩色 .ico；其它平台用 PNG 应用图标
+    const iconFile = process.platform === "darwin"
+      ? "trayTemplate.png"
+      : process.platform === "win32"
+        ? "icon.ico"
+        : "icon.png";
     if (isDev) {
       return path.join(__dirname, "..", "..", "assets", iconFile);
     } else {

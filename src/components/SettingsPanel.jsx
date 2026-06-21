@@ -5,6 +5,9 @@ import PermissionCard from "./ui/permission-card";
 import { toast } from "sonner";
 
 const SettingsPanel = ({ onClose }) => {
+  // 辅助功能（自动粘贴）权限仅 macOS 需要；Windows 无需任何辅助功能权限。
+  const isMac = typeof navigator !== "undefined" && !!navigator.platform && navigator.platform.toLowerCase().includes("mac");
+
   const showAlert = (alert) => {
     toast(alert.title, {
       description: alert.description,
@@ -58,14 +61,16 @@ const SettingsPanel = ({ onClose }) => {
                 buttonText="测试麦克风"
               />
 
-              <PermissionCard
-                icon={Shield}
-                title="辅助功能权限"
-                description="自动粘贴文本所需的权限"
-                granted={accessibilityPermissionGranted}
-                onRequest={testAccessibilityPermission}
-                buttonText="测试权限"
-              />
+              {isMac && (
+                <PermissionCard
+                  icon={Shield}
+                  title="辅助功能权限"
+                  description="自动粘贴文本所需的权限"
+                  granted={accessibilityPermissionGranted}
+                  onRequest={testAccessibilityPermission}
+                  buttonText="测试权限"
+                />
+              )}
             </div>
           </div>
 
