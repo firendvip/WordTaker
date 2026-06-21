@@ -1,6 +1,6 @@
 {
   "name": "wordtaker",
-  "version": "1.1.20",
+  "version": "1.1.21",
   "description": "WordTaker — 基于 FunASR 本地识别与 DeepSeek 润色的本地中文语音输入工具",
   "main": "main.js",
   "private": true,
@@ -150,7 +150,7 @@
     ],
     "mac": {
       "category": "public.app-category.productivity",
-      "icon": "assets/icon.icns",
+      "icon": "build/icon.icns",
       "hardenedRuntime": true,
       "gatekeeperAssess": false,
       "entitlements": "entitlements.mac.plist",
@@ -160,7 +160,7 @@
       }
     },
     "win": {
-      "icon": "assets/icon.ico",
+      "icon": "build/icon.ico",
       "artifactName": "${productName}-${version}-${arch}.${ext}",
       "target": [
         {
@@ -178,6 +178,8 @@
       ]
     },
     "nsis": {
+      "installerIcon": "build/icon.ico",
+      "uninstallerIcon": "build/icon.ico",
       "oneClick": false,
       "perMachine": false,
       "allowToChangeInstallationDirectory": true,

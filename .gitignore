@@ -12,6 +12,14 @@ dist/
 build/
 out/
 
+# Keep packaging icon source assets (referenced by electron-builder)
+!build/
+build/*
+!build/icon-master.svg
+!build/icon.png
+!build/icon.icns
+!build/icon.ico
+
 # Environment variables
 .env
 .env.local
