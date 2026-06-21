@@ -1,5 +1,11 @@
 // 语音输入唤起/结束提示音（用 Web Audio 实时合成，无需任何音频文件、无版权问题）。
 // 提供多套方案，含"无声"。音量 0~1。
+//
+// 例外：「喵」方案改用真实免版权猫叫样本（OpenGameArt "Meow" by IgnasD，
+// 许可 CC0 公共领域，可商用、无需署名；来源 https://opengameart.org/content/meow）。
+// 由 Vite 打包静态资源，解码一次并缓存 AudioBuffer；解码/播放失败则回退到原合成喵。
+
+import meowUrl from "../assets/meow.mp3";
 
 let _ctx = null;
 
@@ -189,12 +195,14 @@ const SCHEMES = {
     },
   },
   meow: {
-    // 唤起：单声清亮小奶猫"喵～"
+    // 唤起：真实 CC0 猫叫样本（解码失败时回退合成喵）
     wake(v) {
+      if (playMeowSample(v)) return;
       meow({ vol: v, base: 1 });
     },
-    // 结束：略低音的轻柔双喵"喵喵"，与唤起区分
+    // 结束：同一样本、略降音量（解码失败时回退合成双喵）
     end(v) {
+      if (playMeowSample(v * 0.85)) return;
       meow({ vol: v * 0.95, base: 0.88, dur: 0.26 });
       meow({ vol: v * 0.8, base: 0.8, dur: 0.24, when: 0.2 });
     },
@@ -216,14 +224,82 @@ async function ensureRunning() {
   return ac;
 }
 
+// --- 真实猫叫样本（CC0）：解码一次并缓存 AudioBuffer ---
+let _meowBuf = null; // 解码后的 AudioBuffer
+let _meowPromise = null; // 解码进行中的 Promise，避免重复请求
+let _meowFailed = false; // 解码/加载失败标记，失败后直接回退合成喵
+
+async function loadMeowBuffer() {
+  if (_meowBuf) return _meowBuf;
+  if (_meowFailed) return null;
+  const ac = ctx();
+  if (!ac) return null;
+  if (!_meowPromise) {
+    _meowPromise = (async () => {
+      const res = await fetch(meowUrl);
+      if (!res.ok) throw new Error(`meow fetch ${res.status}`);
+      const arr = await res.arrayBuffer();
+      // decodeAudioData 在部分浏览器仅支持回调式，做兼容包装
+      const buf = await new Promise((resolve, reject) => {
+        try {
+          const p = ac.decodeAudioData(arr, resolve, reject);
+          if (p && typeof p.then === "function") p.then(resolve, reject);
+        } catch (e) {
+          reject(e);
+        }
+      });
+      _meowBuf = buf;
+      return buf;
+    })().catch((e) => {
+      _meowFailed = true;
+      _meowPromise = null;
+      return null;
+    });
+  }
+  return _meowPromise;
+}
+
+// 预热：尽早解码样本，避免首次播放卡顿
+export function warmupMeow() {
+  loadMeowBuffer();
+}
+
+// 播放真实猫叫样本；返回 true 表示已成功排程，false 表示需回退合成喵
+function playMeowSample(vol, when = 0) {
+  const ac = ctx();
+  if (!ac || !_meowBuf) return false;
+  try {
+    const src = ac.createBufferSource();
+    src.buffer = _meowBuf;
+    const g = ac.createGain();
+    g.gain.setValueAtTime(clampVol(vol), ac.currentTime + when);
+    src.connect(g);
+    g.connect(ac.destination);
+    src.start(ac.currentTime + when);
+    src.onended = () => {
+      try {
+        src.disconnect();
+        g.disconnect();
+      } catch (e) {
+        // 忽略
+      }
+    };
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+
 // 应用加载即创建/恢复音频上下文，预热掉首次唤起的冷启动延迟
 export function warmupAudio() {
   ensureRunning();
+  warmupMeow();
 }
 
 export async function playWake(scheme, volume) {
   try {
     await ensureRunning();
+    if (scheme === "meow") await loadMeowBuffer();
     (SCHEMES[scheme] || SCHEMES.soft).wake(clampVol(volume));
   } catch (e) {
     // 忽略
@@ -233,6 +309,7 @@ export async function playWake(scheme, volume) {
 export async function playEnd(scheme, volume) {
   try {
     await ensureRunning();
+    if (scheme === "meow") await loadMeowBuffer();
     (SCHEMES[scheme] || SCHEMES.soft).end(clampVol(volume));
   } catch (e) {
     // 忽略

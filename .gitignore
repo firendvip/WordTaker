@@ -146,6 +146,11 @@ cache/
 *.aac
 *.flac
 
+# 但保留打包进应用的内置音效资源（真实 CC0 猫叫等）
+!src/assets/*.mp3
+!src/assets/*.ogg
+!src/assets/*.wav
+
 # Database files
 *.db
 *.sqlite
