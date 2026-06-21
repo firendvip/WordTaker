@@ -7,6 +7,7 @@ import {
   Download,
   AlertTriangle,
 } from "lucide-react";
+import CatSkin from "./CatSkin";
 
 // 静音 / 录音：胶囊中部一行轻柔“呼吸”的彩色音符（音量越大整行越淡）
 const ROW_GLYPHS = ['♪','♫','♬','♩','♫','♪','♬'];
@@ -167,6 +168,11 @@ export function RecorderPill({
     }
     if (!disabled) onToggle && onToggle();
   };
+
+  // 小黑猫皮肤：仅渲染透明小黑猫（无胶囊/徽章/星标/按钮）
+  if (pillSkin === "cat") {
+    return <CatSkin micState={micState} audioLevel={audioLevel} isBusy={isBusy} />;
+  }
 
   return (
     <div className="pill-root">
