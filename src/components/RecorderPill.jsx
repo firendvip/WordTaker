@@ -178,12 +178,18 @@ export function RecorderPill({
               />
             </div>
           </div>
+        ) : pillSkin === "voiceink" && isBusy ? (
+          // VoiceInk 皮肤忙碌中：转写中 + 假进度条
+          <div className="pill-transcribe" aria-hidden="true">
+            <span className="pill-transcribe-label">转写中</span>
+            <div className="pill-transcribe-bar"><div className="pill-transcribe-fill" /></div>
+          </div>
         ) : pillSkin === "voiceink" ? (
           // VoiceInk 皮肤：15 条音频可视化（高度由 rAF 直接写 DOM）
           <div
             className="pill-vk"
             aria-hidden="true"
-            style={{ opacity: isBusy ? 0.6 : isRecording ? 0.85 : 0.5 }}
+            style={{ opacity: isRecording ? 0.85 : 0.5 }}
           >
             {Array.from({ length: 15 }).map((_, i) => (
               <span
