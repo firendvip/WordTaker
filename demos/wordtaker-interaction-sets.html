@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="zh"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>WordTaker 交互方案</title>
+<style>
+body{margin:0;background:#f6f6f7;color:#1f2937;font-family:-apple-system,"PingFang SC",Helvetica,Arial,sans-serif}
+.wrap{max-width:760px;margin:0 auto;padding:28px 20px 60px}
+h1{font-size:22px;font-weight:600;margin:0 0 14px}
+.sets{display:flex;flex-direction:column;gap:22px}
+.setcard{border:.5px solid #e5e7eb;border-radius:14px;padding:16px 16px 18px;background:#fff}
+.seth{font-size:15px;font-weight:500;color:#1f2937;margin:0 0 2px}
+.setsub{font-size:12px;color:#6b7280;margin:0 0 14px}
+.setrow{display:flex;gap:16px;flex-wrap:wrap}
+.pcell{display:flex;flex-direction:column;align-items:center;gap:5px}
+.slab{font-size:11px}.slab.s0{color:#9ca3af}.slab.s1{color:#34c98a}.slab.s2{color:#e0a23a}
+.pillx{position:relative;width:150px;height:38px;background:#0b0b0c;border-radius:999px;display:flex;align-items:center;justify-content:center;border:.5px solid rgba(255,255,255,.1);overflow:hidden}
+.bg{position:absolute;left:9px;width:14px;height:14px;border-radius:50%;background:#fff;display:flex;align-items:center;justify-content:center;z-index:2}
+.bring{position:absolute;left:9px;top:50%;width:14px;height:14px;margin-top:-7px;border-radius:50%;border:1.5px solid rgba(255,255,255,.5);z-index:1}
+.st{position:absolute;right:8px;width:15px;height:15px;display:flex;align-items:center;justify-content:center}
+.fx{display:flex;align-items:center;justify-content:center;gap:5px;height:24px}
+.fx.vktight{gap:2px}
+.n{font-size:13px;line-height:1;color:#fff}
+.b{width:3px;height:13px;border-radius:2px;background:#fff;transform-origin:center}.b.thin{width:2px}
+.d{width:6px;height:6px;border-radius:50%;background:#fff}
+.ptrack{position:relative;width:74px;height:3px;border-radius:2px;background:rgba(255,255,255,.18);overflow:hidden}
+.pfill{position:absolute;top:0;left:0;height:3px;width:36%;border-radius:2px;background:#fff;animation:slidebar 1.3s ease-in-out infinite}
+@keyframes bob{0%,100%{transform:translateY(3px)}50%{transform:translateY(-5px)}}
+@keyframes eq{0%,100%{transform:scaleY(.35)}50%{transform:scaleY(1.55)}}
+@keyframes eqlow{0%,100%{transform:scaleY(.3)}50%{transform:scaleY(.7)}}
+@keyframes breathe{0%,100%{opacity:.22}50%{opacity:1}}
+@keyframes slidebar{0%{transform:translateX(-120%)}100%{transform:translateX(320%)}}
+@keyframes sonar{0%{transform:scale(1);opacity:.5}100%{transform:scale(1.9);opacity:0}}
+</style></head>
+<body><div class="wrap"><h1>WordTaker · 胶囊交互方案（每组三态）</h1><div class="sets" id="sx"></div></div>
+<script>
+(function(){
+var PAL=['#7DB4FF','#5FD8C4','#F7A8CB','#FFD36B','#B9A6FF','#9FE89A'];
+var G=['♪','♫','♬','♩','♭'];
+var STAR='<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="#f5c451" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9.937 15.5A2 2 0 0 0 8.5 14.063l-6.135-1.582a.5.5 0 0 1 0-.962L8.5 9.936A2 2 0 0 0 9.937 8.5l1.582-6.135a.5.5 0 0 1 .963 0L14.063 8.5A2 2 0 0 0 15.5 9.937l6.135 1.581a.5.5 0 0 1 0 .964L15.5 14.063a2 2 0 0 0-1.437 1.437l-1.582 6.135a.5.5 0 0 1-.963 0z"/><path d="M20 3v4"/><path d="M22 5h-4"/><path d="M4 17v2"/><path d="M5 18H3"/></svg>';
+function mk(t,c,s,x){var e=document.createElement(t);if(c)e.className=c;if(s)e.setAttribute('style',s);if(x!=null)e.textContent=x;return e;}
+function generic(cfg){var fx=mk('div','fx'+(cfg.thin?' vktight':''));for(var i=0;i<cfg.c;i++){var k=cfg.k,cls=k==='note'?'n':k==='bar'?('b'+(cfg.thin?' thin':'')):'d';var st='animation:'+cfg.a+' '+cfg.d+'s ease-in-out '+(i*cfg.s).toFixed(2)+'s infinite;';if(cfg.col){var c=PAL[i%PAL.length];st+=k==='note'?('color:'+c+';'):('background:'+c+';');}fx.appendChild(mk('span',cls,st,k==='note'?G[i%G.length]:null));}return fx;}
+function N(c,a,d,s,col){return generic({k:'note',c:c,a:a,d:d,s:s,col:col});}
+function B(c,a,d,s,col,thin){return generic({k:'bar',c:c,a:a,d:d,s:s,col:col,thin:thin});}
+function Dt(c,a,d,s,col){return generic({k:'dot',c:c,a:a,d:d,s:s,col:col});}
+function slidebar(){var fx=mk('div','fx');var t=mk('div','ptrack');t.appendChild(mk('span','pfill'));fx.appendChild(t);return fx;}
+function pill(fxEl,ring){var p=mk('div','pillx');var h='';if(ring){h+='<span class="bring" style="animation:sonar 1.8s ease-out 0s infinite"></span><span class="bring" style="animation:sonar 1.8s ease-out .9s infinite"></span>';}h+='<span class="bg"><svg viewBox="0 0 24 24" width="9" height="9"><path d="M5 12l4 4 9-10" fill="none" stroke="#0a0a0c" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/></svg></span><span class="st">'+STAR+'</span>';p.innerHTML=h;p.appendChild(fxEl);return p;}
+var SETS=[
+ {h:'D · 音符·钢琴',sub:'彩色音符呼吸 → 随声上下浮动 → 依次跳的钢琴波浪',st:[{l:'静音 / 唤醒',f:function(){return N(7,'breathe',2.2,.18,1)},ring:1},{l:'说话中',f:function(){return N(7,'bob',1.4,.14,1)}},{l:'处理中',f:function(){return N(5,'bob',1.0,.16,1)}}]},
+ {h:'E · 声波·均衡',sub:'细声波条低平 → 随声起伏 → 加载条（无旋转）',st:[{l:'静音 / 唤醒',f:function(){return B(15,'eqlow',2.2,.05,0,1)},ring:0},{l:'说话中',f:function(){return B(15,'eq',1.0,.05,0,1)}},{l:'处理中',f:function(){return slidebar()}}]},
+ {h:'F · 光点·呼吸',sub:'彩色圆点呼吸 → 随声弹动 → 三点依次跳（无旋转）',st:[{l:'静音 / 唤醒',f:function(){return Dt(6,'breathe',1.8,.18,1)},ring:1},{l:'说话中',f:function(){return Dt(6,'bob',1.0,.12,1)}},{l:'处理中',f:function(){return Dt(3,'bob',.9,.16,0)}}]}
+];
+var sx=document.getElementById('sx');
+SETS.forEach(function(S){var card=mk('div','setcard');card.appendChild(mk('div','seth',null,S.h));card.appendChild(mk('div','setsub',null,S.sub));var row=mk('div','setrow');S.st.forEach(function(state,i){var pc=mk('div','pcell');pc.appendChild(pill(state.f(),state.ring));pc.appendChild(mk('div','slab s'+i,null,state.l));row.appendChild(pc);});card.appendChild(row);sx.appendChild(card);});
+})();
+</script>
+</body></html>

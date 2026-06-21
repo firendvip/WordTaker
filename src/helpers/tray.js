@@ -31,22 +31,18 @@ class TrayManager {
 
   async createTray() {
     try {
-      // 创建托盘图标：彩色青色均衡器图标（与应用图标 #2 配色一致）
-      const coloredIconPath = path.join(this.getAssetsDir(), "tray-icon.png");
+      // 创建托盘图标
+      const iconPath = this.getTrayIconPath();
       let trayIcon;
-
-      if (require("fs").existsSync(coloredIconPath)) {
-        // electron 会自动选取 @2x 高清版本；非模板图，保留青色
-        trayIcon = nativeImage.createFromPath(coloredIconPath);
-        trayIcon.setTemplateImage(false);
+      
+      if (process.platform === "darwin") {
+        // macOS 菜单栏：代码生成透明底的单色波形模板图标（避免 SVG 渲染丢失透明度）
+        trayIcon = this.buildWaveformTrayIcon();
+        trayIcon.setTemplateImage(true);
+      } else if (iconPath && require("fs").existsSync(iconPath)) {
+        trayIcon = nativeImage.createFromPath(iconPath);
       } else {
-        // 兜底：旧的应用图标或空图
-        const iconPath = this.getTrayIconPath();
-        if (iconPath && require("fs").existsSync(iconPath)) {
-          trayIcon = nativeImage.createFromPath(iconPath);
-        } else {
-          trayIcon = nativeImage.createEmpty();
-        }
+        trayIcon = nativeImage.createEmpty();
       }
 
       this.tray = new Tray(trayIcon);
@@ -91,15 +87,6 @@ class TrayManager {
       x += bw + gap;
     }
     return nativeImage.createFromBitmap(buf, { width: S, height: S, scaleFactor: 2 });
-  }
-
-  // 解析 assets 目录（开发与打包环境一致）
-  getAssetsDir() {
-    const isDev = process.env.NODE_ENV === "development";
-    if (isDev) {
-      return path.join(__dirname, "..", "..", "assets");
-    }
-    return path.join(process.resourcesPath, "assets");
   }
 
   getTrayIconPath() {
