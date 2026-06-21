@@ -178,11 +178,17 @@ body {
   width: 92px; display: flex; align-items: center; justify-content: space-between;
   pointer-events: none; transition: opacity 500ms ease;
 }
+@property --amp {
+  syntax: "<length>";
+  inherits: false;
+  initial-value: 0px;
+}
 @keyframes pill-note-bob { 0%,100% { transform: translateY(0); } 50% { transform: translateY(calc(var(--amp, 0px) * -1)); } }
 .pill-breathe-note {
   font-size: 12px; line-height: 1; will-change: opacity;
   text-shadow: 0 0 6px currentColor;
-  animation: pill-note-breathe 2.2s ease-in-out infinite, pill-note-bob 0.75s ease-in-out infinite;
+  transition: --amp 320ms ease-out;
+  animation: pill-note-breathe 2.2s ease-in-out infinite, pill-note-bob 1.3s ease-in-out infinite;
 }
 /* 录音中：从徽章向外扩散的半透明圆环（错峰两道） */
 @keyframes pill-badge-ring { 0% { transform: scale(1); opacity: .5; } 100% { transform: scale(1.9); opacity: 0; } }
