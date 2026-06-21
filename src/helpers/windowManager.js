@@ -2,8 +2,9 @@ const { BrowserWindow } = require("electron");
 const path = require("path");
 const { execFile } = require("child_process");
 
-// 取前台焦点窗口位置/尺寸的超时（毫秒）：osascript 偶发卡顿时也不能阻塞唤醒。
-const FOCUS_QUERY_TIMEOUT_MS = 350;
+// 取前台焦点窗口位置/尺寸的超时（毫秒）：放宽到 1500ms，避免 osascript 偶发卡顿被 SIGKILL
+// 后误回退到光标屏（胶囊"跟随鼠标"）。超时/失败时优先复用上次成功的焦点屏。
+const FOCUS_QUERY_TIMEOUT_MS = 1500;
 
 // 胶囊距屏幕底部的偏移（像素）。
 const BOTTOM_OFFSET_PX = 24;
@@ -15,6 +16,9 @@ class WindowManager {
     this.historyWindow = null;
     this.settingsWindow = null;
     this.logger = logger;
+    // 上次成功解析到的「焦点窗口所在屏」：osascript 超时/失败时复用它，
+    // 而不是立刻回退到光标屏（否则胶囊会"跟随鼠标"）。
+    this._lastFocusDisplay = null;
   }
 
   // 窗口创建/展示链路的错误统一记录（SF-3）：有 logger 用 logger，否则回退 console。
@@ -99,8 +103,11 @@ class WindowManager {
 
   // 取「前台焦点窗口」所在的 Display（macOS）。
   // 用 osascript 读取最前台进程的 front window 的 {position, size}，算出窗口中心点，
-  // 再用 getDisplayNearestPoint 映射到对应显示器。带短超时并 kill 进程，绝不阻塞唤醒。
-  // 任何失败/超时/无窗口/非 macOS → 回退到光标所在屏。返回 Promise<Display>。
+  // 再用 getDisplayNearestPoint 映射到对应显示器。带超时并 kill 进程，绝不阻塞唤醒。
+  // 成功 → 缓存到 this._lastFocusDisplay 并返回。
+  // 超时/解析失败/无窗口 → 复用上次成功的焦点屏（this._lastFocusDisplay），
+  //   仅当从未取到过焦点屏时才回退光标屏（避免胶囊"跟随鼠标"）。
+  // 非 macOS → 直接用光标屏。返回 Promise<Display>。
   getFocusDisplay() {
     if (process.platform !== "darwin") {
       return Promise.resolve(this._cursorDisplay());
@@ -108,9 +115,13 @@ class WindowManager {
 
     return new Promise((resolve) => {
       let settled = false;
+      // 超时/失败回退：优先复用上次成功的焦点屏；从未成功才退到光标屏。
       const fallback = () => {
         if (settled) return;
         settled = true;
+        if (this._lastFocusDisplay) {
+          return resolve(this._lastFocusDisplay);
+        }
         try {
           resolve(this._cursorDisplay());
         } catch (e) {
@@ -142,8 +153,11 @@ class WindowManager {
               const [x, y, w, h] = nums;
               const cx = x + w / 2;
               const cy = y + h / 2;
+              const focusDisplay = screen.getDisplayNearestPoint({ x: cx, y: cy });
               settled = true;
-              resolve(screen.getDisplayNearestPoint({ x: cx, y: cy }));
+              // 缓存本次成功的焦点屏，供后续超时/失败时复用。
+              this._lastFocusDisplay = focusDisplay;
+              resolve(focusDisplay);
             } catch (e) {
               fallback();
             }
