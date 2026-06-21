@@ -152,7 +152,7 @@ export function RecorderPill({
     );
   } else if (modelFailed) {
     badge = <AlertTriangle size={10} className="text-gray-900" strokeWidth={2.5} />;
-  } else if (downloading || isBusy || modelLoading) {
+  } else if (downloading || modelLoading) {
     badge = <Loader2 size={10} className="animate-spin text-gray-900" />;
   } else if (needDownload) {
     badge = <Download size={10} className="text-gray-900" />;

@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="zh"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>WordTaker 胶囊动效 Demo</title>
+<style>
+body{margin:0;background:#f6f6f7;color:#1f2937;font-family:-apple-system,"PingFang SC",Helvetica,Arial,sans-serif}
+.wrap{max-width:960px;margin:0 auto;padding:28px 20px 64px}
+h1{font-size:22px;font-weight:600;margin:0 0 6px}
+.sub{color:#6b7280;font-size:13px;margin:0 0 12px}
+.legend{display:inline-flex;gap:16px;font-size:12px;margin:0 0 18px}
+.dotg{color:#34c98a}.dota{color:#e0a23a}
+.gridp{display:grid;grid-template-columns:repeat(2,1fr);gap:18px 14px}
+.card{display:flex;flex-direction:column;gap:7px}
+.ph{font-size:12px;font-weight:500;color:#1f2937}
+.prow{display:flex;gap:8px}
+.pcell{display:flex;flex-direction:column;align-items:center;gap:4px}
+.slab{font-size:10px}.slab.rec{color:#34c98a}.slab.load{color:#e0a23a}
+.pillx{position:relative;width:145px;height:38px;background:#0b0b0c;border-radius:999px;display:flex;align-items:center;justify-content:center;border:.5px solid rgba(255,255,255,.1);overflow:hidden}
+.bg{position:absolute;left:9px;width:14px;height:14px;border-radius:50%;background:#fff;display:flex;align-items:center;justify-content:center}
+.st{position:absolute;right:9px;width:14px;height:14px;display:flex;align-items:center;justify-content:center}
+.fx{display:flex;align-items:center;justify-content:center;gap:5px;height:24px}
+.fx.vktight{gap:2px}.fx.hue{animation:hue 4s linear infinite}
+.n{font-size:13px;line-height:1;color:#fff}.n.big{font-size:21px}
+.b{width:3px;height:13px;border-radius:2px;background:#fff;transform-origin:center}.b.thin{width:2px}
+.d{width:6px;height:6px;border-radius:50%;background:#fff}
+.ripw{position:relative;width:26px;height:26px}
+.rdot{position:absolute;left:50%;top:50%;width:6px;height:6px;margin:-3px 0 0 -3px;border-radius:50%;background:#fff}
+.ring{position:absolute;left:50%;top:50%;width:22px;height:22px;margin:-11px 0 0 -11px;border-radius:50%;border:1.5px solid #fff}
+.orb{position:relative;width:26px;height:26px;animation:spin 2.6s linear infinite}
+.ow{position:absolute;left:50%;top:50%}.ow .n{position:absolute;transform:translate(-50%,-50%)}
+.ring8{position:relative;width:24px;height:24px;animation:spin 1.1s steps(8) infinite}
+.sd{position:absolute;left:50%;top:50%;width:5px;height:5px;margin:-2.5px 0 0 -2.5px;border-radius:50%;background:#fff}
+.mq{position:relative;width:96px;height:22px;overflow:hidden}.mq .n{position:absolute;top:50%;left:50%}
+.ptrack{position:relative;width:74px;height:3px;border-radius:2px;background:rgba(255,255,255,.18);overflow:hidden}
+.pfill{position:absolute;top:0;left:0;height:3px;width:36%;border-radius:2px;background:#fff;animation:slidebar 1.3s ease-in-out infinite}
+@keyframes bob{0%,100%{transform:translateY(3px)}50%{transform:translateY(-5px)}}
+@keyframes rise{0%{transform:translateY(8px);opacity:0}30%{opacity:1}100%{transform:translateY(-13px);opacity:0}}
+@keyframes eq{0%,100%{transform:scaleY(.35)}50%{transform:scaleY(1.55)}}
+@keyframes breathe{0%,100%{opacity:.22}50%{opacity:1}}
+@keyframes pop{0%,100%{transform:scale(.7)}50%{transform:scale(1.2)}}
+@keyframes ripple{0%{transform:scale(.3);opacity:.7}100%{transform:scale(1.9);opacity:0}}
+@keyframes mslide{0%{transform:translate(-54px,-50%);opacity:0}14%,86%{opacity:1}100%{transform:translate(50px,-50%);opacity:0}}
+@keyframes spin{to{transform:rotate(360deg)}}
+@keyframes rain{0%{transform:translateY(-11px);opacity:0}30%{opacity:1}100%{transform:translateY(12px);opacity:0}}
+@keyframes rota{to{transform:rotate(360deg)}}
+@keyframes sweep{0%,100%{opacity:.25;transform:translateY(0)}50%{opacity:1;transform:translateY(-3px)}}
+@keyframes heart{0%,100%{transform:scale(.82)}50%{transform:scale(1.25)}}
+@keyframes hue{to{filter:hue-rotate(360deg)}}
+@keyframes slidebar{0%{transform:translateX(-120%)}100%{transform:translateX(320%)}}
+</style></head>
+<body><div class="wrap">
+<h1>WordTaker · 胶囊动效 Demo（25 对 / 50）</h1>
+<div class="sub">每对：左 = 录音进行中，右 = 录音结束后的加载（转写中）。</div>
+<div class="legend"><span class="dotg">● 录音中</span><span class="dota">● 加载结束（转写中）</span></div>
+<div class="gridp" id="gp"></div>
+</div>
+<script>
+(function(){
+var PAL=['#7DB4FF','#5FD8C4','#F7A8CB','#FFD36B','#B9A6FF','#9FE89A'];
+var G=['♪','♫','♬','♩','♭'];
+function mk(t,c,s,x){var e=document.createElement(t);if(c)e.className=c;if(s)e.setAttribute('style',s);if(x!=null)e.textContent=x;return e;}
+function generic(cfg){
+ var fx=mk('div','fx'+(cfg.hue?' hue':'')+(cfg.thin?' vktight':''));
+ for(var i=0;i<cfg.c;i++){
+  var k=cfg.k,cls=k==='note'?('n'+(cfg.big?' big':'')):k==='bar'?('b'+(cfg.thin?' thin':'')):'d';
+  var dl=cfg.delays?cfg.delays[i]:(i*cfg.s);
+  var st='animation:'+cfg.a+' '+cfg.d+'s '+(cfg.lin?'linear':'ease-in-out')+' '+dl.toFixed(2)+'s infinite;';
+  if(cfg.col){var c=PAL[i%PAL.length];st+=k==='note'?('color:'+c+';'):('background:'+c+';');}
+  fx.appendChild(mk('span',cls,st,k==='note'?G[i%G.length]:null));
+ }
+ return fx;
+}
+function N(c,a,d,s,col,o){o=o||{};o.k='note';o.c=c;o.a=a;o.d=d;o.s=s;o.col=col;return generic(o);}
+function B(c,a,d,s,col,o){o=o||{};o.k='bar';o.c=c;o.a=a;o.d=d;o.s=s;o.col=col;return generic(o);}
+function Dt(c,a,d,s,col,o){o=o||{};o.k='dot';o.c=c;o.a=a;o.d=d;o.s=s;o.col=col;return generic(o);}
+function ripple(dur){dur=dur||1.8;var fx=mk('div','fx');var w=mk('div','ripw');w.appendChild(mk('span','rdot'));w.appendChild(mk('span','ring','animation:ripple '+dur+'s ease-out 0s infinite'));w.appendChild(mk('span','ring','animation:ripple '+dur+'s ease-out '+(dur/2)+'s infinite'));fx.appendChild(w);return fx;}
+function orbit(){var fx=mk('div','fx');var o=mk('div','orb');for(var k=0;k<3;k++){var ow=mk('div','ow','transform:rotate('+(k*120)+'deg) translateX(11px)');ow.appendChild(mk('span','n','color:'+PAL[k]+';font-size:12px',G[k]));o.appendChild(ow);}fx.appendChild(o);return fx;}
+function spinner(){var fx=mk('div','fx');var r=mk('div','ring8');for(var k=0;k<8;k++){r.appendChild(mk('span','sd','transform:rotate('+(k*45)+'deg) translateY(-9px);opacity:'+(0.15+k*0.11).toFixed(2)));}fx.appendChild(r);return fx;}
+function marquee(){var fx=mk('div','fx');var m=mk('div','mq');for(var i=0;i<5;i++){m.appendChild(mk('span','n','color:'+PAL[i]+';animation:mslide 2.4s linear '+(i*0.45).toFixed(2)+'s infinite',G[i%G.length]));}fx.appendChild(m);return fx;}
+function slidebar(){var fx=mk('div','fx');var t=mk('div','ptrack');t.appendChild(mk('span','pfill'));fx.appendChild(t);return fx;}
+function pulseBig(){return N(1,'pop',1.2,0,1,{big:1});}
+function pill(fxEl){var p=mk('div','pillx');p.innerHTML='<span class="bg"><svg viewBox="0 0 24 24" width="9" height="9"><path d="M5 12l4 4 9-10" fill="none" stroke="#0a0a0c" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/></svg></span><span class="st"><svg viewBox="0 0 24 24" width="14" height="14"><path d="M12 2.5 L13.7 8.3 L19.5 10 L13.7 11.7 L12 17.5 L10.3 11.7 L4.5 10 L10.3 8.3 Z" fill="#f5c451"/></svg></span>';p.appendChild(fxEl);return p;}
+var P=[
+ {n:'音符跳动',r:function(){return N(5,'bob',1.2,.12,1)},l:function(){return Dt(3,'bob',.9,.15,0)}},
+ {n:'均衡器',r:function(){return B(5,'eq',1.0,.12,0)},l:slidebar},
+ {n:'呼吸圆点',r:function(){return Dt(6,'breathe',1.4,.16,1)},l:spinner},
+ {n:'上升音符',r:function(){return N(5,'rise',1.6,.24,1)},l:orbit},
+ {n:'声波条',r:function(){return B(15,'eq',1.0,.05,0,{thin:1})},l:slidebar},
+ {n:'弹跳音符',r:function(){return N(5,'pop',1.1,.13,1)},l:function(){return N(5,'bob',1.6,.18,1)}},
+ {n:'波纹扩散',r:function(){return ripple(1.4)},l:function(){return ripple(2.2)}},
+ {n:'波浪条',r:function(){return B(7,'eq',1.1,.09,0)},l:function(){return Dt(7,'sweep',1.4,.12,1)}},
+ {n:'音符雨',r:function(){return N(5,'rain',1.4,.2,1)},l:function(){return Dt(3,'bob',.9,.15,0)}},
+ {n:'心跳排',r:function(){return N(5,'heart',1.0,.05,1)},l:pulseBig},
+ {n:'变色条',r:function(){return B(5,'eq',1.0,.12,1,{hue:1})},l:slidebar},
+ {n:'横移音符',r:marquee,l:spinner},
+ {n:'镜像均衡',r:function(){return B(5,'eq',1.0,0,0,{delays:[0,.12,.24,.12,0]})},l:slidebar},
+ {n:'自转音符',r:function(){return N(5,'rota',2,.15,1,{lin:1})},l:orbit},
+ {n:'扫光圆点',r:function(){return Dt(7,'sweep',1.3,.12,1)},l:function(){return Dt(3,'bob',.9,.15,0)}},
+ {n:'大音符脉动',r:pulseBig,l:slidebar},
+ {n:'渐变圆点',r:function(){return Dt(5,'breathe',1.8,.2,1,{hue:1})},l:spinner},
+ {n:'双色音符',r:function(){return N(7,'bob',1.4,.14,1)},l:marquee},
+ {n:'细条声波',r:function(){return B(11,'eq',1.0,.07,0,{thin:1})},l:function(){return Dt(7,'sweep',1.3,.12,1)}},
+ {n:'弹钢琴',r:function(){return N(6,'bob',1.3,.16,1)},l:function(){return N(6,'bob',1.9,.22,1)}},
+ {n:'起伏波形',r:function(){return B(9,'eq',1.1,.07,0)},l:slidebar},
+ {n:'音符绽放',r:function(){return N(5,'pop',1.2,.13,1)},l:function(){return ripple(2)}},
+ {n:'跳动圆点',r:function(){return Dt(5,'bob',1.0,.12,1)},l:spinner},
+ {n:'音浪',r:function(){return B(7,'eq',1.2,.08,1)},l:function(){return Dt(7,'sweep',1.4,.12,1)}},
+ {n:'简约三点',r:function(){return Dt(3,'breathe',1.4,.2,1)},l:function(){return Dt(3,'bob',.9,.15,0)}}
+];
+var gp=document.getElementById('gp');
+P.forEach(function(pr,i){
+ var card=mk('div','card');
+ card.appendChild(mk('div','ph',null,(i+1)+' · '+pr.n));
+ var row=mk('div','prow');
+ var c1=mk('div','pcell');c1.appendChild(pill(pr.r()));c1.appendChild(mk('div','slab rec',null,'录音中'));
+ var c2=mk('div','pcell');c2.appendChild(pill(pr.l()));c2.appendChild(mk('div','slab load',null,'加载结束'));
+ row.appendChild(c1);row.appendChild(c2);
+ card.appendChild(row);
+ gp.appendChild(card);
+});
+})();
+</script>
+</body></html>
