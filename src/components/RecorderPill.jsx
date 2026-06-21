@@ -71,8 +71,27 @@ export function RecorderPill({
   const vkBarsRef = useRef([]);          // array of 15 span refs
   const vkLevelRef = useRef(0);
   const vkRecordingRef = useRef(false);
+  const breatheRowRef = useRef(null);    // music 皮肤呼吸音符行容器（rAF 写入 --amp）
   useEffect(() => { vkLevelRef.current = audioLevel || 0; }, [audioLevel]);
   useEffect(() => { vkRecordingRef.current = micState === "recording"; }, [micState]);
+
+  // music 皮肤音符上下晃动：用 rAF 缓动写入 --amp，突发/断续声音时幅度平滑过渡不抖
+  const isRecordingForMusic = micState === "recording";
+  useEffect(() => {
+    if (pillSkin === 'voiceink') return;     // music skin only
+    if (!isRecordingForMusic) return;
+    let raf, cancelled = false, amp = 0;
+    const tick = () => {
+      if (cancelled) return;
+      const target = Math.min(4, (vkLevelRef.current || 0) * 8);
+      amp += (target - amp) * 0.08;
+      const el = breatheRowRef.current;
+      if (el) el.style.setProperty('--amp', amp.toFixed(2) + 'px');
+      raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => { cancelled = true; if (raf) cancelAnimationFrame(raf); if (breatheRowRef.current) breatheRowRef.current.style.setProperty('--amp','0px'); };
+  }, [pillSkin, isRecordingForMusic]);
   useEffect(() => {
     if (pillSkin !== 'voiceink') return;
     let raf, cancelled = false;
@@ -216,10 +235,11 @@ export function RecorderPill({
         ) : (
           // 录音 / 空闲：一行轻柔呼吸的彩色音符；说话时整行随音量渐隐，静音时渐显
           <div className="pill-breathe-row" aria-hidden="true"
+               ref={breatheRowRef}
                style={{ opacity: 1 }}>
             {ROW_GLYPHS.map((g, i) => (
               <span key={i} className="pill-breathe-note"
-                    style={{ color: ROW_COLORS[i % ROW_COLORS.length], animationDelay: `${(i*0.18).toFixed(2)}s`, '--amp': `${Math.min(4, (audioLevel||0) * 8).toFixed(1)}px` }}>
+                    style={{ color: ROW_COLORS[i % ROW_COLORS.length], animationDelay: `${(i*0.18).toFixed(2)}s` }}>
                 {g}
               </span>
             ))}
