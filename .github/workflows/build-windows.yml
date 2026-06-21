@@ -84,6 +84,7 @@ jobs:
           if-no-files-found: error
           retention-days: 14
           path: |
+            dist/*-setup.exe
             dist/*.exe
-            dist/*.exe.blockmap
+            dist/*.blockmap
             dist/latest*.yml

@@ -161,7 +161,7 @@
     },
     "win": {
       "icon": "assets/icon.ico",
-      "artifactName": "${productName}-${version}-${arch}-${ext}",
+      "artifactName": "${productName}-${version}-${arch}.${ext}",
       "target": [
         {
           "target": "nsis",
@@ -183,7 +183,8 @@
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
-      "shortcutName": "WordTaker"
+      "shortcutName": "WordTaker",
+      "artifactName": "${productName}-${version}-${arch}-setup.${ext}"
     },
     "portable": {
       "artifactName": "${productName}-${version}-portable.exe"
