@@ -171,8 +171,14 @@ function setupRecordingTrigger() {
     }
 
     const fire = () => {
-      // 每次触发把胶囊定位到"光标所在屏幕底部"并显示（不抢焦点）
-      windowManager.showRecorderAtBottom();
+      // 仅在"开始录音"的那一次触发去定位+显示胶囊。
+      // 修复回归：之前每次触发（含"结束键"那一次）都会重新 showRecorderAtBottom，
+      // 结束键那一拍会把正在被隐藏的胶囊重新定位（可能落到别的显示器/屏幕外）并重显，
+      // 与隐藏竞态 → 表现为"唤醒后胶囊自己消失"。结束/取消时不再重定位胶囊。
+      if (!isRecording) {
+        // 定位到焦点输入框下方（跟随焦点）或屏幕底部居中，再显示（不抢焦点）。
+        windowManager.showRecorderAtBottom();
+      }
       const win = windowManager.mainWindow;
       if (win && !win.isDestroyed()) {
         win.webContents.send('hotkey-triggered', { trigger });

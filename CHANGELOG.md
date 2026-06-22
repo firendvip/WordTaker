@@ -3,6 +3,13 @@
 All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/); versioning follows [SemVer](https://semver.org/).
 
+## [1.3.2] - 2026-06-22
+
+### Fixed
+- 修复唤醒后胶囊自动消失的回归：结束/取消那一拍不再重新定位并重显胶囊（避免与隐藏竞态把胶囊推到别的显示器/屏幕外）。
+- 焦点定位回退/异常时不再隐藏窗口：定位失败逐级降级（焦点框→光标→屏幕底部居中），胶囊始终保持显示直到结束键。
+- 焦点框尺寸异常时回退：AXFocusedUIElement 高度 < 8px 或接近整屏（拿到整窗/整屏元素）一律按“无焦点框”处理，避免据伪矩形把胶囊推离视野。
+
 ## [1.3.1] - 2026-06-22
 
 ### Fixed

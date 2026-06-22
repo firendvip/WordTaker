@@ -31,6 +31,14 @@ const FIELD_GAP_PX = 14;
 // AX 尺寸的合理上限（像素）：超过即视为垃圾值，按解析失败处理。
 const MAX_AX_DIMENSION_PX = 20000;
 
+// 焦点框「荒谬尺寸」守卫：
+//  - 高度 < 8px：曾出现 AXFocusedUIElement 返回 window 级元素 height≈1（如 224,117,72,1），
+//    据此定位会把胶囊贴到一个伪矩形上 → 视为「无焦点框」回退。
+//  - 高度 >= 屏幕高度的此比例：说明拿到的是整窗/整屏元素而非输入框，同样回退，
+//    避免把胶囊推到另一块显示器或屏幕外（造成「胶囊唤醒后消失」的回归）。
+const MIN_FIELD_HEIGHT_PX = 8;
+const MAX_FIELD_HEIGHT_SCREEN_RATIO = 0.9;
+
 class WindowManager {
   constructor(logger = null) {
     this.mainWindow = null;
@@ -334,10 +342,17 @@ class WindowManager {
               if (!valid) return done(false);
               const [fx, fy, fw, fh] = nums;
               const [w, h] = this.mainWindow.getSize();
+              // 计算锚点所在显示器（用于荒谬尺寸守卫的屏高比较与最终夹紧）。
+              const display = screen.getDisplayNearestPoint({ x: Math.round(fx + fw / 2), y: Math.round(fy + fh) });
+              // 荒谬尺寸守卫：高度过小（window 级伪矩形 height≈1）或接近整屏（拿到整窗/整屏元素）
+              // 都视为「无焦点框」回退——否则会把胶囊推到别的显示器或屏幕外（唤醒后消失的回归）。
+              const screenH = (display && display.workArea && display.workArea.height) || 0;
+              const tooShort = fh < MIN_FIELD_HEIGHT_PX;
+              const tooTall = screenH > 0 && fh >= screenH * MAX_FIELD_HEIGHT_SCREEN_RATIO;
+              if (tooShort || tooTall) return done(false);
               // 水平居中于输入框，竖直放在输入框下方 + 间距。
               const anchorX = fx + fw / 2; // 输入框水平中心
               const anchorY = fy + fh + FIELD_GAP_PX; // 输入框底边 + 下移间距
-              const display = screen.getDisplayNearestPoint({ x: Math.round(anchorX), y: Math.round(fy + fh) });
               const rect = {
                 x: Math.round(fx + fw / 2 - w / 2),
                 y: Math.round(anchorY),
