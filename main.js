@@ -118,6 +118,8 @@ const environmentManager = new EnvironmentManager();
 const windowManager = new WindowManager(logger);
 const databaseManager = new DatabaseManager();
 const clipboardManager = new ClipboardManager(logger, databaseManager); // 传递logger与databaseManager（用于"保留结果到剪贴板"设置）
+// 把同一个 databaseManager 实例注入 windowManager（胶囊"跟随焦点"开关需读 pill_follow_focus）
+windowManager.setDatabaseManager(databaseManager);
 const funasrManager = new FunASRManager(logger); // 传递logger实例
 const trayManager = new TrayManager();
 const hotkeyManager = new HotkeyManager();

@@ -9,6 +9,13 @@ const FOCUS_QUERY_TIMEOUT_MS = 1500;
 // 胶囊距屏幕底部的偏移（像素）。
 const BOTTOM_OFFSET_PX = 24;
 
+// 「跟随焦点」时读取焦点输入框 AX 位置/尺寸的超时（毫秒）：比窗口查询更短，
+// 让整条 show 链路控制在 ~800ms 内，超时直接走光标/底部兜底，绝不阻塞唤起。
+const FOCUS_FIELD_TIMEOUT_MS = 700;
+
+// 胶囊与焦点输入框（或鼠标点）之间的竖直间距（像素）。
+const FIELD_GAP_PX = 8;
+
 class WindowManager {
   constructor(logger = null) {
     this.mainWindow = null;
@@ -19,6 +26,16 @@ class WindowManager {
     // 上次成功解析到的「焦点窗口所在屏」：osascript 超时/失败时复用它，
     // 而不是立刻回退到光标屏（否则胶囊会"跟随鼠标"）。
     this._lastFocusDisplay = null;
+    // 上次成功解析到的「焦点输入框锚点」（屏幕坐标，左上原点 + 尺寸）：
+    // 用于平滑偶发的单次 AX 解析失败（保持简单：仅做缓存，不强依赖）。
+    this._lastFocusPoint = null;
+    // 数据库管理器（由 main.js 注入同一实例）：读取 pill_follow_focus 等设置。
+    this.databaseManager = null;
+  }
+
+  // 注入数据库管理器（与 main.js 使用同一实例）。胶囊定位需读 pill_follow_focus。
+  setDatabaseManager(databaseManager) {
+    this.databaseManager = databaseManager;
   }
 
   // 窗口创建/展示链路的错误统一记录（SF-3）：有 logger 用 logger，否则回退 console。
@@ -186,18 +203,164 @@ class WindowManager {
     }
   }
 
-  // 唤起：定位到「焦点窗口所在屏幕」底部并显示（不抢焦点）。
-  // 焦点屏解析为异步（osascript），失败/超时回退光标屏；只在唤醒时定位，不跟随鼠标。
+  // 纯函数：把窗口矩形夹紧到 workArea 内（四边都不出界）。返回一个全新的矩形对象，不改入参。
+  // rect / workArea 形如 { x, y, width, height }。
+  clampRectToWorkArea(rect, workArea) {
+    const maxX = workArea.x + workArea.width - rect.width;
+    const maxY = workArea.y + workArea.height - rect.height;
+    // 先保证不超过右/下边界，再保证不低于左/上边界（窗口比工作区大时优先贴左上）。
+    const x = Math.round(Math.min(Math.max(rect.x, workArea.x), Math.max(workArea.x, maxX)));
+    const y = Math.round(Math.min(Math.max(rect.y, workArea.y), Math.max(workArea.y, maxY)));
+    return { x, y, width: rect.width, height: rect.height };
+  }
+
+  // 读取「跟随焦点」开关：默认 true。DB 不可用/异常时按 true 处理（与设置默认一致）。
+  _isFollowFocusEnabled() {
+    try {
+      const dbm = this.databaseManager;
+      if (!dbm || typeof dbm.getSetting !== "function") return true;
+      return dbm.getSetting("pill_follow_focus", true) !== false;
+    } catch (e) {
+      return true;
+    }
+  }
+
+  // STEP 1（macOS）：读「当前焦点输入框」的 AX 位置/尺寸，把胶囊放到输入框正下方居中。
+  // 成功返回 true 并已 setBounds + 缓存锚点；任何失败（含 AX 权限被拒/0 尺寸）返回 false，由上层走下一兜底。
+  // 时间盒 FOCUS_FIELD_TIMEOUT_MS，killSignal SIGKILL，绝不抛出、绝不阻塞唤起。
+  _positionByFocusedField() {
+    if (process.platform !== "darwin") return Promise.resolve(false);
+    return new Promise((resolve) => {
+      let settled = false;
+      const done = (ok) => {
+        if (settled) return;
+        settled = true;
+        resolve(ok);
+      };
+      try {
+        const { screen } = require("electron");
+        const script = [
+          'tell application "System Events"',
+          "  set fp to first application process whose frontmost is true",
+          '  set el to value of attribute "AXFocusedUIElement" of fp',
+          '  set p to value of attribute "AXPosition" of el',
+          '  set s to value of attribute "AXSize" of el',
+          '  return ((item 1 of p) as integer) & "," & ((item 2 of p) as integer) & "," & ((item 1 of s) as integer) & "," & ((item 2 of s) as integer)',
+          "end tell",
+        ].join("\n");
+        const child = execFile(
+          "osascript",
+          ["-e", script],
+          { timeout: FOCUS_FIELD_TIMEOUT_MS, killSignal: "SIGKILL" },
+          (error, stdout) => {
+            if (settled) return;
+            if (error) return done(false);
+            try {
+              if (!this.mainWindow || this.mainWindow.isDestroyed()) return done(false);
+              const nums = String(stdout)
+                .trim()
+                .split(",")
+                .map((s) => Number(s.trim()));
+              // 校验 4 个有限数 + 宽度>0（防 AX 返回垃圾/0 尺寸元素）。
+              if (nums.length < 4 || nums.some((n) => !Number.isFinite(n)) || nums[2] <= 0) {
+                return done(false);
+              }
+              const [fx, fy, fw, fh] = nums;
+              const anchorX = fx + fw / 2; // 输入框水平中心
+              const anchorY = fy + fh; // 输入框底边
+              const display = screen.getDisplayNearestPoint({ x: Math.round(anchorX), y: Math.round(anchorY) });
+              const [w, h] = this.mainWindow.getSize();
+              const rect = {
+                x: Math.round(anchorX - w / 2),
+                y: Math.round(anchorY + FIELD_GAP_PX),
+                width: w,
+                height: h,
+              };
+              const clamped = this.clampRectToWorkArea(rect, display.workArea);
+              this.mainWindow.setBounds(clamped);
+              // 缓存成功锚点，供平滑偶发单次失败用。
+              this._lastFocusPoint = { x: anchorX, y: anchorY };
+              done(true);
+            } catch (e) {
+              done(false);
+            }
+          }
+        );
+        child.on("error", () => done(false));
+      } catch (e) {
+        done(false);
+      }
+    });
+  }
+
+  // STEP 2：光标兜底（也是 Windows 在「跟随」开启时的主路径，AX 仅 macOS）。
+  // 把胶囊放到鼠标点正下方居中，夹紧到光标屏 workArea。成功 true，失败 false。
+  _positionByCursor() {
+    try {
+      if (!this.mainWindow || this.mainWindow.isDestroyed()) return false;
+      const { screen } = require("electron");
+      const pt = screen.getCursorScreenPoint();
+      const display = screen.getDisplayNearestPoint(pt);
+      const [w, h] = this.mainWindow.getSize();
+      const rect = {
+        x: Math.round(pt.x - w / 2),
+        y: Math.round(pt.y + FIELD_GAP_PX),
+        width: w,
+        height: h,
+      };
+      const clamped = this.clampRectToWorkArea(rect, display.workArea);
+      this.mainWindow.setBounds(clamped);
+      return true;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  // 唤起前的胶囊定位（不含 show）。绝不抛出：任何异常最终回退到「焦点屏底部居中」。
+  // 关闭跟随：保持原行为（焦点屏底部居中）。
+  // 开启跟随：焦点输入框 → 鼠标点 → 焦点屏底部居中，逐级兜底。
+  async positionPillForRecording() {
+    if (!this.mainWindow || this.mainWindow.isDestroyed()) return;
+
+    const follow = this._isFollowFocusEnabled();
+
+    // 关闭跟随：严格保持原 off-path 行为，不做任何改动。
+    if (!follow) {
+      const display = await this.getFocusDisplay();
+      this.positionMainWindowBottomCenter(display);
+      return;
+    }
+
+    // 开启跟随：整段解析包在 try/catch，任何异常 → 底部居中兜底。
+    try {
+      // STEP 1：焦点输入框（macOS）。
+      const placedByField = await this._positionByFocusedField();
+      if (placedByField) return;
+
+      // STEP 2：光标兜底（含 Windows 跟随路径）。
+      if (this._positionByCursor()) return;
+
+      // STEP 3：原行为——焦点屏底部居中。
+      this.positionMainWindowBottomCenter(await this.getFocusDisplay());
+    } catch (e) {
+      try {
+        this.positionMainWindowBottomCenter(await this.getFocusDisplay());
+      } catch (_) {
+        // 最终兜底也失败时静默：定位失败不影响录音。
+      }
+    }
+  }
+
+  // 唤起：先定位（跟随焦点/光标，或固定底部居中），再显示（不抢焦点）。
+  // 定位链路全部时间盒 + try/catch，绝不阻塞或卡死整屏。
   async showRecorderAtBottom() {
     if (!this.mainWindow || this.mainWindow.isDestroyed()) return;
-    let display;
     try {
-      display = await this.getFocusDisplay();
+      await this.positionPillForRecording();
     } catch (e) {
-      display = undefined; // positionMainWindowBottomCenter 内再兜底光标屏
+      // positionPillForRecording 内部已兜底，这里再保险一层。
     }
     if (!this.mainWindow || this.mainWindow.isDestroyed()) return;
-    this.positionMainWindowBottomCenter(display);
     try {
       this.mainWindow.showInactive();
     } catch (e) {

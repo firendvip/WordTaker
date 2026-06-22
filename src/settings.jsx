@@ -37,7 +37,8 @@ const SettingsPage = () => {
     translate_trigger_key: "LeftCtrl",
     translate_trigger_taps: 2,
     translate_fallback_select_all: false,
-    keep_result_in_clipboard: false
+    keep_result_in_clipboard: false,
+    pill_follow_focus: true
   });
 
   const isMac = typeof navigator !== "undefined" && !!navigator.platform && navigator.platform.toLowerCase().includes("mac");
@@ -118,7 +119,9 @@ const SettingsPage = () => {
           translate_trigger_key: (allSettings.translate_trigger && allSettings.translate_trigger.key) || "LeftCtrl",
           translate_trigger_taps: (allSettings.translate_trigger && allSettings.translate_trigger.taps) || 2,
           translate_fallback_select_all: allSettings.translate_fallback_select_all === true,
-          keep_result_in_clipboard: allSettings.keep_result_in_clipboard === true
+          keep_result_in_clipboard: allSettings.keep_result_in_clipboard === true,
+          // 胶囊跟随焦点：缺省视为开启（默认 true）
+          pill_follow_focus: allSettings.pill_follow_focus !== false
         };
         setSettings(prev => ({ ...prev, ...loadedSettings }));
 
@@ -225,6 +228,9 @@ const SettingsPage = () => {
       if (changed.has("pill_skin")) {
         await window.electronAPI.setSetting("pill_skin", next.pill_skin);
         if (window.electronAPI.reloadPillSkin) await window.electronAPI.reloadPillSkin();
+      }
+      if (changed.has("pill_follow_focus")) {
+        await window.electronAPI.setSetting("pill_follow_focus", next.pill_follow_focus === true);
       }
       if (changed.has("translate_fallback_select_all")) {
         await window.electronAPI.setSetting("translate_fallback_select_all", next.translate_fallback_select_all === true);
@@ -1147,6 +1153,30 @@ const SettingsPage = () => {
                     )}
                   </span>
                 </button>
+                {/* 胶囊跟随输入焦点 */}
+                <div className="flex items-center justify-between gap-4 py-4 border-t border-gray-100 dark:border-neutral-800">
+                  <div className="min-w-0">
+                    <label className={`${rowLabelClass} chinese-title`}>胶囊跟随输入焦点</label>
+                    <p className="mt-0.5 text-[13px] text-gray-500 dark:text-neutral-400">
+                      开：出现在焦点输入框下方/无焦点时鼠标下方；关：固定屏幕底部居中
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    role="switch"
+                    aria-checked={settings.pill_follow_focus}
+                    onClick={() => updateAndSave('pill_follow_focus', !settings.pill_follow_focus)}
+                    className={`relative inline-flex h-6 w-11 flex-shrink-0 items-center rounded-full transition-colors ${
+                      settings.pill_follow_focus ? 'bg-blue-600' : 'bg-gray-300 dark:bg-gray-600'
+                    }`}
+                  >
+                    <span
+                      className={`inline-block h-5 w-5 transform rounded-full bg-white transition-transform ${
+                        settings.pill_follow_focus ? 'translate-x-5' : 'translate-x-0.5'
+                      }`}
+                    />
+                  </button>
+                </div>
               </div>
             </div>
           )}

@@ -17,6 +17,8 @@ const ALLOWED_SETTING_KEYS = new Set([
   "keep_result_in_clipboard",
   // 胶囊中心动画皮肤（'music' | 'voiceink'）
   "pill_skin",
+  // 胶囊跟随输入焦点：true 跟随焦点/鼠标；false 固定屏幕底部居中
+  "pill_follow_focus",
 ]);
 // 转录选项白名单：渲染层只能透传这些键到 Python 边界，丢弃未知键（IPCVAL-1）。
 // 与 funasr_server.py 的 default_options 对齐。

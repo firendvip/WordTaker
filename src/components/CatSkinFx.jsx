@@ -10,14 +10,31 @@ const ENTER_MS = 1400;
 const RETURN_MS = 800;
 const WALK_W = 0.022;
 const PROC_W = 0.04;
-// 效果置于运动方向脸前方
-const FRONT_OFFSET = 18;
+// 效果锚点：贴近头顶斜上方（按运动方向 dir 取左右）
+// 原型按 ~2.4x 放大，生产猫宽约 32px：水平小偏移 × dir，垂直略高于头
+const FRONT_OFFSET = 11; // 头部斜上方水平偏移（px，× dir）
 // 音符随机发射器
 const NOTE_GLYPHS = ["♪", "♫", "♩", "♬"];
-const NOTE_COLORS = ["#7DB4FF", "#F7A8CB", "#B197FC", "#5ED0C5", "#FCD34D", "#86E08C"];
+const NOTE_COLORS = ["#7DB4FF", "#F7A8CB", "#B197FC", "#5ED0C5", "#FCD34D", "#86E08C", "#FF9F6B", "#F472B6"];
 const NOTE_MAX = 8;
-const NOTE_SPAWN_NORMAL = 360; // ms between spawns (normal volume)
-const NOTE_SPAWN_LOUD = 180; // ms between spawns (loud)
+const NOTE_SPAWN_NORMAL = 330; // ms between spawns (normal volume)
+const NOTE_SPAWN_LOUD = 150; // ms between spawns (loud)
+const NOTE_SPREAD = 14; // 起始 X 水平散布半径（px）
+const NOTE_SIZE_MIN = 11;
+const NOTE_SIZE_MAX = 15;
+const NOTE_DX_MAX = 12; // 漂移幅度
+const NOTE_DY_MIN = -22; // 上升最小
+const NOTE_DY_MAX = -12; // 上升最大
+const NOTE_ROT_MAX = 40; // 旋转幅度（deg）
+const NOTE_DUR_MIN = 1.0;
+const NOTE_DUR_MAX = 1.7;
+const NOTE_DELAY_MAX = 0.25;
+// 睡眠 Zzz：三个升序 Z，贴头顶
+const ZZZ_CLASSES = ["cs-fxzz cs-fxzz-s", "cs-fxzz cs-fxzz-m", "cs-fxzz cs-fxzz-l"];
+const ZZZ_DELAYS = ["0s", ".7s", "1.4s"]; // 错峰升起
+const ZZZ_BASE_LEFT = 4; // 头顶基础水平偏移（px，× dir 朝外侧）
+const ZZZ_STEP = 6; // 每个 Z 之间的水平步进（px）
+const ZZZ_TOP = -2; // 贴头顶（略高于头）
 function rand(min, max) { return min + Math.random() * (max - min); }
 function pick(arr) { return arr[(Math.random() * arr.length) | 0]; }
 
@@ -51,17 +68,30 @@ export default function CatSkinFx({ micState, audioLevel = 0, isBusy = false, ha
     const sleepWrap = document.createElement("div"); sleepWrap.className = "cs-sleeper"; sleepWrap.innerHTML = SLEEP_SVG; sleepWrap.style.display = "none";
     const runWrap = document.createElement("div"); runWrap.className = "cs-runner"; const flip = document.createElement("div"); flip.innerHTML = RUN_SVG; runWrap.appendChild(flip); runWrap.style.display = "none";
     const fx = document.createElement("div"); fx.className = "cs-fx"; fx.style.display = "none";
-    const z1 = document.createElement("span"); z1.className = "cs-zz"; z1.textContent = "z"; z1.style.display = "none";
-    const z2 = document.createElement("span"); z2.className = "cs-zz"; z2.textContent = "z"; z2.style.animationDelay = ".9s"; z2.style.display = "none";
-    root.appendChild(sleepWrap); root.appendChild(runWrap); root.appendChild(fx); root.appendChild(z1); root.appendChild(z2);
+    // 睡眠 Zzz：三个升序 Z，贴在卧睡精灵头顶（仅 sleep 视图显示）
+    const zzz = ZZZ_CLASSES.map((cls, i) => {
+      const z = document.createElement("span");
+      z.className = cls; z.textContent = "Z";
+      z.style.animationDelay = ZZZ_DELAYS[i];
+      z.style.display = "none";
+      return z;
+    });
+    root.appendChild(sleepWrap); root.appendChild(runWrap); root.appendChild(fx);
+    zzz.forEach((z) => root.appendChild(z));
 
     const W = root.clientWidth || 180;
     const C = W / 2;
     const AMP = Math.max(28, Math.min(56, W / 2 - 30));
     const ENTER_FROM = Math.max(14, C - AMP - 6);
     sleepWrap.style.left = (C - 18) + "px";
-    z1.style.left = (C + 8) + "px"; z1.style.top = "2px";
-    z2.style.left = (C + 14) + "px"; z2.style.top = "0px";
+    // 卧睡精灵头部在左侧（约 sprite 左缘 + 9px）→ 外侧朝左，Zzz 向左上方漂移
+    const HEAD_X = C - 18 + 9;
+    const ZZZ_DIR = -1; // 头部外侧方向（左）
+    zzz.forEach((z, i) => {
+      z.style.left = (HEAD_X + ZZZ_DIR * (ZZZ_BASE_LEFT + i * ZZZ_STEP)) + "px";
+      z.style.top = ZZZ_TOP + "px";
+      z.style.setProperty("--zdir", String(ZZZ_DIR));
+    });
 
     let mode = "idle", x = C, wp = 0, t0 = performance.now(), xRet = C, lastVoice = 0, view = "";
     let prevBusy = false, prevErr = false, successUntil = 0, errorUntil = 0, loudState = false;
@@ -79,12 +109,14 @@ export default function CatSkinFx({ micState, audioLevel = 0, isBusy = false, ha
       el.className = "cs-fxnt";
       el.textContent = pick(NOTE_GLYPHS);
       el.style.color = pick(NOTE_COLORS);
-      el.style.fontSize = rand(11, 16).toFixed(1) + "px";
-      el.style.setProperty("--dx", rand(-12, 12).toFixed(1) + "px");
-      el.style.setProperty("--dy", rand(-22, -12).toFixed(1) + "px");
-      el.style.setProperty("--rot", rand(-40, 40).toFixed(0) + "deg");
-      el.style.setProperty("--dur", rand(1.0, 1.7).toFixed(2) + "s");
-      el.style.animationDelay = rand(0, 0.25).toFixed(2) + "s";
+      el.style.fontSize = rand(NOTE_SIZE_MIN, NOTE_SIZE_MAX).toFixed(1) + "px";
+      // 随机起始 X：在锚点附近水平散布，避免聚成一点
+      el.style.left = rand(-NOTE_SPREAD, NOTE_SPREAD).toFixed(1) + "px";
+      el.style.setProperty("--dx", rand(-NOTE_DX_MAX, NOTE_DX_MAX).toFixed(1) + "px");
+      el.style.setProperty("--dy", rand(NOTE_DY_MIN, NOTE_DY_MAX).toFixed(1) + "px");
+      el.style.setProperty("--rot", rand(-NOTE_ROT_MAX, NOTE_ROT_MAX).toFixed(0) + "deg");
+      el.style.setProperty("--dur", rand(NOTE_DUR_MIN, NOTE_DUR_MAX).toFixed(2) + "s");
+      el.style.animationDelay = rand(0, NOTE_DELAY_MAX).toFixed(2) + "s";
       el.addEventListener("animationend", () => { el.remove(); noteCount--; }, { once: true });
       fx.appendChild(el); noteCount++;
       lastSpawn = now;
@@ -93,8 +125,8 @@ export default function CatSkinFx({ micState, audioLevel = 0, isBusy = false, ha
       if (view === v) return; view = v;
       runWrap.style.display = v === "run" ? "block" : "none";
       sleepWrap.style.display = v === "sleep" ? "block" : "none";
-      z1.style.display = v === "sleep" ? "block" : "none";
-      z2.style.display = v === "sleep" ? "block" : "none";
+      const zd = v === "sleep" ? "block" : "none";
+      zzz.forEach((z) => { z.style.display = zd; });
     }
     function setFx(type) {
       if (fxShownType === type) return;

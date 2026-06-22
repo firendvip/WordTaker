@@ -189,7 +189,9 @@ class DatabaseManager {
       // 保留最近一次生成结果到剪贴板：开启后粘贴完不恢复用户原剪贴板，留下最新生成文本；默认关（保持原"粘贴后恢复"行为）
       keep_result_in_clipboard: false,
       // 胶囊中心动画皮肤：'music'（默认）| 'voiceink'
-      pill_skin: 'music'
+      pill_skin: 'music',
+      // 胶囊跟随输入焦点：开（默认）出现在焦点输入框下方/无焦点时鼠标下方；关则固定屏幕底部居中
+      pill_follow_focus: true
     };
     try {
       const existsStmt = this.db.prepare('SELECT 1 FROM settings WHERE key = ?');
