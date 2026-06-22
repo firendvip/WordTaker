@@ -90,7 +90,7 @@ body {
   width: 100%;
   height: 100%;
   display: flex;
-  align-items: center;
+  align-items: flex-end;
   justify-content: center;
   padding: 4px;
   -webkit-app-region: drag;
@@ -767,7 +767,7 @@ body {
   }
 }
 /* ===== 透明小黑猫皮肤 ===== */
-.cat-skin{position:absolute;inset:0;overflow:hidden;pointer-events:auto;-webkit-app-region:drag;background:transparent}
+.cat-skin{position:absolute;inset:0;overflow:visible;pointer-events:auto;-webkit-app-region:drag;background:transparent}
 .cs-runner{position:absolute;bottom:6px;left:0;transform-origin:center bottom;will-change:transform;pointer-events:none}
 .cs-sleeper{position:absolute;bottom:6px;will-change:transform;pointer-events:none}
 .cs-notes{position:absolute;bottom:22px;left:0;pointer-events:none}
@@ -784,7 +784,7 @@ body {
 @keyframes cs-zf{0%{transform:translate(0,0);opacity:0}25%{opacity:1}100%{transform:translate(7px,-14px);opacity:0}}
 /* ===== 小猫 头顶斜上方效果 (catfx) ===== */
 /* 锚点贴近头顶斜上方：bottom 抬高至略高于头（约 32px 猫高 + 头部上沿） */
-.cs-fx{position:absolute;bottom:54px;left:0;pointer-events:none;will-change:transform}
+.cs-fx{position:absolute;bottom:30px;left:0;pointer-events:none;will-change:transform}
 .cs-fxnt{position:absolute;left:0;top:0;line-height:1;will-change:transform,opacity;animation:csfxRiseRand var(--dur,1.3s) ease-out forwards}
 @keyframes csfxRiseRand{0%{transform:translate(0,2px) scale(.55) rotate(0);opacity:0}25%{opacity:1}100%{transform:translate(var(--dx,0px),var(--dy,-14px)) scale(1) rotate(var(--rot,0deg));opacity:0}}
 .cs-fxbulb,.cs-fxstar,.cs-fxsweat{position:absolute;left:0;display:block}
@@ -793,8 +793,8 @@ body {
 .cs-fx-tw{animation:csfxTw 1.1s ease-in-out infinite;transform-origin:center}
 @keyframes csfxTw{0%,100%{transform:scale(.8) rotate(0)}50%{transform:scale(1.15) rotate(45deg)}}
 /* ===== 睡眠 Zzz：三个升序 Z，贴卧睡头顶（CatSkinFx 专用） ===== */
-.cs-fxzz{position:absolute;font-weight:700;color:#5b6472;text-shadow:0 1px 0 rgba(255,255,255,.6);line-height:1;pointer-events:none;will-change:transform,opacity;animation:csfxZz 2.6s ease-in-out infinite}
-.cs-fxzz-s{font-size:9px}
-.cs-fxzz-m{font-size:12px}
-.cs-fxzz-l{font-size:16px}
-@keyframes csfxZz{0%{transform:translate(0,2px) scale(.7);opacity:0}20%{opacity:1}100%{transform:translate(calc(var(--zdir,-1) * 8px),-18px) scale(1);opacity:0}}
+.cs-fxzz{position:absolute;font-weight:700;color:#5b6472;text-shadow:0 1px 0 rgba(255,255,255,.6);line-height:1;pointer-events:none;will-change:transform,opacity;animation:csfxZz 3s ease-in-out infinite}
+.cs-fxzz-s{font-size:8px}
+.cs-fxzz-m{font-size:10px}
+.cs-fxzz-l{font-size:12px}
+@keyframes csfxZz{0%{transform:translate(0,2px) scale(.85);opacity:0}20%{opacity:1}100%{transform:translate(calc(var(--zdir,-1) * 5px),-12px) scale(1);opacity:0}}

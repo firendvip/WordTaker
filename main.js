@@ -301,6 +301,8 @@ ipcMain.handle('reload-translate-trigger', () => {
 ipcMain.handle('reload-pill-skin', () => {
   try {
     const skin = databaseManager.getSetting('pill_skin', 'music');
+    // 切皮肤时同步调整窗口高度：cat/catfx 需要更高窗口承载头顶特效。
+    windowManager.setPillHeightForSkin(skin);
     const w = windowManager.mainWindow;
     if (w && !w.isDestroyed()) w.webContents.send('pill-skin-changed', { skin });
     return { success: true, skin };

@@ -12,7 +12,9 @@ const WALK_W = 0.022;
 const PROC_W = 0.04;
 // 效果锚点：贴近头顶斜上方（按运动方向 dir 取左右）
 // 原型按 ~2.4x 放大，生产猫宽约 32px：水平小偏移 × dir，垂直略高于头
-const FRONT_OFFSET = 11; // 头部斜上方水平偏移（px，× dir）
+const FRONT_SIDE_X = 22; // 头部前侧水平偏移（px，× dir）——明显偏到运动方向一侧
+const FRONT_UP_Y = -10; // 略高于头（上前方），避开脸部
+const NOTE_FRONT_BIAS = 8; // 音符按朝向偏向前侧（px，× lastDir）
 // 音符随机发射器
 const NOTE_GLYPHS = ["♪", "♫", "♩", "♬"];
 const NOTE_COLORS = ["#7DB4FF", "#F7A8CB", "#B197FC", "#5ED0C5", "#FCD34D", "#86E08C", "#FF9F6B", "#F472B6"];
@@ -33,7 +35,7 @@ const NOTE_DELAY_MAX = 0.25;
 const ZZZ_CLASSES = ["cs-fxzz cs-fxzz-s", "cs-fxzz cs-fxzz-m", "cs-fxzz cs-fxzz-l"];
 const ZZZ_DELAYS = ["0s", ".7s", "1.4s"]; // 错峰升起
 const ZZZ_BASE_LEFT = 4; // 头顶基础水平偏移（px，× dir 朝外侧）
-const ZZZ_STEP = 6; // 每个 Z 之间的水平步进（px）
+const ZZZ_STEP = 4; // 每个 Z 之间的水平步进（px）
 const ZZZ_TOP = -2; // 贴头顶（略高于头）
 function rand(min, max) { return min + Math.random() * (max - min); }
 function pick(arr) { return arr[(Math.random() * arr.length) | 0]; }
@@ -84,18 +86,19 @@ export default function CatSkinFx({ micState, audioLevel = 0, isBusy = false, ha
     const AMP = Math.max(28, Math.min(56, W / 2 - 30));
     const ENTER_FROM = Math.max(14, C - AMP - 6);
     sleepWrap.style.left = (C - 18) + "px";
-    // 卧睡精灵头部在左侧（约 sprite 左缘 + 9px）→ 外侧朝左，Zzz 向左上方漂移
+    // 卧睡精灵头部在左侧（约 sprite 左缘 + 9px）；Zzz 按当前朝向 lastDir 落到头部前侧上方
     const HEAD_X = C - 18 + 9;
-    const ZZZ_DIR = -1; // 头部外侧方向（左）
-    zzz.forEach((z, i) => {
-      z.style.left = (HEAD_X + ZZZ_DIR * (ZZZ_BASE_LEFT + i * ZZZ_STEP)) + "px";
-      z.style.top = ZZZ_TOP + "px";
-      z.style.setProperty("--zdir", String(ZZZ_DIR));
-    });
+    function positionZzz(dir) {
+      zzz.forEach((z, i) => {
+        z.style.left = (HEAD_X + dir * (ZZZ_BASE_LEFT + i * ZZZ_STEP)) + "px";
+        z.style.top = ZZZ_TOP + "px";
+        z.style.setProperty("--zdir", String(dir));
+      });
+    }
 
     let mode = "idle", x = C, wp = 0, t0 = performance.now(), xRet = C, lastVoice = 0, view = "";
     let prevBusy = false, prevErr = false, successUntil = 0, errorUntil = 0, loudState = false;
-    let fxShownType = null, fxShownAt = 0, lastDir = 1;
+    let fxShownType = null, fxShownAt = 0, lastDir = 1, zzzPlaced = false;
     // 音符发射器状态
     let noteCount = 0, lastSpawn = 0;
     function clearNotes() {
@@ -110,8 +113,8 @@ export default function CatSkinFx({ micState, audioLevel = 0, isBusy = false, ha
       el.textContent = pick(NOTE_GLYPHS);
       el.style.color = pick(NOTE_COLORS);
       el.style.fontSize = rand(NOTE_SIZE_MIN, NOTE_SIZE_MAX).toFixed(1) + "px";
-      // 随机起始 X：在锚点附近水平散布，避免聚成一点
-      el.style.left = rand(-NOTE_SPREAD, NOTE_SPREAD).toFixed(1) + "px";
+      // 随机起始 X：在锚点附近水平散布并按朝向偏向前侧，避免聚成一点
+      el.style.left = (lastDir * NOTE_FRONT_BIAS + rand(-NOTE_SPREAD, NOTE_SPREAD)).toFixed(1) + "px";
       el.style.setProperty("--dx", rand(-NOTE_DX_MAX, NOTE_DX_MAX).toFixed(1) + "px");
       el.style.setProperty("--dy", rand(NOTE_DY_MIN, NOTE_DY_MAX).toFixed(1) + "px");
       el.style.setProperty("--rot", rand(-NOTE_ROT_MAX, NOTE_ROT_MAX).toFixed(0) + "deg");
@@ -137,7 +140,7 @@ export default function CatSkinFx({ micState, audioLevel = 0, isBusy = false, ha
       fx.innerHTML = FX_HTML[type] || "";
       fx.style.display = "block";
     }
-    function positionFx(dir) { lastDir = dir; fx.style.transform = `translateX(${x + dir * FRONT_OFFSET}px)`; }
+    function positionFx(dir) { lastDir = dir; fx.style.transform = `translate(${x + dir * FRONT_SIDE_X}px, ${FRONT_UP_Y}px)`; }
     function renderRun(s, dir) { runWrap.style.transform = `translateX(${x - 16}px) scale(${s})`; flip.style.transform = `scaleX(${dir})`; }
     setView("none"); setFx(null);
 
@@ -195,8 +198,10 @@ export default function CatSkinFx({ micState, audioLevel = 0, isBusy = false, ha
         }
       } else if (mode === "sleep") {
         x = C; setView("sleep"); setFx(null);
-        if (!active) { mode = "idle"; }
-        else if (want !== "rest") { mode = "walk"; setView("run"); wp = 0; }
+        // 进入睡眠时按最后朝向定位一次 Zzz（每帧只跑一次，靠 zzzPlaced 守卫）
+        if (!zzzPlaced) { positionZzz(lastDir); zzzPlaced = true; }
+        if (!active) { mode = "idle"; zzzPlaced = false; }
+        else if (want !== "rest") { mode = "walk"; setView("run"); wp = 0; zzzPlaced = false; }
       }
       raf = requestAnimationFrame(frame);
     }

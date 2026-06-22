@@ -9,12 +9,27 @@ const FOCUS_QUERY_TIMEOUT_MS = 1500;
 // 胶囊距屏幕底部的偏移（像素）。
 const BOTTOM_OFFSET_PX = 24;
 
+// 胶囊窗口宽度（固定）。
+const PILL_WIDTH_PX = 180;
+// 默认胶囊高度（music / voiceink / 默认胶囊皮肤）。
+const PILL_HEIGHT_DEFAULT_PX = 44;
+// 小黑猫皮肤（cat / catfx）高度：留出头顶空间让音符/ZZZ 完整可见。
+const PILL_HEIGHT_CAT_PX = 88;
+
+// 给定皮肤对应的窗口高度。
+function pillHeightForSkin(skin) {
+  return skin === "catfx" || skin === "cat" ? PILL_HEIGHT_CAT_PX : PILL_HEIGHT_DEFAULT_PX;
+}
+
 // 「跟随焦点」时读取焦点输入框 AX 位置/尺寸的超时（毫秒）：比窗口查询更短，
 // 让整条 show 链路控制在 ~800ms 内，超时直接走光标/底部兜底，绝不阻塞唤起。
-const FOCUS_FIELD_TIMEOUT_MS = 700;
+const FOCUS_FIELD_TIMEOUT_MS = 900;
 
-// 胶囊与焦点输入框（或鼠标点）之间的竖直间距（像素）。
-const FIELD_GAP_PX = 8;
+// 胶囊与焦点输入框（或鼠标点）之间的竖直间距（像素）：略大的下移量，让胶囊明显落在输入框下方。
+const FIELD_GAP_PX = 14;
+
+// AX 尺寸的合理上限（像素）：超过即视为垃圾值，按解析失败处理。
+const MAX_AX_DIMENSION_PX = 20000;
 
 class WindowManager {
   constructor(logger = null) {
@@ -47,6 +62,21 @@ class WindowManager {
     }
   }
 
+  // 胶囊定位的一行调试日志：记录使用的分支（field/cursor/bottom）、解析到的输入框/锚点
+  // 边界以及最终胶囊位置。有 logger 用 logger.info，否则回退 console.log。绝不抛出。
+  _logPlacement(branch, bounds, pill) {
+    try {
+      const msg = `[pill] resolve branch=${branch} bounds=${JSON.stringify(bounds)} pill=${JSON.stringify(pill)}`;
+      if (this.logger && typeof this.logger.info === "function") {
+        this.logger.info(msg);
+      } else {
+        console.log(msg);
+      }
+    } catch (e) {
+      // 日志失败不影响定位
+    }
+  }
+
   // Windows 可见窗口（设置/历史/控制面板）的窗口与任务栏图标：仅 win32 返回彩色 .ico 路径。
   // 解析方式与托盘一致：开发期取项目内 assets/，打包后取 process.resourcesPath/assets。
   _winIconOption() {
@@ -64,10 +94,20 @@ class WindowManager {
       return this.mainWindow;
     }
 
+    // 创建时按已保存皮肤决定初始高度：小黑猫皮肤需要更高窗口承载头顶特效。
+    let initialSkin = "music";
+    try {
+      if (this.databaseManager && typeof this.databaseManager.getSetting === "function") {
+        initialSkin = this.databaseManager.getSetting("pill_skin", "music") || "music";
+      }
+    } catch (e) {
+      // 读取失败按默认皮肤处理
+    }
+
     // 紧凑"胶囊"录音条：frameless + 透明 + 置顶 + 不抢焦点（避免抢走目标输入框的焦点导致粘贴失败）
     this.mainWindow = new BrowserWindow({
-      width: 180,
-      height: 44,
+      width: PILL_WIDTH_PX,
+      height: pillHeightForSkin(initialSkin),
       frame: false,
       transparent: true,
       alwaysOnTop: true,
@@ -198,8 +238,25 @@ class WindowManager {
       const x = Math.round(wa.x + (wa.width - w) / 2);
       const y = Math.round(wa.y + wa.height - h - BOTTOM_OFFSET_PX); // 距屏幕底部 24px
       this.mainWindow.setPosition(x, y);
+      this._logPlacement("bottom", { x: wa.x, y: wa.y, w: wa.width, h: wa.height }, { x, y, width: w, height: h });
     } catch (error) {
       // 定位失败不影响录音
+    }
+  }
+
+  // 按皮肤调整胶囊窗口高度：cat/catfx 用 88px（头顶特效完整可见），其它用 44px。
+  // 改尺寸后重新底部居中定位，保持底边距屏底恒定（公式用当前高度，故底边不变）。
+  setPillHeightForSkin(skin) {
+    if (!this.mainWindow || this.mainWindow.isDestroyed()) return;
+    try {
+      const h = pillHeightForSkin(skin);
+      const [, curH] = this.mainWindow.getSize();
+      if (curH === h) return;
+      this.mainWindow.setSize(PILL_WIDTH_PX, h);
+      // 重新定位：复用底部居中逻辑，定位公式按当前高度计算，底边保持不变。
+      this.positionMainWindowBottomCenter();
+    } catch (error) {
+      // 调整失败不影响录音
     }
   }
 
@@ -239,13 +296,16 @@ class WindowManager {
       };
       try {
         const { screen } = require("electron");
+        // 关键修复：在 AppleScript 里先把每个数 (as integer) as text，再用 & 拼接。
+        // 否则 number & "," 会被当成「列表」，stdout 变成 "1280, ,, -333, ,, 720, ,, 1250"，
+        // 解析后含 0，触发宽度<=0 守卫，STEP1 每次静默失败、胶囊永远回退到光标。
         const script = [
           'tell application "System Events"',
           "  set fp to first application process whose frontmost is true",
           '  set el to value of attribute "AXFocusedUIElement" of fp',
           '  set p to value of attribute "AXPosition" of el',
           '  set s to value of attribute "AXSize" of el',
-          '  return ((item 1 of p) as integer) & "," & ((item 2 of p) as integer) & "," & ((item 1 of s) as integer) & "," & ((item 2 of s) as integer)',
+          '  return (((item 1 of p) as integer) as text) & "," & (((item 2 of p) as integer) as text) & "," & (((item 1 of s) as integer) as text) & "," & (((item 2 of s) as integer) as text)',
           "end tell",
         ].join("\n");
         const child = execFile(
@@ -257,22 +317,30 @@ class WindowManager {
             if (error) return done(false);
             try {
               if (!this.mainWindow || this.mainWindow.isDestroyed()) return done(false);
-              const nums = String(stdout)
-                .trim()
-                .split(",")
-                .map((s) => Number(s.trim()));
-              // 校验 4 个有限数 + 宽度>0（防 AX 返回垃圾/0 尺寸元素）。
-              if (nums.length < 4 || nums.some((n) => !Number.isFinite(n)) || nums[2] <= 0) {
-                return done(false);
-              }
+              const raw = String(stdout).trim();
+              // 含 "missing value"（AX 无焦点元素）直接判失败。
+              if (/missing value/i.test(raw)) return done(false);
+              // 健壮解析：提取前 4 个数字 token（容忍逗号两侧空格、浮点、负号）。
+              const tokens = raw.match(/-?\d+(?:\.\d+)?/g) || [];
+              const nums = tokens.slice(0, 4).map((t) => Number(t));
+              // 校验：必须有 4 个有限数；宽高 > 0 且不荒谬（防 AX 返回垃圾/0 尺寸元素）。
+              const valid =
+                nums.length === 4 &&
+                nums.every((n) => Number.isFinite(n)) &&
+                nums[2] > 0 &&
+                nums[3] > 0 &&
+                nums[2] <= MAX_AX_DIMENSION_PX &&
+                nums[3] <= MAX_AX_DIMENSION_PX;
+              if (!valid) return done(false);
               const [fx, fy, fw, fh] = nums;
-              const anchorX = fx + fw / 2; // 输入框水平中心
-              const anchorY = fy + fh; // 输入框底边
-              const display = screen.getDisplayNearestPoint({ x: Math.round(anchorX), y: Math.round(anchorY) });
               const [w, h] = this.mainWindow.getSize();
+              // 水平居中于输入框，竖直放在输入框下方 + 间距。
+              const anchorX = fx + fw / 2; // 输入框水平中心
+              const anchorY = fy + fh + FIELD_GAP_PX; // 输入框底边 + 下移间距
+              const display = screen.getDisplayNearestPoint({ x: Math.round(anchorX), y: Math.round(fy + fh) });
               const rect = {
-                x: Math.round(anchorX - w / 2),
-                y: Math.round(anchorY + FIELD_GAP_PX),
+                x: Math.round(fx + fw / 2 - w / 2),
+                y: Math.round(anchorY),
                 width: w,
                 height: h,
               };
@@ -280,6 +348,7 @@ class WindowManager {
               this.mainWindow.setBounds(clamped);
               // 缓存成功锚点，供平滑偶发单次失败用。
               this._lastFocusPoint = { x: anchorX, y: anchorY };
+              this._logPlacement("field", { x: fx, y: fy, w: fw, h: fh }, clamped);
               done(true);
             } catch (e) {
               done(false);
@@ -310,6 +379,7 @@ class WindowManager {
       };
       const clamped = this.clampRectToWorkArea(rect, display.workArea);
       this.mainWindow.setBounds(clamped);
+      this._logPlacement("cursor", { x: pt.x, y: pt.y, w: 0, h: 0 }, clamped);
       return true;
     } catch (e) {
       return false;

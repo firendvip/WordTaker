@@ -3,6 +3,14 @@
 All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/); versioning follows [SemVer](https://semver.org/).
 
+## [1.3.1] - 2026-06-22
+
+### Fixed
+- 胶囊跟随焦点定位修复（修正 AppleScript 输出解析，焦点框边界正确解析；落在焦点框下方更靠下，间距 14px）。
+
+### Changed
+- 小猫 各效果（音符/灯泡/星光/Zzz）按运动方向落在头部同侧前方，含睡眠 Zzz 按朝向。
+
 ## [1.3.0] - 2026-06-22
 
 ### Added
