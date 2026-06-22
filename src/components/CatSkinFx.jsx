@@ -36,7 +36,7 @@ const ZZZ_CLASSES = ["cs-fxzz cs-fxzz-s", "cs-fxzz cs-fxzz-m", "cs-fxzz cs-fxzz-
 const ZZZ_DELAYS = ["0s", ".7s", "1.4s"]; // 错峰升起
 const ZZZ_BASE_LEFT = 4; // 头顶基础水平偏移（px，× dir 朝外侧）
 const ZZZ_STEP = 4; // 每个 Z 之间的水平步进（px）
-const ZZZ_TOP = -2; // 贴头顶（略高于头）
+const ZZZ_TOP = 4; // 贴头顶（基座紧贴头部，最小 Z 落在头上）
 function rand(min, max) { return min + Math.random() * (max - min); }
 function pick(arr) { return arr[(Math.random() * arr.length) | 0]; }
 

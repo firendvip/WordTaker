@@ -3,6 +3,11 @@
 All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/); versioning follows [SemVer](https://semver.org/).
 
+## [1.3.3] - 2026-06-22
+
+### Changed
+- 小猫 睡眠 Zzz 贴近头部：降低锚点（top -2→4）并缩短上升距离（-12px→-5px），Z 从头顶起升、贴头部悬停后淡出。
+
 ## [1.3.2] - 2026-06-22
 
 ### Fixed
