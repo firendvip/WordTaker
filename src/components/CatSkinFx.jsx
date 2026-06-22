@@ -10,6 +10,16 @@ const ENTER_MS = 1400;
 const RETURN_MS = 800;
 const WALK_W = 0.022;
 const PROC_W = 0.04;
+// 效果置于运动方向脸前方
+const FRONT_OFFSET = 18;
+// 音符随机发射器
+const NOTE_GLYPHS = ["♪", "♫", "♩", "♬"];
+const NOTE_COLORS = ["#7DB4FF", "#F7A8CB", "#B197FC", "#5ED0C5", "#FCD34D", "#86E08C"];
+const NOTE_MAX = 8;
+const NOTE_SPAWN_NORMAL = 360; // ms between spawns (normal volume)
+const NOTE_SPAWN_LOUD = 180; // ms between spawns (loud)
+function rand(min, max) { return min + Math.random() * (max - min); }
+function pick(arr) { return arr[(Math.random() * arr.length) | 0]; }
 
 function eye(cx) {
   return `<ellipse cx="${cx}" cy="13" rx="2.6" ry="3.1" fill="#FDE047"/><ellipse cx="${cx + 0.3}" cy="13.5" rx="1" ry="1.9" fill="${K}"/><circle cx="${cx - 0.8}" cy="11.6" r=".7" fill="#fff"/>`;
@@ -17,8 +27,6 @@ function eye(cx) {
 const RUN_SVG = `<svg width="32" height="23" viewBox="0 0 46 32" xmlns="http://www.w3.org/2000/svg" style="display:block"><path class="cs-tail" d="M9 22 C 3 20, 3 11, 7 8" fill="none" stroke="${K}" stroke-width="3.6" stroke-linecap="round"/><rect class="cs-leg cs-lb" x="12" y="24" width="3" height="5" rx="1.5" fill="${K}"/><rect class="cs-leg cs-la" x="17" y="24" width="3" height="5" rx="1.5" fill="${K}"/><rect class="cs-leg cs-lb" x="23" y="24" width="3" height="5" rx="1.5" fill="${K}"/><rect class="cs-leg cs-la" x="28" y="24" width="3" height="5" rx="1.5" fill="${K}"/><ellipse cx="20" cy="21" rx="10" ry="7" fill="${K}"/><circle cx="32" cy="13" r="10" fill="${K}"/><path d="M25 6 L27 1 L31 5 Z" fill="${K}"/><path d="M39 6 L37 1 L33 5 Z" fill="${K}"/><g>${eye(28.4)}${eye(35.6)}</g><path d="M31 16 h2 l-1 1.2 z" fill="#F472B6"/></svg>`;
 const SLEEP_SVG = `<svg width="36" height="20" viewBox="0 0 44 24" xmlns="http://www.w3.org/2000/svg" style="display:block"><path d="M38 16 C 42 14, 42 20, 37.5 18.5" fill="none" stroke="${K}" stroke-width="3.6" stroke-linecap="round"/><ellipse cx="24" cy="16" rx="15" ry="7.5" fill="${K}"/><circle cx="11" cy="15" r="7.5" fill="${K}"/><path d="M6 9 L8 4 L12 8 Z" fill="${K}"/><path d="M7.5 14.8 q1.4 1.4 2.8 0" fill="none" stroke="#FDE047" stroke-width="1" stroke-linecap="round"/><path d="M12.5 14.8 q1.3 1.2 2.6 0" fill="none" stroke="#FDE047" stroke-width="1" stroke-linecap="round"/></svg>`;
 const FX_HTML = {
-  notes: '<span class="cs-fxnt a">♪</span><span class="cs-fxnt b">♫</span><span class="cs-fxnt c">♪</span>',
-  notesMany: '<span class="cs-fxnt a">♪</span><span class="cs-fxnt b">♫</span><span class="cs-fxnt c">♪</span><span class="cs-fxnt d">♫</span><span class="cs-fxnt e">♪</span>',
   bulb: '<span class="cs-fxbulb cs-fx-bob"><svg width="14" height="16" viewBox="0 0 14 16"><circle cx="7" cy="7" r="5.5" fill="#FDE047"/><rect x="4.5" y="12" width="5" height="2.6" rx="1" fill="#9CA3AF"/><line x1="7" y1="0" x2="7" y2="1.6" stroke="#FDE047" stroke-width="1" stroke-linecap="round"/><line x1="0.6" y1="3.2" x2="2" y2="4.2" stroke="#FDE047" stroke-width="1" stroke-linecap="round"/><line x1="13.4" y1="3.2" x2="12" y2="4.2" stroke="#FDE047" stroke-width="1" stroke-linecap="round"/></svg></span>',
   sparkle: '<span class="cs-fxstar cs-fx-tw"><svg width="14" height="14" viewBox="0 0 14 14"><path d="M7 0 L8.4 5.6 L14 7 L8.4 8.4 L7 14 L5.6 8.4 L0 7 L5.6 5.6 Z" fill="#FCD34D"/></svg></span>',
   sweat: '<span class="cs-fxsweat cs-fx-bob"><svg width="10" height="14" viewBox="0 0 10 14"><path d="M5 0 C 5 4, 9 7, 9 10 A 4 4 0 0 1 1 10 C 1 7, 5 4, 5 0 Z" fill="#60A5FA"/></svg></span>',
@@ -57,7 +65,30 @@ export default function CatSkinFx({ micState, audioLevel = 0, isBusy = false, ha
 
     let mode = "idle", x = C, wp = 0, t0 = performance.now(), xRet = C, lastVoice = 0, view = "";
     let prevBusy = false, prevErr = false, successUntil = 0, errorUntil = 0, loudState = false;
-    let fxShownType = null, fxShownAt = 0;
+    let fxShownType = null, fxShownAt = 0, lastDir = 1;
+    // 音符发射器状态
+    let noteCount = 0, lastSpawn = 0;
+    function clearNotes() {
+      const kids = fx.querySelectorAll(".cs-fxnt");
+      for (let i = 0; i < kids.length; i++) kids[i].remove();
+      noteCount = 0;
+    }
+    function spawnNote(now) {
+      if (noteCount >= NOTE_MAX) return;
+      const el = document.createElement("span");
+      el.className = "cs-fxnt";
+      el.textContent = pick(NOTE_GLYPHS);
+      el.style.color = pick(NOTE_COLORS);
+      el.style.fontSize = rand(11, 16).toFixed(1) + "px";
+      el.style.setProperty("--dx", rand(-12, 12).toFixed(1) + "px");
+      el.style.setProperty("--dy", rand(-22, -12).toFixed(1) + "px");
+      el.style.setProperty("--rot", rand(-40, 40).toFixed(0) + "deg");
+      el.style.setProperty("--dur", rand(1.0, 1.7).toFixed(2) + "s");
+      el.style.animationDelay = rand(0, 0.25).toFixed(2) + "s";
+      el.addEventListener("animationend", () => { el.remove(); noteCount--; }, { once: true });
+      fx.appendChild(el); noteCount++;
+      lastSpawn = now;
+    }
     function setView(v) {
       if (view === v) return; view = v;
       runWrap.style.display = v === "run" ? "block" : "none";
@@ -68,10 +99,13 @@ export default function CatSkinFx({ micState, audioLevel = 0, isBusy = false, ha
     function setFx(type) {
       if (fxShownType === type) return;
       fxShownType = type;
+      clearNotes();
       if (!type) { fx.style.display = "none"; fx.innerHTML = ""; return; }
+      if (type === "notes") { fx.innerHTML = ""; fx.style.display = "block"; return; }
       fx.innerHTML = FX_HTML[type] || "";
       fx.style.display = "block";
     }
+    function positionFx(dir) { lastDir = dir; fx.style.transform = `translateX(${x + dir * FRONT_OFFSET}px)`; }
     function renderRun(s, dir) { runWrap.style.transform = `translateX(${x - 16}px) scale(${s})`; flip.style.transform = `scaleX(${dir})`; }
     setView("none"); setFx(null);
 
@@ -94,12 +128,18 @@ export default function CatSkinFx({ micState, audioLevel = 0, isBusy = false, ha
       if (now < successUntil) fxType = "sparkle";
       else if (now < errorUntil) fxType = "sweat";
       else if (busy) fxType = "bulb";
-      else if (rec && voice) fxType = loudState ? "notesMany" : "notes";
+      else if (rec && voice) fxType = "notes";
 
       // dwell gating: priority events + hide are immediate
       const priority = fxType === "sparkle" || fxType === "sweat" || fxType === null;
       if (priority || fxShownType === null || now - fxShownAt >= FX_DWELL) {
         if (fxType !== fxShownType) { setFx(fxType); fxShownAt = now; }
+      }
+
+      // 音符随机发射：单一计时由 rAF 时钟驱动，按音量调节速率
+      if (fxShownType === "notes") {
+        const interval = loudState ? NOTE_SPAWN_LOUD : NOTE_SPAWN_NORMAL;
+        if (now - lastSpawn >= interval) spawnNote(now);
       }
 
       const want = (busy || (active && voice)) ? "walk" : "rest";
@@ -109,16 +149,16 @@ export default function CatSkinFx({ micState, audioLevel = 0, isBusy = false, ha
         if (active) { mode = "enter"; t0 = now; setView("run"); }
       } else if (mode === "enter") {
         const te = Math.min(1, (now - t0) / ENTER_MS), k = easeOut(te);
-        x = ENTER_FROM + (C - ENTER_FROM) * k; renderRun(0.32 + 0.68 * k, 1);
+        x = ENTER_FROM + (C - ENTER_FROM) * k; renderRun(0.32 + 0.68 * k, 1); positionFx(1);
         if (te >= 1) { wp = 0; if (!active) { mode = "idle"; } else { mode = want === "rest" ? "settle" : "walk"; t0 = now; xRet = x; } }
       } else if (mode === "walk") {
         if (!active || want === "rest") { mode = "settle"; t0 = now; xRet = x; }
-        else { wp += (busy || loudState) ? PROC_W : WALK_W; x = C + AMP * Math.sin(wp); const dir = Math.cos(wp) >= 0 ? 1 : -1; renderRun(1, dir); fx.style.transform = `translateX(${x + dir * 6}px)`; }
+        else { wp += (busy || loudState) ? PROC_W : WALK_W; x = C + AMP * Math.sin(wp); const dir = Math.cos(wp) >= 0 ? 1 : -1; renderRun(1, dir); positionFx(dir); }
       } else if (mode === "settle") {
         if (active && want !== "rest") { mode = "walk"; wp = 0; setView("run"); }
         else {
           const tr = Math.min(1, (now - t0) / RETURN_MS), k = easeOut(tr);
-          x = xRet + (C - xRet) * k; const dir = (C - x) >= 0 ? 1 : -1; renderRun(1, dir); fx.style.transform = `translateX(${x + dir * 6}px)`;
+          x = xRet + (C - xRet) * k; const dir = (C - x) >= 0 ? 1 : -1; renderRun(1, dir); positionFx(dir);
           if (tr >= 1) { if (active) { mode = "sleep"; setView("sleep"); x = C; } else { mode = "idle"; setView("none"); } }
         }
       } else if (mode === "sleep") {
@@ -129,7 +169,7 @@ export default function CatSkinFx({ micState, audioLevel = 0, isBusy = false, ha
       raf = requestAnimationFrame(frame);
     }
     raf = requestAnimationFrame(frame);
-    return () => { cancelled = true; cancelAnimationFrame(raf); root.innerHTML = ""; };
+    return () => { cancelled = true; cancelAnimationFrame(raf); clearNotes(); root.innerHTML = ""; };
   }, []);
 
   return <div ref={rootRef} className="cat-skin" aria-hidden="true" />;

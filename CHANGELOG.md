@@ -3,6 +3,11 @@
 All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/); versioning follows [SemVer](https://semver.org/).
 
+## [1.2.2] - 2026-06-22
+
+### Changed
+- 小猫 效果移到运动方向脸前方；音符随机散开 + 多色随机。
+
 ## [1.2.1] - 2026-06-22
 
 ### Changed
