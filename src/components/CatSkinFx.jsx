@@ -36,7 +36,9 @@ const ZZZ_CLASSES = ["cs-fxzz cs-fxzz-s", "cs-fxzz cs-fxzz-m", "cs-fxzz cs-fxzz-
 const ZZZ_DELAYS = ["0s", ".7s", "1.4s"]; // 错峰升起
 const ZZZ_BASE_LEFT = 4; // 头顶基础水平偏移（px，× dir 朝外侧）
 const ZZZ_STEP = 4; // 每个 Z 之间的水平步进（px）
-const ZZZ_TOP = 4; // 贴头顶（基座紧贴头部，最小 Z 落在头上）
+// 按窗口底部锚定：趴睡猫在 .cs-sleeper{bottom:6px}，原生高 20px，头顶约离底 20px。
+// Zzz 基座设到离底 ~22px，正好贴在趴睡猫头上方（之前用 top:4px 是从窗口顶部算，导致离头很远）。
+const ZZZ_BOTTOM = 22; // 距窗口底部（px），紧贴趴睡猫头上方
 function rand(min, max) { return min + Math.random() * (max - min); }
 function pick(arr) { return arr[(Math.random() * arr.length) | 0]; }
 
@@ -91,7 +93,8 @@ export default function CatSkinFx({ micState, audioLevel = 0, isBusy = false, ha
     function positionZzz(dir) {
       zzz.forEach((z, i) => {
         z.style.left = (HEAD_X + dir * (ZZZ_BASE_LEFT + i * ZZZ_STEP)) + "px";
-        z.style.top = ZZZ_TOP + "px";
+        z.style.top = "auto";
+        z.style.bottom = (ZZZ_BOTTOM + i * 3) + "px";
         z.style.setProperty("--zdir", String(dir));
       });
     }

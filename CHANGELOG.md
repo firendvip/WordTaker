@@ -3,6 +3,11 @@
 All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/); versioning follows [SemVer](https://semver.org/).
 
+## [1.3.4] - 2026-06-22
+
+### Fixed
+- 小猫 睡眠 Zzz 真正贴到趴睡猫头：根因是 Zzz 用 `top:4px`（从窗口顶部算），而趴睡猫在 `.cs-sleeper{bottom:6px}`（窗口底部），二者隔了大半个窗口高。改为按窗口底部锚定（bottom ≈22px 起、逐个 +3px），紧贴趴睡猫头上方。
+
 ## [1.3.3] - 2026-06-22
 
 ### Changed
