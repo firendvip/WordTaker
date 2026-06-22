@@ -18,7 +18,7 @@ const RUN_SVG = `<svg width="32" height="23" viewBox="0 0 46 32" xmlns="http://w
 const SLEEP_SVG = `<svg width="36" height="20" viewBox="0 0 44 24" xmlns="http://www.w3.org/2000/svg" style="display:block"><path d="M38 16 C 42 14, 42 20, 37.5 18.5" fill="none" stroke="${K}" stroke-width="3.6" stroke-linecap="round"/><ellipse cx="24" cy="16" rx="15" ry="7.5" fill="${K}"/><circle cx="11" cy="15" r="7.5" fill="${K}"/><path d="M6 9 L8 4 L12 8 Z" fill="${K}"/><path d="M7.5 14.8 q1.4 1.4 2.8 0" fill="none" stroke="#FDE047" stroke-width="1" stroke-linecap="round"/><path d="M12.5 14.8 q1.3 1.2 2.6 0" fill="none" stroke="#FDE047" stroke-width="1" stroke-linecap="round"/></svg>`;
 const FX_HTML = {
   notes: '<span class="cs-fxnt a">♪</span><span class="cs-fxnt b">♫</span><span class="cs-fxnt c">♪</span>',
-  exclaim: '<span class="cs-fxex cs-fx-bob"><svg width="6" height="14" viewBox="0 0 6 14"><rect x="1" y="0" width="4" height="9" rx="2" fill="#F87171"/><circle cx="3" cy="12.5" r="1.6" fill="#F87171"/></svg></span>',
+  notesMany: '<span class="cs-fxnt a">♪</span><span class="cs-fxnt b">♫</span><span class="cs-fxnt c">♪</span><span class="cs-fxnt d">♫</span><span class="cs-fxnt e">♪</span>',
   bulb: '<span class="cs-fxbulb cs-fx-bob"><svg width="14" height="16" viewBox="0 0 14 16"><circle cx="7" cy="7" r="5.5" fill="#FDE047"/><rect x="4.5" y="12" width="5" height="2.6" rx="1" fill="#9CA3AF"/><line x1="7" y1="0" x2="7" y2="1.6" stroke="#FDE047" stroke-width="1" stroke-linecap="round"/><line x1="0.6" y1="3.2" x2="2" y2="4.2" stroke="#FDE047" stroke-width="1" stroke-linecap="round"/><line x1="13.4" y1="3.2" x2="12" y2="4.2" stroke="#FDE047" stroke-width="1" stroke-linecap="round"/></svg></span>',
   sparkle: '<span class="cs-fxstar cs-fx-tw"><svg width="14" height="14" viewBox="0 0 14 14"><path d="M7 0 L8.4 5.6 L14 7 L8.4 8.4 L7 14 L5.6 8.4 L0 7 L5.6 5.6 Z" fill="#FCD34D"/></svg></span>',
   sweat: '<span class="cs-fxsweat cs-fx-bob"><svg width="10" height="14" viewBox="0 0 10 14"><path d="M5 0 C 5 4, 9 7, 9 10 A 4 4 0 0 1 1 10 C 1 7, 5 4, 5 0 Z" fill="#60A5FA"/></svg></span>',
@@ -94,7 +94,7 @@ export default function CatSkinFx({ micState, audioLevel = 0, isBusy = false, ha
       if (now < successUntil) fxType = "sparkle";
       else if (now < errorUntil) fxType = "sweat";
       else if (busy) fxType = "bulb";
-      else if (rec && voice) fxType = loudState ? "exclaim" : "notes";
+      else if (rec && voice) fxType = loudState ? "notesMany" : "notes";
 
       // dwell gating: priority events + hide are immediate
       const priority = fxType === "sparkle" || fxType === "sweat" || fxType === null;
@@ -113,12 +113,12 @@ export default function CatSkinFx({ micState, audioLevel = 0, isBusy = false, ha
         if (te >= 1) { wp = 0; if (!active) { mode = "idle"; } else { mode = want === "rest" ? "settle" : "walk"; t0 = now; xRet = x; } }
       } else if (mode === "walk") {
         if (!active || want === "rest") { mode = "settle"; t0 = now; xRet = x; }
-        else { wp += (busy || loudState) ? PROC_W : WALK_W; x = C + AMP * Math.sin(wp); renderRun(1, Math.cos(wp) >= 0 ? 1 : -1); fx.style.transform = `translateX(${x + 2}px)`; }
+        else { wp += (busy || loudState) ? PROC_W : WALK_W; x = C + AMP * Math.sin(wp); const dir = Math.cos(wp) >= 0 ? 1 : -1; renderRun(1, dir); fx.style.transform = `translateX(${x + dir * 6}px)`; }
       } else if (mode === "settle") {
         if (active && want !== "rest") { mode = "walk"; wp = 0; setView("run"); }
         else {
           const tr = Math.min(1, (now - t0) / RETURN_MS), k = easeOut(tr);
-          x = xRet + (C - xRet) * k; renderRun(1, (C - x) >= 0 ? 1 : -1); fx.style.transform = `translateX(${x + 2}px)`;
+          x = xRet + (C - xRet) * k; const dir = (C - x) >= 0 ? 1 : -1; renderRun(1, dir); fx.style.transform = `translateX(${x + dir * 6}px)`;
           if (tr >= 1) { if (active) { mode = "sleep"; setView("sleep"); x = C; } else { mode = "idle"; setView("none"); } }
         }
       } else if (mode === "sleep") {

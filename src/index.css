@@ -783,15 +783,17 @@ body {
 @keyframes cs-np{0%{transform:translateY(2px) scale(.6);opacity:0}30%{opacity:1}100%{transform:translateY(-12px) scale(1);opacity:0}}
 @keyframes cs-zf{0%{transform:translate(0,0);opacity:0}25%{opacity:1}100%{transform:translate(7px,-14px);opacity:0}}
 /* ===== 小猫 头顶效果 (catfx) ===== */
-.cs-fx{position:absolute;bottom:26px;left:0;pointer-events:none;will-change:transform}
+.cs-fx{position:absolute;bottom:46px;left:0;pointer-events:none;will-change:transform}
 .cs-fxnt{position:absolute;font-size:12px;line-height:1;will-change:transform,opacity}
 .cs-fxnt.a{left:0;color:#7DB4FF;animation:csfxRiseC 1.3s ease-out infinite}
 .cs-fxnt.b{left:-7px;color:#F7A8CB;animation:csfxRiseL 1.3s ease-out infinite;animation-delay:.35s}
 .cs-fxnt.c{left:7px;color:#7DB4FF;animation:csfxRiseR 1.3s ease-out infinite;animation-delay:.7s}
+.cs-fxnt.d{left:-12px;color:#F7A8CB;animation:csfxRiseL 1.1s ease-out infinite;animation-delay:.5s}
+.cs-fxnt.e{left:12px;color:#7DB4FF;animation:csfxRiseR 1.1s ease-out infinite;animation-delay:.9s}
 @keyframes csfxRiseC{0%{transform:translate(0,2px) scale(.6);opacity:0}30%{opacity:1}100%{transform:translate(0,-12px) scale(1);opacity:0}}
 @keyframes csfxRiseL{0%{transform:translate(0,2px) scale(.6);opacity:0}30%{opacity:1}100%{transform:translate(-6px,-11px) scale(1);opacity:0}}
 @keyframes csfxRiseR{0%{transform:translate(0,2px) scale(.6);opacity:0}30%{opacity:1}100%{transform:translate(6px,-11px) scale(1);opacity:0}}
-.cs-fxex,.cs-fxbulb,.cs-fxstar,.cs-fxsweat{position:absolute;left:0;display:block}
+.cs-fxbulb,.cs-fxstar,.cs-fxsweat{position:absolute;left:0;display:block}
 .cs-fx-bob{animation:csfxBob 1s ease-in-out infinite}
 @keyframes csfxBob{0%,100%{transform:translateY(0)}50%{transform:translateY(-3px)}}
 .cs-fx-tw{animation:csfxTw 1.1s ease-in-out infinite;transform-origin:center}

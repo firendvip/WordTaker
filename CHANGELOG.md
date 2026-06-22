@@ -3,6 +3,11 @@
 All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/); versioning follows [SemVer](https://semver.org/).
 
+## [1.2.1] - 2026-06-22
+
+### Changed
+- 小猫 取消感叹号，大声改为更密集音符；头顶效果上移到头顶上方，不再压脸。
+
 ## [1.2.0] - 2026-06-22
 
 ### Added
