@@ -28,12 +28,11 @@ export default function CatSkin({ micState, audioLevel = 0, isBusy = false }) {
     const root = rootRef.current;
     if (!root) return;
     root.innerHTML = "";
-    const sleepWrap = document.createElement("div"); sleepWrap.className = "cs-sleeper"; sleepWrap.innerHTML = SLEEP_SVG;
-    const runWrap = document.createElement("div"); runWrap.className = "cs-runner";
-    const flip = document.createElement("div"); flip.innerHTML = RUN_SVG; runWrap.appendChild(flip); runWrap.style.display = "none";
+    const sleepWrap = document.createElement("div"); sleepWrap.className = "cs-sleeper"; sleepWrap.innerHTML = SLEEP_SVG; sleepWrap.style.display = "none";
+    const runWrap = document.createElement("div"); runWrap.className = "cs-runner"; const flip = document.createElement("div"); flip.innerHTML = RUN_SVG; runWrap.appendChild(flip); runWrap.style.display = "none";
     const notes = document.createElement("div"); notes.className = "cs-notes"; notes.innerHTML = '<span class="cs-note" style="color:#7DB4FF">♪</span><span class="cs-note" style="left:6px;color:#F7A8CB;animation-delay:.6s">♫</span>'; notes.style.display = "none";
-    const z1 = document.createElement("span"); z1.className = "cs-zz"; z1.textContent = "z";
-    const z2 = document.createElement("span"); z2.className = "cs-zz"; z2.textContent = "z"; z2.style.animationDelay = ".9s";
+    const z1 = document.createElement("span"); z1.className = "cs-zz"; z1.textContent = "z"; z1.style.display = "none";
+    const z2 = document.createElement("span"); z2.className = "cs-zz"; z2.textContent = "z"; z2.style.animationDelay = ".9s"; z2.style.display = "none";
     root.appendChild(sleepWrap); root.appendChild(runWrap); root.appendChild(notes); root.appendChild(z1); root.appendChild(z2);
 
     const W = root.clientWidth || 180;
@@ -44,12 +43,17 @@ export default function CatSkin({ micState, audioLevel = 0, isBusy = false }) {
     z1.style.left = (C + 8) + "px"; z1.style.top = "2px";
     z2.style.left = (C + 14) + "px"; z2.style.top = "0px";
 
-    let mode = "sleep", x = C, wp = 0, t0 = performance.now(), xRet = C, lastVoice = 0, hasEntered = false, showingRun = null;
-    function showRun(on) { if (showingRun === on) return; showingRun = on; runWrap.style.display = on ? "block" : "none"; sleepWrap.style.display = on ? "none" : "block"; }
-    function showZ(on) { z1.style.display = on ? "block" : "none"; z2.style.display = on ? "block" : "none"; }
+    let mode = "idle", x = C, wp = 0, t0 = performance.now(), xRet = C, lastVoice = 0, hasEntered = false, view = "";
+    function setView(v) {
+      if (view === v) return; view = v;
+      runWrap.style.display = v === "run" ? "block" : "none";
+      sleepWrap.style.display = v === "sleep" ? "block" : "none";
+      z1.style.display = v === "sleep" ? "block" : "none";
+      z2.style.display = v === "sleep" ? "block" : "none";
+    }
     function showN(on) { notes.style.display = on ? "block" : "none"; }
     function renderRun(s, dir) { runWrap.style.transform = `translateX(${x - 16}px) scale(${s})`; flip.style.transform = `scaleX(${dir})`; }
-    showRun(false); showZ(true);
+    setView("none"); showN(false);
 
     let raf, cancelled = false;
     function frame(now) {
@@ -58,31 +62,29 @@ export default function CatSkin({ micState, audioLevel = 0, isBusy = false }) {
       if (lvl > VOICE_THR) lastVoice = now;
       const voice = now - lastVoice < HOLD;
       const active = rec || busy;
-      const want = busy ? "process" : (active && voice ? "walk" : "sleep");
+      const want = busy ? "process" : (active && voice ? "walk" : "rest");
 
-      if (mode === "sleep") {
-        x = C; showZ(true); showN(false);
-        if (!active) hasEntered = false;
-        if (want !== "sleep") { mode = hasEntered ? want : "enter"; wp = 0; t0 = now; showRun(true); showZ(false); }
+      if (mode === "idle") {
+        setView("none"); showN(false); x = C; hasEntered = false;
+        if (active) { mode = "enter"; t0 = now; setView("run"); }
       } else if (mode === "enter") {
         const te = Math.min(1, (now - t0) / ENTER_MS), k = easeOut(te);
         x = ENTER_FROM + (C - ENTER_FROM) * k; renderRun(0.32 + 0.68 * k, 1);
-        if (te >= 1) { hasEntered = true; wp = 0; mode = (want === "sleep") ? "settle" : want; t0 = now; xRet = x; }
+        if (te >= 1) { hasEntered = true; wp = 0; if (!active) { mode = "idle"; } else { mode = want === "rest" ? "settle" : want; t0 = now; xRet = x; } }
       } else if (mode === "walk" || mode === "process") {
-        if (want === "sleep") { mode = "settle"; t0 = now; xRet = x; showN(false); }
-        else {
-          mode = want; showN(mode === "process");
-          wp += mode === "process" ? PROC_W : WALK_W;
-          x = C + AMP * Math.sin(wp); renderRun(1, Math.cos(wp) >= 0 ? 1 : -1);
-          if (mode === "process") notes.style.transform = `translateX(${x - 22}px)`;
-        }
+        if (!active || want === "rest") { mode = "settle"; t0 = now; xRet = x; showN(false); }
+        else { mode = want; showN(mode === "process"); wp += mode === "process" ? PROC_W : WALK_W; x = C + AMP * Math.sin(wp); renderRun(1, Math.cos(wp) >= 0 ? 1 : -1); if (mode === "process") notes.style.transform = `translateX(${x - 22}px)`; }
       } else if (mode === "settle") {
-        if (want !== "sleep") { mode = want; wp = 0; }
+        if (active && want !== "rest") { mode = want; wp = 0; setView("run"); }
         else {
           const tr = Math.min(1, (now - t0) / RETURN_MS), k = easeOut(tr);
           x = xRet + (C - xRet) * k; renderRun(1, (C - x) >= 0 ? 1 : -1);
-          if (tr >= 1) { mode = "sleep"; showRun(false); showZ(true); x = C; }
+          if (tr >= 1) { if (active) { mode = "sleep"; setView("sleep"); x = C; } else { mode = "idle"; setView("none"); } }
         }
+      } else if (mode === "sleep") {
+        x = C; setView("sleep");
+        if (!active) { mode = "idle"; }
+        else if (want !== "rest") { mode = want; setView("run"); wp = 0; }
       }
       raf = requestAnimationFrame(frame);
     }
