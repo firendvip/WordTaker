@@ -1,7 +1,7 @@
 import { useEffect, useRef } from "react";
 
 const K = "#1b1b1f";
-const VOICE_THR = 0.14;
+const VOICE_THR = 0.35;
 const HOLD = 1000;
 const ENTER_MS = 1400;
 const RETURN_MS = 800;
