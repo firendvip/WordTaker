@@ -3,6 +3,14 @@
 All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/); versioning follows [SemVer](https://semver.org/).
 
+## [1.2.0] - 2026-06-22
+
+### Added
+- 小猫 皮肤（头顶效果：散落音符/感叹号/灯泡/闪光/汗滴，按音量与处理阶段切换）。
+
+### Changed
+- 旧 cat 皮肤更名为 小猫·简（行为不变）。
+
 ## [1.1.35] - 2026-06-22
 
 ### Fixed

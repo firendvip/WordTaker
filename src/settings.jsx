@@ -1096,14 +1096,40 @@ const SettingsPage = () => {
                     )}
                   </span>
                 </button>
-                {/* 小黑猫 */}
+                {/* 小猫 (catfx) */}
+                <button
+                  type="button"
+                  onClick={() => updateAndSave('pill_skin', 'catfx')}
+                  className="w-full flex items-center justify-between gap-4 py-4 text-left"
+                >
+                  <div className="min-w-0">
+                    <label className={`${rowLabelClass} chinese-title`}>小猫</label>
+                    <p className="mt-0.5 text-[13px] text-gray-500 dark:text-neutral-400">
+                      头顶状态特效：说话音符 · 大声感叹 · 处理灯泡 · 完成闪光（无胶囊）
+                    </p>
+                  </div>
+                  <span
+                    aria-hidden="true"
+                    className={`flex-shrink-0 w-5 h-5 rounded-full border-2 flex items-center justify-center ${
+                      settings.pill_skin === 'catfx'
+                        ? 'border-blue-600 dark:border-blue-400'
+                        : 'border-gray-300 dark:border-neutral-600'
+                    }`}
+                  >
+                    {settings.pill_skin === 'catfx' && (
+                      <span className="w-2.5 h-2.5 rounded-full bg-blue-600 dark:bg-blue-400" />
+                    )}
+                  </span>
+                </button>
+
+                {/* 小猫·简 */}
                 <button
                   type="button"
                   onClick={() => updateAndSave('pill_skin', 'cat')}
                   className="w-full flex items-center justify-between gap-4 py-4 text-left"
                 >
                   <div className="min-w-0">
-                    <label className={`${rowLabelClass} chinese-title`}>小黑猫</label>
+                    <label className={`${rowLabelClass} chinese-title`}>小猫·简</label>
                     <p className="mt-0.5 text-[13px] text-gray-500 dark:text-neutral-400">
                       透明小黑猫：静音趴睡 · 说话走动 · 处理带音符（无胶囊）
                     </p>
