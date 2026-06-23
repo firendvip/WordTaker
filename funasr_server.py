@@ -133,11 +133,11 @@ class FunASRServer:
                 logger.warning("未找到 SenseVoice ONNX 模型，跳过（将回退 Paraformer）")
                 return False
             logger.info("开始加载 SenseVoice ONNX 模型...")
-            from funasr_onnx import SenseVoiceSmallONNX
+            from funasr_onnx import SenseVoiceSmall
 
             with open(os.path.join(model_dir, "tokens.json"), "r", encoding="utf-8") as f:
                 self.sensevoice_tokens = _json.load(f)
-            self.sensevoice_model = SenseVoiceSmallONNX(
+            self.sensevoice_model = SenseVoiceSmall(
                 model_dir, batch_size=1, quantize=True, device_id="-1"
             )
             logger.info("SenseVoice ONNX 模型加载完成")

@@ -103,8 +103,8 @@ jobs:
           # 2) 若快照里没有量化 onnx，则用 funasr_onnx 导出生成 model_quant.onnx。
           if not os.path.exists(os.path.join(dst, "model_quant.onnx")):
               print("model_quant.onnx missing, exporting via funasr_onnx ...")
-              from funasr_onnx import SenseVoiceSmallONNX
-              m = SenseVoiceSmallONNX("iic/SenseVoiceSmall", batch_size=1, quantize=True, device_id="-1")
+              from funasr_onnx import SenseVoiceSmall
+              m = SenseVoiceSmall("iic/SenseVoiceSmall", batch_size=1, quantize=True, device_id="-1")
               exp = getattr(m, "model_dir", None) or (src or "")
               for n in need:
                   for f in glob.glob(os.path.join(exp, n)):

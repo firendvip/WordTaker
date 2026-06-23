@@ -6,7 +6,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/); versioning follo
 ## [1.3.5] - 2026-06-23
 
 ### Fixed
-- Windows CI 出包可用：补 `funasr_onnx`/`onnxruntime` 嵌入式 Python 依赖（修复 `funasr_server.py` 运行时 `from funasr_onnx import SenseVoiceSmallONNX` 缺包导致识别失败）；torch 系改 CPU-only 轮子缩体积。
+- 修正 `funasr_onnx` 类名：`funasr_onnx>=0.4.1` 导出的类是 `SenseVoiceSmall`（非 `SenseVoiceSmallONNX`），更正 `funasr_server.py` 运行时导入与 CI 模型导出脚本（`.github/workflows/build-windows.yml`），否则 Windows 端 SenseVoice 加载与 CI 模型导出均会 `ImportError` 失败。
+- Windows CI 出包可用：补 `funasr_onnx`/`onnxruntime` 嵌入式 Python 依赖；torch 系改 CPU-only 轮子缩体积。
 - CI 在打包前下载并打包 SenseVoice ONNX 模型到 `models/sensevoice/`（仓库 `.gitignore` 了 `models/`，此前安装包缺 `model_quant.onnx`）。
 - 改用 GitHub Release 发布安装包（`softprops/action-gh-release`），绕开 Actions 工件存储配额（此前 CI 因配额满而失败的根因）。
 - CI 构建后断言原生模块（`better_sqlite3.node`/`uiohook.node`）为 Windows PE（`MZ` 头），防止 Mach-O 误打进 Windows 包。
