@@ -230,49 +230,58 @@ class EmbeddedPythonBuilder {
       console.warn('⚠️ pip升级失败，继续安装依赖...');
     }
 
-    // 定义依赖列表 - 确保numpy等核心依赖被正确安装
+    // 定义依赖列表 - 确保numpy等核心依赖被正确安装。
+    // 每项: { spec: 包约束, extraArgs?: 额外 pip 参数 }。
+    // torch 系用 CPU-only 轮子（--index-url .../whl/cpu），体积更小，ONNX 推理路径不需要 CUDA。
+    // funasr_onnx + onnxruntime 是 SenseVoice ONNX 推理引擎（funasr_server.py:136 导入 funasr_onnx），
+    // 缺失会导致运行时 ImportError，识别只能回退 Paraformer 甚至失败。
+    const CPU_TORCH_INDEX = '--index-url https://download.pytorch.org/whl/cpu';
     const dependencies = [
-      'numpy<2',  // 先安装numpy，作为其他库的基础依赖
-      'torch==2.0.1',
-      'torchaudio==2.0.2',
-      'torchvision==0.15.2',
-      'librosa>=0.11.0',
-      'funasr>=1.2.7'
+      { spec: 'numpy<2' },  // 先安装numpy，作为其他库的基础依赖
+      { spec: 'torch==2.0.1', extraArgs: CPU_TORCH_INDEX },
+      { spec: 'torchaudio==2.0.2', extraArgs: CPU_TORCH_INDEX },
+      { spec: 'torchvision==0.15.2', extraArgs: CPU_TORCH_INDEX },
+      { spec: 'librosa>=0.11.0' },
+      { spec: 'funasr>=1.2.7' },
+      { spec: 'onnxruntime>=1.16.0' },   // ONNX 运行时（CPU）
+      { spec: 'funasr_onnx>=0.4.1' },    // SenseVoice ONNX 封装
     ];
 
     // 逐个安装依赖（包含所有子依赖）
     for (const dep of dependencies) {
-      console.log(`📦 安装 ${dep}...`);
+      const spec = dep.spec;
+      const extra = dep.extraArgs ? ` ${dep.extraArgs}` : '';
+      console.log(`📦 安装 ${spec}...`);
       try {
         // 构建完整的环境变量（跨平台）
         const installEnv = this.pythonEnv();
 
-        execSync(`"${pythonPath}" -m pip install --target "${sitePackagesPath}" --no-deps --force-reinstall "${dep}"`, {
+        execSync(`"${pythonPath}" -m pip install --target "${sitePackagesPath}" --no-deps --force-reinstall "${spec}"${extra}`, {
           stdio: 'inherit',
           env: installEnv
         });
-        
+
         // 安装依赖的依赖
-        execSync(`"${pythonPath}" -m pip install --target "${sitePackagesPath}" --only-binary=all "${dep}"`, {
+        execSync(`"${pythonPath}" -m pip install --target "${sitePackagesPath}" --only-binary=all "${spec}"${extra}`, {
           stdio: 'inherit',
           env: installEnv
         });
-        
-        console.log(`✅ ${dep} 安装完成`);
+
+        console.log(`✅ ${spec} 安装完成`);
       } catch (error) {
-        console.error(`❌ ${dep} 安装失败:`, error.message);
+        console.error(`❌ ${spec} 安装失败:`, error.message);
         // 尝试不使用 --no-deps 重新安装
         try {
-          console.log(`🔄 重试安装 ${dep} (包含依赖)...`);
+          console.log(`🔄 重试安装 ${spec} (包含依赖)...`);
           const installEnv = this.pythonEnv();
 
-          execSync(`"${pythonPath}" -m pip install --target "${sitePackagesPath}" --force-reinstall "${dep}"`, {
+          execSync(`"${pythonPath}" -m pip install --target "${sitePackagesPath}" --force-reinstall "${spec}"${extra}`, {
             stdio: 'inherit',
             env: installEnv
           });
-          console.log(`✅ ${dep} 重试安装成功`);
+          console.log(`✅ ${spec} 重试安装成功`);
         } catch (retryError) {
-          console.error(`❌ ${dep} 重试安装也失败:`, retryError.message);
+          console.error(`❌ ${spec} 重试安装也失败:`, retryError.message);
           // 继续安装其他依赖
         }
       }
@@ -285,7 +294,7 @@ class EmbeddedPythonBuilder {
   async verifyDependencies(pythonPath) {
     console.log('🔍 验证依赖安装...');
     
-    const criticalDeps = ['numpy', 'torch', 'librosa', 'funasr'];
+    const criticalDeps = ['numpy', 'torch', 'librosa', 'funasr', 'onnxruntime', 'funasr_onnx'];
 
     for (const dep of criticalDeps) {
       try {
@@ -316,7 +325,7 @@ class EmbeddedPythonBuilder {
       }
       
       // 检查关键依赖是否可用
-      const criticalDeps = ['numpy', 'torch', 'librosa', 'funasr'];
+      const criticalDeps = ['numpy', 'torch', 'librosa', 'funasr', 'onnxruntime', 'funasr_onnx'];
       const verifyEnv = this.pythonEnv();
 
       for (const dep of criticalDeps) {

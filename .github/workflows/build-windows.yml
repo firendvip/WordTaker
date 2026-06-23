@@ -8,6 +8,10 @@ on:
     tags:
       - "v*"
 
+# 发布 Release 资产需要写仓库内容的权限。
+permissions:
+  contents: write
+
 jobs:
   build-win:
     runs-on: windows-latest
@@ -62,27 +66,127 @@ jobs:
       - name: Prepare embedded Python (Windows)
         run: pnpm run prepare:python:embedded
 
-      # 校验嵌入式 Python 与关键依赖可用（numpy/torch/librosa/funasr）。
+      # 校验嵌入式 Python 与关键依赖可用（numpy/torch/librosa/funasr/onnxruntime/funasr_onnx）。
+      # 不再 continue-on-error：依赖缺失必须让 job 失败暴露，否则出包后运行时识别会崩。
       - name: Verify embedded Python
         run: pnpm run test:python
-        continue-on-error: true
+
+      # 下载并准备 SenseVoice ONNX 模型到 models/sensevoice/（仓库 .gitignore 了 models/，
+      # clone 不含模型，必须在打包前补齐，否则安装包缺 model_quant.onnx，识别只能回退/失败）。
+      # 用刚装好 funasr_onnx/onnxruntime/modelscope 的嵌入式 Python 拉取 iic/SenseVoiceSmall。
+      - name: Download SenseVoice ONNX model
+        shell: pwsh
+        run: |
+          $py = "python\python.exe"
+          if (-not (Test-Path $py)) { Write-Error "embedded python.exe not found at $py"; exit 1 }
+          $env:PYTHONHOME = (Resolve-Path "python").Path
+          $env:PYTHONPATH = (Resolve-Path "python\Lib\site-packages").Path
+          $env:PYTHONIOENCODING = "utf-8"
+          # PowerShell 无 bash heredoc，写临时 .py 再执行。
+          $script = @'
+          import os, sys, glob, shutil
+          dst = os.path.join("models", "sensevoice")
+          os.makedirs(dst, exist_ok=True)
+          need = ["model_quant.onnx", "tokens.json", "config.yaml", "am.mvn"]
+          # 1) 先用 modelscope 快照下载（iic/SenseVoiceSmall 已自带量化 onnx）。
+          src = None
+          try:
+              from modelscope import snapshot_download
+              src = snapshot_download("iic/SenseVoiceSmall")
+              print("snapshot dir:", src)
+              for n in need:
+                  for f in glob.glob(os.path.join(src, n)):
+                      shutil.copy2(f, dst)
+                      print("copied", n)
+          except Exception as e:
+              print("snapshot_download failed:", e)
+          # 2) 若快照里没有量化 onnx，则用 funasr_onnx 导出生成 model_quant.onnx。
+          if not os.path.exists(os.path.join(dst, "model_quant.onnx")):
+              print("model_quant.onnx missing, exporting via funasr_onnx ...")
+              from funasr_onnx import SenseVoiceSmallONNX
+              m = SenseVoiceSmallONNX("iic/SenseVoiceSmall", batch_size=1, quantize=True, device_id="-1")
+              exp = getattr(m, "model_dir", None) or (src or "")
+              for n in need:
+                  for f in glob.glob(os.path.join(exp, n)):
+                      shutil.copy2(f, dst)
+                      print("copied(export)", n)
+          # 3) 断言关键文件齐全。
+          missing = [n for n in ["model_quant.onnx", "tokens.json"] if not os.path.exists(os.path.join(dst, n))]
+          if missing:
+              print("ERROR: missing model files:", missing)
+              sys.exit(1)
+          print("SenseVoice model ready:", os.listdir(dst))
+          '@
+          Set-Content -Path "ci_download_sensevoice.py" -Value $script -Encoding utf8
+          & $py "ci_download_sensevoice.py"
+          if ($LASTEXITCODE -ne 0) { Write-Error "model download failed"; exit 1 }
 
       - name: Build renderer (Vite)
         run: pnpm run build:renderer
 
-      # 真正产出 .exe：nsis 安装器 + portable 便携版。--publish never 不发布到 GitHub。
+      # 真正产出 .exe：nsis 安装器 + portable 便携版。--publish never 不发布到 GitHub
+      # （改用下方 softprops/action-gh-release 发 Release，绕开 Actions 工件存储配额）。
       - name: Build Windows installer + portable
         run: pnpm exec electron-builder --win --publish never
         env:
           # 关闭代码签名自动发现（CI 无证书）。
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
 
-      - name: Upload Windows artifacts
+      # 断言打包进 asar.unpacked 的原生模块确为 Windows PE（以 "MZ" 开头），
+      # 防止 Mach-O（mac）二进制被误打进 Windows 包导致运行即崩。
+      - name: Assert native modules are Windows PE
+        shell: pwsh
+        run: |
+          $root = "dist\win-unpacked\resources\app.asar.unpacked"
+          if (-not (Test-Path $root)) {
+            $root = "dist\win-unpacked\resources"
+          }
+          $targets = @("better_sqlite3.node", "uiohook.node")
+          $checked = 0
+          foreach ($name in $targets) {
+            $files = Get-ChildItem -Path $root -Recurse -Filter $name -ErrorAction SilentlyContinue
+            foreach ($f in $files) {
+              $bytes = [System.IO.File]::ReadAllBytes($f.FullName)[0..1]
+              $sig = [System.Text.Encoding]::ASCII.GetString($bytes)
+              Write-Host "$($f.FullName) -> sig=$sig"
+              if ($sig -ne "MZ") {
+                Write-Error "FAIL: $($f.FullName) is not a Windows PE (sig=$sig). Likely Mach-O — @electron/rebuild did not produce a Windows binary."
+                exit 1
+              }
+              $checked++
+            }
+          }
+          if ($checked -eq 0) {
+            Write-Error "FAIL: no native .node modules found under $root to verify"
+            exit 1
+          }
+          Write-Host "PE assertion passed for $checked native module(s)."
+
+      # 发布到 GitHub Release（Release 资产不计入 Actions 工件存储配额，
+      # 这是此前 CI 因配额满而失败的根因修复）。tag 即触发本工作流的 tag。
+      - name: Publish to GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: ${{ github.ref_name }}
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          files: |
+            dist/*-setup.exe
+            dist/*.exe
+            dist/*.blockmap
+            dist/latest*.yml
+
+      # 备份性短保留工件（仅 workflow_dispatch 等无 tag 场景方便取包）；
+      # retention-days 设到最小 1 天，尽量不占用存储配额。
+      - name: Upload Windows artifacts (short retention)
+        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
         uses: actions/upload-artifact@v4
         with:
           name: wordtaker-windows
           if-no-files-found: error
-          retention-days: 14
+          retention-days: 1
           path: |
             dist/*-setup.exe
             dist/*.exe
