@@ -3,6 +3,11 @@
 All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/); versioning follows [SemVer](https://semver.org/).
 
+## [1.3.7] - 2026-06-24
+
+### Fixed
+- CI PE 机器类型断言修正：uiohook 原生模块文件名实为 `uiohook_napi.node`（`@electron/rebuild` 产物）/`uiohook-napi.node`（预编译），而非 `uiohook.node`；v1.3.6 的断言因按 `uiohook.node` 查找漏匹配、`-lt 2` 守卫触发而使 CI 失败（构建本身成功、`better_sqlite3.node` 已确认为 x64 0x8664）。改为同时匹配两种命名并分别强制校验，修复后正常发布。此前 MZ-only 旧检查也一直“静默漏检”uiohook，本次一并堵上。
+
 ## [1.3.6] - 2026-06-24
 
 ### Added

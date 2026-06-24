@@ -177,15 +177,27 @@ jobs:
             }
           }
 
-          $checked = 0
-          foreach ($name in @("better_sqlite3.node", "uiohook.node")) {
-            $files = Get-ChildItem -Path $root -Recurse -Filter $name -ErrorAction SilentlyContinue
-            foreach ($f in $files) { Assert-X64Pe $f.FullName; $checked++ }
-          }
-          if ($checked -lt 2) {
-            Write-Error "FAIL: 应至少校验 better_sqlite3.node 与 uiohook.node 两个原生模块，实际仅 $checked 个。"
+          # 校验 better-sqlite3 与 uiohook-napi 两个原生模块。
+          # 注意：uiohook-napi 的二进制名不是 "uiohook.node"——@electron/rebuild 产出
+          # build/Release/uiohook_napi.node，预编译包则为 prebuilds/<plat>/uiohook-napi.node。
+          # 两种命名都接受，避免漏检（旧的 MZ-only 检查曾因文件名不符而静默漏掉 uiohook）。
+          $sqliteFiles = Get-ChildItem -Path $root -Recurse -Filter "better_sqlite3.node" -ErrorAction SilentlyContinue
+          $sqliteCount = 0
+          foreach ($f in $sqliteFiles) { Assert-X64Pe $f.FullName; $sqliteCount++ }
+          if ($sqliteCount -lt 1) {
+            Write-Error "FAIL: 未找到 better_sqlite3.node 进行校验。"
             exit 1
           }
+
+          $uiohookFiles = Get-ChildItem -Path $root -Recurse -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -eq "uiohook_napi.node" -or $_.Name -eq "uiohook-napi.node" }
+          $uiohookCount = 0
+          foreach ($f in $uiohookFiles) { Assert-X64Pe $f.FullName; $uiohookCount++ }
+          if ($uiohookCount -lt 1) {
+            Write-Error "FAIL: 未找到 uiohook 原生模块（uiohook_napi.node / uiohook-napi.node）进行校验。"
+            exit 1
+          }
+          $checked = $sqliteCount + $uiohookCount
 
           # 嵌入式 python.exe（打到 resources 下）也必须是 Windows x64 PE。
           $pyFiles = Get-ChildItem -Path $resources -Recurse -Filter "python.exe" -ErrorAction SilentlyContinue
