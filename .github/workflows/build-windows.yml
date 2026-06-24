@@ -189,12 +189,26 @@ jobs:
             exit 1
           }
 
-          $uiohookFiles = Get-ChildItem -Path $root -Recurse -ErrorAction SilentlyContinue |
+          # uiohook-napi 会为所有平台都打包预编译 .node（prebuilds/darwin-*、prebuilds/linux-*、
+          # bin/win32-x64-*、以及 @electron/rebuild 的 build/Release/uiohook_napi.node）。
+          # 只校验“Windows 会实际加载”的 x64 二进制：路径含 win32-x64 或 build\Release。
+          # darwin/linux 的 .node 是 Mach-O/ELF（非 PE），本就不该按 PE 校验——但它们随包分发属冗余，
+          # 这里检测到就发 warning 提示（不致命，运行期 node-gyp-build 只加载 win32-x64 版本）。
+          $allUiohook = Get-ChildItem -Path $root -Recurse -ErrorAction SilentlyContinue |
             Where-Object { $_.Name -eq "uiohook_napi.node" -or $_.Name -eq "uiohook-napi.node" }
+          $uiohookWin = $allUiohook | Where-Object {
+            $_.FullName -match "win32-x64" -or $_.FullName -match "build\\Release"
+          }
+          $uiohookForeign = $allUiohook | Where-Object {
+            $_.FullName -match "darwin" -or $_.FullName -match "linux"
+          }
+          foreach ($f in $uiohookForeign) {
+            Write-Host "WARN: 包内含非 Windows uiohook 预编译二进制（冗余，可后续从打包中排除）：$($f.FullName)"
+          }
           $uiohookCount = 0
-          foreach ($f in $uiohookFiles) { Assert-X64Pe $f.FullName; $uiohookCount++ }
+          foreach ($f in $uiohookWin) { Assert-X64Pe $f.FullName; $uiohookCount++ }
           if ($uiohookCount -lt 1) {
-            Write-Error "FAIL: 未找到 uiohook 原生模块（uiohook_napi.node / uiohook-napi.node）进行校验。"
+            Write-Error "FAIL: 未找到 Windows x64 的 uiohook 原生模块（win32-x64 / build\Release 下的 uiohook_napi.node / uiohook-napi.node）进行校验。"
             exit 1
           }
           $checked = $sqliteCount + $uiohookCount

@@ -3,6 +3,11 @@
 All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/); versioning follows [SemVer](https://semver.org/).
 
+## [1.3.8] - 2026-06-24
+
+### Fixed
+- CI PE 断言再修正并暴露打包冗余：v1.3.7 的 uiohook 校验用 `-Recurse` 宽匹配 `uiohook-napi.node`，连 `prebuilds/darwin-arm64`、`prebuilds/darwin-x64`、`prebuilds/linux-*` 里随包分发的 **mac/linux 预编译 .node**（Mach-O/ELF，非 PE）也匹配上了，被正确判为“非 PE”而使断言失败。三个 Windows x64 二进制（`better_sqlite3.node`、`bin/win32-x64-*/uiohook-napi.node`、`build/Release/uiohook_napi.node`）均已确认机器类型为 x64(0x8664)，并无 mac/arm64 混入。改为只对“Windows 实际加载”的 x64 路径（`win32-x64` / `build\Release`）做 PE 断言；检测到 darwin/linux 预编译二进制改发非致命 warning（属打包冗余，可后续从 electron-builder `files` 排除）。
+
 ## [1.3.7] - 2026-06-24
 
 ### Fixed
