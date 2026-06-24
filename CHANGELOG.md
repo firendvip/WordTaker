@@ -3,6 +3,11 @@
 All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/); versioning follows [SemVer](https://semver.org/).
 
+## [1.4.10] - 2026-06-25
+
+### Fixed
+- macOS 托盘猫头在小尺寸糊成黑团——重绘为大耳朵+大眼睛挖空+留白的剪影，18px 下清晰可辨为猫。
+
 ## [1.4.9] - 2026-06-25
 
 ### Fixed

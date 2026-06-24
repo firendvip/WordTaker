@@ -1,12 +1,7 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
- <defs><mask id="cut">
-   <rect width="100" height="100" fill="#fff"/>
-   <ellipse cx="38" cy="56" rx="6.5" ry="8.5" fill="#000"/>
-   <ellipse cx="62" cy="56" rx="6.5" ry="8.5" fill="#000"/>
- </mask></defs>
- <g fill="#000000" mask="url(#cut)">
-   <path d="M22,42 L29,9 L51,33 Z"/>
-   <path d="M78,42 L71,9 L49,33 Z"/>
-   <ellipse cx="50" cy="58" rx="35" ry="31"/>
+ <g fill="#000000" fill-rule="evenodd">
+   <path d="M14,56 L30,12 L54,42 Z"/>
+   <path d="M86,56 L70,12 L46,42 Z"/>
+   <ellipse cx="50" cy="62" rx="30" ry="26"/>
  </g>
 </svg>
