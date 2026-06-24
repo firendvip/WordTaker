@@ -1,0 +1,21 @@
+# Re-include this Android module's app/ subtree.
+# The repo-root .gitignore has a blanket `app/` rule (Electron build output)
+# that otherwise swallows android/app/. Negate it here, then re-ignore build dirs.
+!/app/
+!/app/**
+
+*.iml
+.gradle/
+/local.properties
+.idea/
+build/
+/app/build/
+captures/
+.externalNativeBuild/
+.cxx/
+*.apk
+*.aab
+*.keystore
+# downloaded model (fetched at first run, not committed)
+*.tar.bz2
+/app/src/main/assets/models/

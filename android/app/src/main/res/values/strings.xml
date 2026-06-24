@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">WordTaker 语音键盘</string>
+    <string name="ime_label">WordTaker 语音键盘</string>
+
+    <string name="setup_title">WordTaker 语音输入法</string>
+    <string name="setup_desc">端侧离线语音识别（SenseVoice）。首次使用需：1) 启用输入法 2) 在输入框切换到本键盘 3) 首次会下载语音模型（约 226MB，仅一次）。</string>
+    <string name="btn_enable_ime">① 启用输入法</string>
+    <string name="btn_pick_ime">② 选择输入法</string>
+    <string name="btn_grant_mic">③ 授予麦克风权限</string>
+
+    <string name="status_idle">点击麦克风开始说话</string>
+    <string name="status_listening">聆听中… 再次点击结束</string>
+    <string name="status_recognizing">识别中…</string>
+    <string name="status_no_mic">缺少麦克风权限，请在设置中授予</string>
+    <string name="status_model_missing">模型未就绪，正在下载…</string>
+    <string name="status_downloading">下载模型中 %1$d%%</string>
+    <string name="status_extracting">解压模型中…</string>
+    <string name="status_model_ready">模型就绪，可以开始</string>
+    <string name="status_loading_model">加载识别引擎…</string>
+    <string name="status_error">出错：%1$s</string>
+
+    <string name="mic_button">麦克风</string>
+</resources>

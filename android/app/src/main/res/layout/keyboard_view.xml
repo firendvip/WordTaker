@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:orientation="vertical"
+    android:background="@color/ime_bg"
+    android:gravity="center_horizontal"
+    android:paddingVertical="20dp">
+
+    <TextView
+        android:id="@+id/statusText"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:gravity="center"
+        android:textColor="@color/ime_text"
+        android:textSize="15sp"
+        android:paddingHorizontal="16dp"
+        android:paddingBottom="16dp"
+        android:text="@string/status_idle" />
+
+    <ProgressBar
+        android:id="@+id/progressBar"
+        style="?android:attr/progressBarStyleHorizontal"
+        android:layout_width="240dp"
+        android:layout_height="wrap_content"
+        android:max="100"
+        android:visibility="gone"
+        android:layout_marginBottom="12dp" />
+
+    <ImageButton
+        android:id="@+id/micButton"
+        android:layout_width="84dp"
+        android:layout_height="84dp"
+        android:background="@drawable/mic_button_bg"
+        android:src="@drawable/ic_mic"
+        android:scaleType="center"
+        android:contentDescription="@string/mic_button" />
+
+    <Button
+        android:id="@+id/switchImeButton"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="14dp"
+        android:textColor="@color/ime_text"
+        android:background="@android:color/transparent"
+        android:text="切换其他输入法" />
+</LinearLayout>
