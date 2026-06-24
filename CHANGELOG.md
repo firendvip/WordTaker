@@ -3,6 +3,11 @@
 All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/); versioning follows [SemVer](https://semver.org/).
 
+## [1.4.3] - 2026-06-24
+
+### Fixed
+- CI arm64 模型导出仍缺 `funasr`：funasr_onnx 导出 onnx 时显式要求安装 `funasr`（错误信息原文 "please install funasr"）。host(x64) tooling 补齐 `funasr`，与 x64 嵌入式构建一致的导出依赖集（funasr + funasr_onnx + torch）。仅装 x64 host，不进 arm64 包。
+
 ## [1.4.2] - 2026-06-24
 
 ### Fixed

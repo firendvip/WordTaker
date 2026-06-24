@@ -133,7 +133,7 @@ jobs:
       # model_quant.onnx。注意：这些只装在 host，不进 arm64 包；arm64 包用自带 numpy 引擎，不需要它们。
       - name: Install host tooling for model download (arm64)
         if: matrix.arch == 'arm64'
-        run: python -m pip install --upgrade pip "numpy<2" onnxruntime funasr_onnx modelscope jieba kaldi-native-fbank torch torchaudio
+        run: python -m pip install --upgrade pip "numpy<2" onnxruntime funasr_onnx funasr modelscope jieba kaldi-native-fbank torch torchaudio
 
       - name: Download SenseVoice ONNX model
         shell: pwsh
