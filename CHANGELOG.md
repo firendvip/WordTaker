@@ -3,6 +3,11 @@
 All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/); versioning follows [SemVer](https://semver.org/).
 
+## [1.4.2] - 2026-06-24
+
+### Fixed
+- CI arm64 模型下载失败：modelscope 快照不含 `model_quant.onnx`，回退用 `funasr_onnx` 导出时，host(x64) tooling 缺 `jieba`（funasr_onnx 导入期依赖）报 `ModuleNotFoundError`。在 arm64 的 host tooling 安装中补齐 `jieba` / `kaldi-native-fbank` / `torch` / `torchaudio`（均仅装在 x64 host 用于导出模型，不进 arm64 包；arm64 包用自带 numpy 引擎）。x64 作业不受影响（v1.4.0 已成功发布 x64 安装包）。
+
 ## [1.4.1] - 2026-06-24
 
 ### Fixed

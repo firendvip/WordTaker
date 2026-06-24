@@ -128,9 +128,12 @@ jobs:
       # arm64 嵌入式 Python 是 aarch64 解释器，无法在 x64 runner 上原地执行——故 arm64 作业改用
       # runner 自带的 host Python（已装 onnxruntime/funasr_onnx/modelscope 见下）跑下载脚本，
       # 产物 model_quant.onnx/tokens.json 与架构无关（纯模型文件），可安全打进 arm64 包。
+      # host runner 是 x64：这里在 host(x64) Python 上装全量 funasr_onnx 及其导入期依赖
+      # （jieba、kaldi-native-fbank 等在 x64 都有轮子），用于把 iic/SenseVoiceSmall 导出/量化为
+      # model_quant.onnx。注意：这些只装在 host，不进 arm64 包；arm64 包用自带 numpy 引擎，不需要它们。
       - name: Install host tooling for model download (arm64)
         if: matrix.arch == 'arm64'
-        run: python -m pip install --upgrade pip "numpy<2" onnxruntime funasr_onnx modelscope
+        run: python -m pip install --upgrade pip "numpy<2" onnxruntime funasr_onnx modelscope jieba kaldi-native-fbank torch torchaudio
 
       - name: Download SenseVoice ONNX model
         shell: pwsh
