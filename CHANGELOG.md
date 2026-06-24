@@ -3,6 +3,11 @@
 All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/); versioning follows [SemVer](https://semver.org/).
 
+## [1.4.11] - 2026-06-25
+
+### Fixed
+- 托盘仍显示旧黑团——核对并修正 tray.js 图标路径指向 cat-trayTemplate.png，删除残留旧 cat-tray.png，并从打包 asar 抠图验证实际载入的是新猫头剪影。
+
 ## [1.4.10] - 2026-06-25
 
 ### Fixed

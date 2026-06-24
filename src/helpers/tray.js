@@ -103,13 +103,12 @@ class TrayManager {
     return nativeImage.createFromBitmap(buf, { width: S, height: S, scaleFactor: 2 });
   }
 
-  // macOS 单色 template 猫头托盘图标路径（@1x；同目录的 @2x 由 Electron 自动选用），dev/打包均可解析
+  // macOS 单色 template 猫头托盘图标路径（@1x；同目录的 @2x 由 Electron 自动选用），dev/打包均可解析。
+  // 资源随 assets/**/* 打进 app.asar，__dirname 在打包态为 .../app.asar/src/helpers，
+  // 上跳两级即 .../app.asar/assets/cat-trayTemplate.png（nativeImage.createFromPath 可直读 asar），
+  // dev 态 __dirname 为 .../ququ/src/helpers，同样上跳两级命中 .../ququ/assets/。故 dev/打包统一用 __dirname 相对路径。
   getCatTrayIconPath() {
-    const isDev = process.env.NODE_ENV === "development";
-    if (isDev) {
-      return path.join(__dirname, "..", "..", "assets", "cat-trayTemplate.png");
-    }
-    return path.join(process.resourcesPath, "assets", "cat-trayTemplate.png");
+    return path.join(__dirname, "..", "..", "assets", "cat-trayTemplate.png");
   }
 
   getTrayIconPath() {
