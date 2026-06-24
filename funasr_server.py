@@ -83,6 +83,16 @@ class FunASRServer:
         # 外部传入的 damo 根目录（例如 /Volumes/APFS/AI/models/damo）
         self.damo_root = damo_root or os.environ.get("DAMO_ROOT")
 
+        # 纯 ONNX 模式：只加载 SenseVoice ONNX，跳过 torch/funasr 的
+        # Paraformer/VAD/punc。用于 Windows-ARM64（torch 无 win-arm64 轮子，
+        # 在 ARM 机上加载会崩溃 0xc0000017）。由环境变量 WORDTAKER_ONNX_ONLY 开启，
+        # x64 默认不设置该变量、行为完全不变。
+        self.onnx_only = os.environ.get("WORDTAKER_ONNX_ONLY", "").strip().lower() in (
+            "1", "true", "yes", "on"
+        )
+        if self.onnx_only:
+            logger.info("启用纯 ONNX 模式（仅 SenseVoice，跳过 torch/funasr）")
+
         signal.signal(signal.SIGTERM, self._signal_handler)
         signal.signal(signal.SIGINT, self._signal_handler)
         self._setup_runtime_environment()
@@ -133,14 +143,31 @@ class FunASRServer:
                 logger.warning("未找到 SenseVoice ONNX 模型，跳过（将回退 Paraformer）")
                 return False
             logger.info("开始加载 SenseVoice ONNX 模型...")
-            from funasr_onnx import SenseVoiceSmall
 
             with open(os.path.join(model_dir, "tokens.json"), "r", encoding="utf-8") as f:
                 self.sensevoice_tokens = _json.load(f)
-            self.sensevoice_model = SenseVoiceSmall(
-                model_dir, batch_size=1, quantize=True, device_id="-1"
-            )
-            logger.info("SenseVoice ONNX 模型加载完成")
+
+            if self.onnx_only:
+                # 纯 ONNX 模式（如 Windows-ARM64）：funasr_onnx 依赖 kaldi-native-fbank/torch，
+                # 在 ARM 无可用 wheel。改用项目自带的纯 numpy 引擎（仅 numpy+onnxruntime+soundfile）。
+                # 该引擎与 funasr_onnx 的 fbank/LFR/CMVN/解码逐位对齐（已离线验证 token 完全一致）。
+                # 防御性地把本脚本所在目录加入 sys.path，确保能 import 同目录的引擎模块。
+                _self_dir = os.path.dirname(os.path.abspath(__file__))
+                if _self_dir not in sys.path:
+                    sys.path.insert(0, _self_dir)
+                from sensevoice_onnx_engine import SenseVoiceOnnxEngine
+
+                self.sensevoice_model = SenseVoiceOnnxEngine(
+                    model_dir, quantize=True, device_id="-1"
+                )
+                logger.info("SenseVoice 纯 numpy ONNX 引擎加载完成")
+            else:
+                from funasr_onnx import SenseVoiceSmall
+
+                self.sensevoice_model = SenseVoiceSmall(
+                    model_dir, batch_size=1, quantize=True, device_id="-1"
+                )
+                logger.info("SenseVoice ONNX 模型加载完成")
             return True
         except Exception as e:
             logger.error(f"SenseVoice 加载失败（将回退 Paraformer）: {str(e)}")
@@ -225,8 +252,36 @@ class FunASRServer:
                 return {"success": True, "message": "模型已初始化"}
             return self._initialize_locked()
 
+    def _initialize_onnx_only(self):
+        """纯 ONNX 初始化：只加载 SenseVoice，不触碰 torch/funasr。
+
+        SenseVoice 是该模式下唯一的识别引擎，加载失败即视为初始化失败
+        （没有 Paraformer 可回退）。
+        """
+        import time
+
+        logger.info("正在初始化（纯 ONNX 模式，仅 SenseVoice）...")
+        start_time = time.time()
+        ok = self._load_sensevoice()
+        if not ok or self.sensevoice_model is None:
+            error_msg = "SenseVoice ONNX 加载失败（纯 ONNX 模式无可回退引擎）"
+            logger.error(error_msg)
+            return {"success": False, "error": error_msg, "type": "init_error"}
+        self.initialized = True
+        total_time = time.time() - start_time
+        logger.info(f"纯 ONNX 模式初始化完成，耗时: {total_time:.2f}秒")
+        # 预热 SenseVoice，吸收首次推理冷启动
+        self._warmup()
+        return {
+            "success": True,
+            "message": f"SenseVoice ONNX 初始化成功，耗时: {total_time:.2f}秒",
+        }
+
     def _initialize_locked(self):
         """在持有 _init_lock 的前提下执行实际的并行初始化。"""
+        # 纯 ONNX 模式走独立路径，完全不导入 torch/funasr。
+        if self.onnx_only:
+            return self._initialize_onnx_only()
         try:
             import time
 
@@ -367,6 +422,10 @@ class FunASRServer:
 
             # —— 引擎选择：默认 SenseVoice（快），不可用时自动回退 Paraformer ——
             engine = default_options.get("engine", "sensevoice")
+            # 纯 ONNX 模式没有 Paraformer 可用（asr_model 为 None），强制走 SenseVoice，
+            # 避免调用方显式传 engine=paraformer 时落到 self.asr_model.generate() 而静默失败。
+            if self.onnx_only:
+                engine = "sensevoice"
             if engine == "sensevoice" and self.sensevoice_model is not None:
                 _sv_t0 = time.time()
                 sv_res = self.sensevoice_model(
@@ -468,20 +527,28 @@ class FunASRServer:
             return {"success": False, "error": error_msg, "type": "transcription_error"}
 
     def _get_audio_duration(self, audio_path):
-        """获取音频时长"""
+        """获取音频时长。优先 librosa（x64），无 librosa（纯 ONNX/ARM64）时回退 soundfile。"""
+        # 纯 ONNX 模式不装 librosa，用 soundfile 计算时长（已是该模式依赖）。
         try:
             import librosa
-        except ImportError as e:
-            # 缺少 librosa 是配置层面的严重问题，按 ERROR 暴露而非静默返回 0.0
-            logger.error(f"librosa 未安装，无法计算音频时长: {str(e)}")
-            return 0.0
+
+            duration = librosa.get_duration(path=audio_path)  # 0.11.0 用 path=
+            self.total_audio_duration += duration
+            return duration
+        except ImportError:
+            pass
+        except Exception as e:
+            logger.warning(f"librosa 获取音频时长失败({audio_path}): {str(e)}")
 
         try:
-            # librosa 0.11.0 移除了 filename= 关键字，使用 path=
-            duration = librosa.get_duration(path=audio_path)
-            self.total_audio_duration += duration  # 累计音频时长
+            import soundfile as sf
+
+            info = sf.info(audio_path)
+            duration = float(info.frames) / float(info.samplerate) if info.samplerate else 0.0
+            self.total_audio_duration += duration
             return duration
         except Exception as e:
+            # 时长非关键字段（main.js 用 `|| 0`），失败按 0.0 处理即可。
             logger.warning(f"获取音频时长失败({audio_path}): {str(e)}")
             return 0.0
 
@@ -577,10 +644,15 @@ class FunASRServer:
             return False
 
         missing = []
-        for r in repos:
-            rd = os.path.join(cache_path, r)
-            if not _repo_ready(rd):
-                missing.append(r)
+        if self.onnx_only:
+            # 纯 ONNX 模式不依赖 damo 仓库（Paraformer/VAD/punc）；视为"无缺失"，
+            # 直接进入下面的 initialize()（内部只会加载 SenseVoice）。
+            logger.info("纯 ONNX 模式：跳过 damo 仓库检查，仅初始化 SenseVoice")
+        else:
+            for r in repos:
+                rd = os.path.join(cache_path, r)
+                if not _repo_ready(rd):
+                    missing.append(r)
 
         if not missing:
             logger.info("模型文件存在，开始初始化")

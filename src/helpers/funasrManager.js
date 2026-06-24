@@ -200,7 +200,17 @@ class FunASRManager {
     delete env.PYTHONUSERBASE;
     delete env.PYTHONSTARTUP;
     delete env.VIRTUAL_ENV;
-    
+
+    // Windows-ARM64：嵌入式 Python 是纯 ONNX 环境（无 torch/funasr，因 torch 无 win-arm64 轮子）。
+    // 通知 funasr_server.py 走纯 ONNX 路径，只加载 SenseVoice，避免 import torch 在 ARM 机崩溃。
+    // 该标志由打包的应用架构决定（arm64 包 → process.arch === 'arm64'），x64 不受影响。
+    if (process.platform === 'win32' && process.arch === 'arm64') {
+      env.WORDTAKER_ONNX_ONLY = '1';
+      if (!this._cachedPythonEnv) {
+        this.logger.info && this.logger.info('Windows-ARM64：启用纯 ONNX 模式 (WORDTAKER_ONNX_ONLY=1)');
+      }
+    }
+
     // 缓存结果
     this._cachedPythonEnv = env;
     this._lastEmbeddedCheck = isUsingEmbedded;

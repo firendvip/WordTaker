@@ -2,6 +2,11 @@ name: Build Windows
 
 # 在 windows-latest runner 上产出真正的 Windows .exe（本地 Mac 无 Wine 无法产出）。
 # 手动触发为主；推 tag 时也会跑，便于做发布构建。注意：--publish never，不向 GitHub 发布。
+#
+# 矩阵：arch ∈ {x64, arm64}。
+#   - x64：历史路径（embedded x86_64 CPython + torch/funasr + SenseVoice ONNX），行为不变。
+#   - arm64：纯 SenseVoice ONNX 路径（aarch64 CPython + onnxruntime + funasr_onnx，NO torch），
+#            修复 Windows-on-ARM 上 torch 缺 win-arm64 轮子导致的 0xc0000017 启动崩溃。
 on:
   workflow_dispatch:
   push:
@@ -16,6 +21,12 @@ jobs:
   build-win:
     runs-on: windows-latest
     timeout-minutes: 90
+
+    strategy:
+      # 一个 arch 失败不连累另一个（x64 必须保持可发布，即便 arm64 实验构建失败）。
+      fail-fast: false
+      matrix:
+        arch: [x64, arm64]
 
     steps:
       - name: Checkout
@@ -41,46 +52,95 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ steps.pnpm-cache.outputs.STORE_PATH }}
-          key: ${{ runner.os }}-pnpm-store-${{ hashFiles('**/pnpm-lock.yaml') }}
+          key: ${{ runner.os }}-${{ matrix.arch }}-pnpm-store-${{ hashFiles('**/pnpm-lock.yaml') }}
           restore-keys: |
-            ${{ runner.os }}-pnpm-store-
+            ${{ runner.os }}-${{ matrix.arch }}-pnpm-store-
 
-      # 嵌入式 Python 构建脚本要用 pip 装 torch/funasr 等，需要 Python 3.11。
+      # 嵌入式 Python 构建脚本要用 pip 装依赖，需要一个本机 Python 3.11 跑 pip。
+      # 注意：runner 本身是 x64，这里的 host Python 仅用于驱动 pip --target 安装到嵌入式目录；
+      # arm64 依赖通过 --only-binary=all 取 win_arm64 轮子（onnxruntime/numpy 均有），不需要本机为 arm64。
       - name: Setup Python 3.11
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
       # 安装 JS 依赖。--ignore-scripts 跳过 postinstall（Windows 上 pnpm.cjs 调用会失败），
-      # 再单独用 @electron/rebuild 按 Electron ABI 重建原生模块（Windows 需要 MSVC 工具链，
-      # windows-latest 自带）。
+      # 再单独用 @electron/rebuild 按 Electron ABI + 目标架构重建原生模块。
       - name: Install dependencies
         run: pnpm install --no-frozen-lockfile --ignore-scripts
 
+      # 按目标架构重建原生模块。
+      #   - x64：默认架构，沿用历史命令。
+      #   - arm64：@electron/rebuild --arch arm64 交叉编译 better-sqlite3；
+      #     uiohook-napi 有 win32-arm64 预编译，node-gyp-build 运行期自动选用，无需源码重建。
       - name: Rebuild native modules for Electron
-        run: npx --yes @electron/rebuild -f -w better-sqlite3 -w uiohook-napi
+        run: npx --yes @electron/rebuild -f -w better-sqlite3 -w uiohook-napi --arch ${{ matrix.arch }}
 
-      # 下载 Windows 版嵌入式 CPython（python-build-standalone 的
-      # x86_64-pc-windows-msvc-shared install_only 包）并装好 torch/funasr 等依赖。
-      # prepare-embedded-python.js 已按 process.platform === 'win32' 走 Windows 布局。
-      - name: Prepare embedded Python (Windows)
-        run: pnpm run prepare:python:embedded
+      # 下载并准备目标架构的嵌入式 CPython 并装好依赖。
+      #   - x64：x86_64-pc-windows-msvc-shared install_only + torch/funasr/onnx 全量依赖。
+      #   - arm64：aarch64-pc-windows-msvc install_only（astral-sh，tag 20260623）+
+      #     纯 ONNX 依赖（numpy + onnxruntime + funasr_onnx，NO torch）。
+      - name: Prepare embedded Python
+        run: node scripts/prepare-embedded-python.js --platform=win32 --arch=${{ matrix.arch }}
 
-      # 校验嵌入式 Python 与关键依赖可用（numpy/torch/librosa/funasr/onnxruntime/funasr_onnx）。
-      # 不再 continue-on-error：依赖缺失必须让 job 失败暴露，否则出包后运行时识别会崩。
-      - name: Verify embedded Python
+      # 校验嵌入式 Python。
+      #   - x64：嵌入式解释器与 runner 同架构，可直接执行，跑完整 test:python
+      #     （numpy/torch/librosa/funasr 等导入校验）。
+      #   - arm64：嵌入式是 aarch64 解释器，无法在 x64 runner 上执行（exec format error），
+      #     故只做"文件存在性 + site-packages 关键包目录存在"的静态校验（python.exe、
+      #     onnxruntime、funasr_onnx、numpy 三个包目录）。真正的运行期导入由用户在 ARM 机上验证。
+      - name: Verify embedded Python (x64)
+        if: matrix.arch == 'x64'
         run: pnpm run test:python
 
-      # 下载并准备 SenseVoice ONNX 模型到 models/sensevoice/（仓库 .gitignore 了 models/，
-      # clone 不含模型，必须在打包前补齐，否则安装包缺 model_quant.onnx，识别只能回退/失败）。
-      # 用刚装好 funasr_onnx/onnxruntime/modelscope 的嵌入式 Python 拉取 iic/SenseVoiceSmall。
-      - name: Download SenseVoice ONNX model
+      - name: Verify embedded Python (arm64 static)
+        if: matrix.arch == 'arm64'
         shell: pwsh
         run: |
           $py = "python\python.exe"
-          if (-not (Test-Path $py)) { Write-Error "embedded python.exe not found at $py"; exit 1 }
-          $env:PYTHONHOME = (Resolve-Path "python").Path
-          $env:PYTHONPATH = (Resolve-Path "python\Lib\site-packages").Path
+          if (-not (Test-Path $py)) { Write-Error "FAIL: 嵌入式 python.exe 不存在: $py"; exit 1 }
+          Write-Host "OK: $py 存在"
+          $site = "python\Lib\site-packages"
+          if (-not (Test-Path $site)) { Write-Error "FAIL: site-packages 不存在: $site"; exit 1 }
+          # 纯 numpy SenseVoice 引擎依赖：onnxruntime / numpy / soundfile 的顶层包目录应已就位。
+          # （不含 funasr_onnx —— 其依赖 kaldi-native-fbank/torch 无 win-arm64 轮子，已用自带 numpy 引擎替代。）
+          $need = @("onnxruntime", "numpy", "soundfile")
+          foreach ($n in $need) {
+            $p = Join-Path $site $n
+            if (-not (Test-Path $p)) {
+              Write-Error "FAIL: 缺少纯 ONNX 依赖包目录: $p（torch/funasr_onnx 已按设计排除）"
+              exit 1
+            }
+            Write-Host "OK: 依赖包存在 $n"
+          }
+          # 确认 torch 未被误装进 arm64 包（应不存在）。
+          if (Test-Path (Join-Path $site "torch")) {
+            Write-Host "WARN: arm64 包内出现 torch 目录（不应存在，但不致命）"
+          }
+          Write-Host "arm64 嵌入式 Python 静态校验通过（运行期导入需在 ARM 机验证）。"
+
+      # 下载并准备 SenseVoice ONNX 模型到 models/sensevoice/（仓库 .gitignore 了 models/）。
+      # 用刚装好 funasr_onnx/onnxruntime 的嵌入式 Python 拉取/导出 iic/SenseVoiceSmall 的量化 onnx。
+      # arm64 嵌入式 Python 是 aarch64 解释器，无法在 x64 runner 上原地执行——故 arm64 作业改用
+      # runner 自带的 host Python（已装 onnxruntime/funasr_onnx/modelscope 见下）跑下载脚本，
+      # 产物 model_quant.onnx/tokens.json 与架构无关（纯模型文件），可安全打进 arm64 包。
+      - name: Install host tooling for model download (arm64)
+        if: matrix.arch == 'arm64'
+        run: python -m pip install --upgrade pip "numpy<2" onnxruntime funasr_onnx modelscope
+
+      - name: Download SenseVoice ONNX model
+        shell: pwsh
+        run: |
+          # x64 用刚构建好的嵌入式 python.exe；arm64 用 runner 的 host python（嵌入式是 aarch64 无法执行）。
+          $arch = "${{ matrix.arch }}"
+          if ($arch -eq "arm64") {
+            $py = "python"
+          } else {
+            $py = "python\python.exe"
+            if (-not (Test-Path $py)) { Write-Error "embedded python.exe not found at $py"; exit 1 }
+            $env:PYTHONHOME = (Resolve-Path "python").Path
+            $env:PYTHONPATH = (Resolve-Path "python\Lib\site-packages").Path
+          }
           $env:PYTHONIOENCODING = "utf-8"
           # PowerShell 无 bash heredoc，写临时 .py 再执行。
           $script = @'
@@ -124,27 +184,50 @@ jobs:
       - name: Build renderer (Vite)
         run: pnpm run build:renderer
 
-      # 真正产出 .exe：nsis 安装器 + portable 便携版。--publish never 不发布到 GitHub
-      # （改用下方 softprops/action-gh-release 发 Release，绕开 Actions 工件存储配额）。
+      # 真正产出 .exe：nsis 安装器 + portable 便携版，按矩阵架构构建。--publish never 不发布到 GitHub。
       - name: Build Windows installer + portable
-        run: pnpm exec electron-builder --win --publish never
+        run: pnpm exec electron-builder --win --${{ matrix.arch }} --publish never
         env:
           # 关闭代码签名自动发现（CI 无证书）。
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
 
-      # 断言打包进 asar.unpacked 的原生模块/可执行文件确为 Windows PE 且机器类型为 x64(AMD64)。
-      # 仅校验 "MZ" 头不够——Mach-O/arm64 都可能蒙混；这里读 PE COFF 头的
-      # IMAGE_FILE_HEADER.Machine（位于 e_lfanew+4 处的 2 字节），断言等于 0x8664(x64)。
-      # 覆盖 better_sqlite3.node、uiohook.node 以及嵌入式 python.exe，
-      # 防止 mac/arm64 二进制混入 Windows 包导致 0xc0000017 之类的启动崩溃。
-      - name: Assert native modules + python.exe are Windows x64 PE
+      # 断言打包进 asar.unpacked 的原生模块/可执行文件确为 Windows PE 且机器类型匹配目标架构。
+      #   x64   -> 0x8664(IMAGE_FILE_MACHINE_AMD64)
+      #   arm64 -> 0xAA64(IMAGE_FILE_MACHINE_ARM64)
+      # 防止错误架构二进制混入（mac/arm64 进 x64 包、或 x64 进 arm64 包）导致 0xc0000017 启动崩溃。
+      - name: Assert native modules + python.exe PE machine type
         shell: pwsh
         run: |
-          $unpacked = "dist\win-unpacked\resources\app.asar.unpacked"
-          $resources = "dist\win-unpacked\resources"
-          $root = if (Test-Path $unpacked) { $unpacked } else { $resources }
+          $arch = "${{ matrix.arch }}"
+          if ($arch -eq "arm64") {
+            $expectMachine = 0xAA64
+            $expectName = "arm64(0xAA64)"
+            $winDirToken = "win32-arm64"
+          } else {
+            $expectMachine = 0x8664
+            $expectName = "x64(0x8664)"
+            $winDirToken = "win32-x64"
+          }
 
-          function Assert-X64Pe([string]$file) {
+          $candidates = @(
+            "dist\win-unpacked\resources\app.asar.unpacked",
+            "dist\win-arm64-unpacked\resources\app.asar.unpacked",
+            "dist\win-unpacked\resources",
+            "dist\win-arm64-unpacked\resources"
+          )
+          $root = $null
+          $resources = $null
+          foreach ($c in $candidates) {
+            if (Test-Path $c) {
+              if ($c.EndsWith("app.asar.unpacked") -and -not $root) { $root = $c }
+              if ($c.EndsWith("resources") -and -not $resources) { $resources = $c }
+            }
+          }
+          if (-not $root) { $root = $resources }
+          if (-not $root) { Write-Error "FAIL: 未找到 win-unpacked 解包目录"; exit 1 }
+          Write-Host "解包根目录: $root"
+
+          function Assert-Pe([string]$file, [int]$expect, [string]$expectLabel) {
             $fs = [System.IO.File]::OpenRead($file)
             try {
               $br = New-Object System.IO.BinaryReader($fs)
@@ -157,7 +240,6 @@ jobs:
               # e_lfanew 位于偏移 0x3C，4 字节，指向 PE 签名
               $fs.Seek(0x3C, [System.IO.SeekOrigin]::Begin) | Out-Null
               $peOffset = $br.ReadUInt32()
-              # PE 签名 "PE\0\0"
               $fs.Seek($peOffset, [System.IO.SeekOrigin]::Begin) | Out-Null
               $pe = $br.ReadBytes(4)
               if ($pe[0] -ne 0x50 -or $pe[1] -ne 0x45 -or $pe[2] -ne 0 -or $pe[3] -ne 0) {
@@ -168,8 +250,8 @@ jobs:
               $machine = $br.ReadUInt16()
               $hex = "0x{0:X4}" -f $machine
               Write-Host "$file -> Machine=$hex"
-              if ($machine -ne 0x8664) {
-                Write-Error "FAIL: $file 机器类型为 $hex，非 x64(0x8664)。疑似 mac/arm64 二进制误入 Windows 包。"
+              if ($machine -ne $expect) {
+                Write-Error "FAIL: $file 机器类型为 $hex，非 $expectLabel。疑似错误架构二进制混入。"
                 exit 1
               }
             } finally {
@@ -177,55 +259,50 @@ jobs:
             }
           }
 
-          # 校验 better-sqlite3 与 uiohook-napi 两个原生模块。
-          # 注意：uiohook-napi 的二进制名不是 "uiohook.node"——@electron/rebuild 产出
-          # build/Release/uiohook_napi.node，预编译包则为 prebuilds/<plat>/uiohook-napi.node。
-          # 两种命名都接受，避免漏检（旧的 MZ-only 检查曾因文件名不符而静默漏掉 uiohook）。
+          # 校验 better-sqlite3。
           $sqliteFiles = Get-ChildItem -Path $root -Recurse -Filter "better_sqlite3.node" -ErrorAction SilentlyContinue
           $sqliteCount = 0
-          foreach ($f in $sqliteFiles) { Assert-X64Pe $f.FullName; $sqliteCount++ }
+          foreach ($f in $sqliteFiles) { Assert-Pe $f.FullName $expectMachine $expectName; $sqliteCount++ }
           if ($sqliteCount -lt 1) {
             Write-Error "FAIL: 未找到 better_sqlite3.node 进行校验。"
             exit 1
           }
 
-          # uiohook-napi 会为所有平台都打包预编译 .node（prebuilds/darwin-*、prebuilds/linux-*、
-          # bin/win32-x64-*、以及 @electron/rebuild 的 build/Release/uiohook_napi.node）。
-          # 只校验“Windows 会实际加载”的 x64 二进制：路径含 win32-x64 或 build\Release。
-          # darwin/linux 的 .node 是 Mach-O/ELF（非 PE），本就不该按 PE 校验——但它们随包分发属冗余，
-          # 这里检测到就发 warning 提示（不致命，运行期 node-gyp-build 只加载 win32-x64 版本）。
+          # 校验 uiohook-napi：只校验“目标架构 Windows 会实际加载”的二进制
+          # （win32-<arch> 预编译，或 @electron/rebuild 产出的 build\Release）。
           $allUiohook = Get-ChildItem -Path $root -Recurse -ErrorAction SilentlyContinue |
             Where-Object { $_.Name -eq "uiohook_napi.node" -or $_.Name -eq "uiohook-napi.node" }
-          # 用 .Contains 而非 -match，避免 "build\Release" 里的 \R 被当成正则转义而抛异常。
           $uiohookWin = $allUiohook | Where-Object {
-            $_.FullName.Contains("win32-x64") -or $_.FullName.Contains("build\Release")
+            $_.FullName.Contains($winDirToken) -or $_.FullName.Contains("build\Release")
           }
           $uiohookForeign = $allUiohook | Where-Object {
             $_.FullName.Contains("darwin") -or $_.FullName.Contains("linux")
           }
           foreach ($f in $uiohookForeign) {
-            Write-Host "WARN: 包内含非 Windows uiohook 预编译二进制（冗余，可后续从打包中排除）：$($f.FullName)"
+            Write-Host "WARN: 包内含非 Windows uiohook 预编译二进制（冗余）：$($f.FullName)"
           }
           $uiohookCount = 0
-          foreach ($f in $uiohookWin) { Assert-X64Pe $f.FullName; $uiohookCount++ }
+          foreach ($f in $uiohookWin) { Assert-Pe $f.FullName $expectMachine $expectName; $uiohookCount++ }
           if ($uiohookCount -lt 1) {
-            Write-Error "FAIL: 未找到 Windows x64 的 uiohook 原生模块（win32-x64 / build\Release 下的 uiohook_napi.node / uiohook-napi.node）进行校验。"
+            Write-Error "FAIL: 未找到目标架构（$winDirToken / build\Release）的 uiohook 原生模块进行校验。"
             exit 1
           }
           $checked = $sqliteCount + $uiohookCount
 
-          # 嵌入式 python.exe（打到 resources 下）也必须是 Windows x64 PE。
-          $pyFiles = Get-ChildItem -Path $resources -Recurse -Filter "python.exe" -ErrorAction SilentlyContinue
-          if ($pyFiles) {
-            foreach ($f in $pyFiles) { Assert-X64Pe $f.FullName; $checked++ }
-          } else {
-            Write-Host "WARN: 未在 $resources 下找到 python.exe（跳过其 PE 校验）"
+          # 嵌入式 python.exe（打到 resources 下）也必须是目标架构 Windows PE。
+          if ($resources -and (Test-Path $resources)) {
+            $pyFiles = Get-ChildItem -Path $resources -Recurse -Filter "python.exe" -ErrorAction SilentlyContinue
+            if ($pyFiles) {
+              foreach ($f in $pyFiles) { Assert-Pe $f.FullName $expectMachine $expectName; $checked++ }
+            } else {
+              Write-Host "WARN: 未在 $resources 下找到 python.exe（跳过其 PE 校验）"
+            }
           }
 
-          Write-Host "x64 PE 断言通过，共校验 $checked 个文件。"
+          Write-Host "$expectName PE 断言通过，共校验 $checked 个文件。"
 
-      # 计算各安装包的 SHA256 写入 SHA256SUMS.txt，随 Release 一并发布，
-      # 供用户校验下载完整性（损坏的下载是 0xc0000017 的头号嫌疑）。
+      # 计算各安装包的 SHA256 写入 SHA256SUMS.txt，随 Release 一并发布。
+      # 矩阵每个 arch 生成各自的 SHA256SUMS（按 arch 命名避免覆盖），上传后由 Release 汇总。
       - name: Compute SHA256SUMS for installers
         shell: pwsh
         run: |
@@ -240,11 +317,11 @@ jobs:
             $lines += "$h  $($f.Name)"
             Write-Host "$h  $($f.Name)"
           }
-          Set-Content -Path "dist\SHA256SUMS.txt" -Value $lines -Encoding ascii
-          Write-Host "已写入 dist\SHA256SUMS.txt"
+          Set-Content -Path "dist\SHA256SUMS-${{ matrix.arch }}.txt" -Value $lines -Encoding ascii
+          Write-Host "已写入 dist\SHA256SUMS-${{ matrix.arch }}.txt"
 
-      # 发布到 GitHub Release（Release 资产不计入 Actions 工件存储配额，
-      # 这是此前 CI 因配额满而失败的根因修复）。tag 即触发本工作流的 tag。
+      # 发布到 GitHub Release（Release 资产不计入 Actions 工件存储配额）。
+      # 两个 arch 作业都向同一 tag 的 Release 追加各自产物；artifactName 含 ${arch} 故文件名不冲突。
       - name: Publish to GitHub Release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
@@ -258,15 +335,14 @@ jobs:
             dist/*.exe
             dist/*.blockmap
             dist/latest*.yml
-            dist/SHA256SUMS.txt
+            dist/SHA256SUMS-${{ matrix.arch }}.txt
 
-      # 备份性短保留工件（仅 workflow_dispatch 等无 tag 场景方便取包）；
-      # retention-days 设到最小 1 天，尽量不占用存储配额。
+      # 备份性短保留工件（仅 workflow_dispatch 等无 tag 场景方便取包）。
       - name: Upload Windows artifacts (short retention)
         if: ${{ !startsWith(github.ref, 'refs/tags/') }}
         uses: actions/upload-artifact@v4
         with:
-          name: wordtaker-windows
+          name: wordtaker-windows-${{ matrix.arch }}
           if-no-files-found: error
           retention-days: 1
           path: |
@@ -274,3 +350,4 @@ jobs:
             dist/*.exe
             dist/*.blockmap
             dist/latest*.yml
+            dist/SHA256SUMS-${{ matrix.arch }}.txt

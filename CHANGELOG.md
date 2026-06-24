@@ -3,6 +3,17 @@
 All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/); versioning follows [SemVer](https://semver.org/).
 
+## [1.4.0] - 2026-06-24
+
+### Added
+- Windows-ARM64（aarch64）实验构建：新增 `arm64` 为 Windows nsis/portable 目标架构，与既有 x64 并行产出 `WordTaker-1.4.0-arm64-setup.exe`。
+- 纯 SenseVoice ONNX 引擎（无 torch）：`funasr_server.py` 新增由环境变量 `WORDTAKER_ONNX_ONLY` 开启的纯 ONNX 模式，只加载 SenseVoice（onnxruntime + funasr_onnx + numpy），完全跳过 torch/funasr 的 Paraformer/VAD/punc 加载。修复 ARM 机上因 `import torch`（无 win-arm64 轮子）导致的启动崩溃 0xc0000017。
+- 嵌入式 Python 按架构选择：`scripts/prepare-embedded-python.js` 支持 `--arch=arm64`，为 win-arm64 下载 astral-sh/python-build-standalone 的 `aarch64-pc-windows-msvc` CPython（3.11.15，tag 20260623），并只安装纯 ONNX 依赖集。
+- CI 增加 arm64 矩阵作业：交叉准备 arm64 嵌入式 Python、`@electron/rebuild --arch arm64` 重建 better-sqlite3、断言 `.node`/`python.exe` 的 PE 机器类型为 ARM64(0xAA64)，并发布 arm64 安装包与 SHA256SUMS。
+
+### Changed
+- `src/helpers/funasrManager.js`：打包应用在 `win32 + arm64` 时自动注入 `WORDTAKER_ONNX_ONLY=1`，x64 行为不变。
+
 ## [1.3.9] - 2026-06-24
 
 ### Fixed

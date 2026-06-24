@@ -11,8 +11,14 @@ const pipelineAsync = promisify(pipeline);
 
 class EmbeddedPythonBuilder {
   constructor() {
+    // x64 仍用历史固定版本/tag（不动既有行为）；arm64 需要较新的
+    // python-build-standalone（含 aarch64-pc-windows-msvc 资产，最早 2024 起）。
     this.pythonVersion = '3.11.6';
     this.buildDate = '20231002';
+    // Windows-ARM64 专用版本/tag：astral-sh/python-build-standalone 自 2024 起提供
+    // aarch64-pc-windows-msvc 的 install_only 包。下面在 buildRuntimeFilename 里用到。
+    this.armPythonVersion = '3.11.15';
+    this.armBuildDate = '20260623';
     this.pythonDir = path.join(__dirname, '..', 'python');
     this.forceReinstall = false;
 
@@ -22,6 +28,16 @@ class EmbeddedPythonBuilder {
     const platArg = process.argv.find((a) => a.startsWith('--platform='));
     if (platArg) this.targetPlatform = platArg.split('=')[1];
     this.isWindows = this.targetPlatform === 'win32';
+
+    // 目标架构：默认当前机器架构，可用 --arch=x64|arm64 覆盖（CI 上交叉准备
+    // win-arm64 的嵌入式 Python 时显式指定）。
+    this.targetArch = process.arch;
+    const archArg = process.argv.find((a) => a.startsWith('--arch='));
+    if (archArg) this.targetArch = archArg.split('=')[1];
+    this.isArm64 = this.targetArch === 'arm64';
+
+    // Windows-ARM64 走纯 ONNX 依赖集（无 torch/funasr，因 torch 无 win-arm64 轮子）。
+    this.onnxOnly = this.isWindows && this.isArm64;
   }
 
   // 嵌入式 Python 可执行文件路径（跨平台）。
@@ -126,24 +142,40 @@ class EmbeddedPythonBuilder {
   //   linux:  cpython-X+DATE-x86_64-unknown-linux-gnu-install_only.tar.gz
   buildRuntimeFilename() {
     if (this.isWindows) {
-      // Windows 仅提供 x86_64 的 install_only 包
+      if (this.isArm64) {
+        // Windows-ARM64：astral-sh/python-build-standalone 的
+        // aarch64-pc-windows-msvc install_only 包（注意：ARM64 没有 -shared 后缀变体）。
+        return `cpython-${this.armPythonVersion}+${this.armBuildDate}-aarch64-pc-windows-msvc-install_only.tar.gz`;
+      }
+      // Windows-x64：历史 x86_64 install_only 包（行为不变）
       return `cpython-${this.pythonVersion}+${this.buildDate}-x86_64-pc-windows-msvc-shared-install_only.tar.gz`;
     }
     if (this.targetPlatform === 'linux') {
-      const arch = process.arch === 'arm64' ? 'aarch64' : 'x86_64';
+      const arch = this.isArm64 ? 'aarch64' : 'x86_64';
       return `cpython-${this.pythonVersion}+${this.buildDate}-${arch}-unknown-linux-gnu-install_only.tar.gz`;
     }
     // darwin
-    const arch = process.arch === 'arm64' ? 'aarch64' : 'x86_64';
+    const arch = this.isArm64 ? 'aarch64' : 'x86_64';
     return `cpython-${this.pythonVersion}+${this.buildDate}-${arch}-apple-darwin-install_only.tar.gz`;
+  }
+
+  // 不同发布托管在不同 GitHub 仓库/tag 下：
+  //   - 历史 x64/旧 tag：indygreg/python-build-standalone（tag == buildDate=20231002）
+  //   - win-arm64：astral-sh/python-build-standalone（tag == armBuildDate=20260623）
+  runtimeReleaseInfo() {
+    if (this.isWindows && this.isArm64) {
+      return { repo: 'astral-sh/python-build-standalone', tag: this.armBuildDate };
+    }
+    return { repo: 'indygreg/python-build-standalone', tag: this.buildDate };
   }
 
   async downloadPythonRuntime() {
     const filename = this.buildRuntimeFilename();
-    const url = `https://github.com/indygreg/python-build-standalone/releases/download/${this.buildDate}/${filename}`;
+    const { repo, tag } = this.runtimeReleaseInfo();
+    const url = `https://github.com/${repo}/releases/download/${tag}/${filename}`;
     const tarPath = path.join(this.pythonDir, 'python.tar.gz');
 
-    console.log(`📥 下载Python运行时 (${this.targetPlatform}/${process.arch})...`);
+    console.log(`📥 下载Python运行时 (${this.targetPlatform}/${this.targetArch})...`);
     console.log(`URL: ${url}`);
 
     await this.downloadFile(url, tarPath);
@@ -208,6 +240,79 @@ class EmbeddedPythonBuilder {
     });
   }
 
+  // 解析宿主机（host）Python 命令：用于 Windows-ARM64 交叉准备时在 x64 跑机上
+  // 执行 pip，而不去执行 aarch64 的嵌入式 python.exe（无法在 x64 上运行）。
+  // 优先 HOST_PYTHON 环境变量，否则依次尝试 python3 / python。
+  resolveHostPython() {
+    const candidates = [];
+    if (process.env.HOST_PYTHON) candidates.push(process.env.HOST_PYTHON);
+    candidates.push('python3', 'python');
+
+    for (const cmd of candidates) {
+      try {
+        execSync(`"${cmd}" --version`, { stdio: 'pipe' });
+        console.log(`🐍 使用宿主机 Python: ${cmd}`);
+        return cmd;
+      } catch (error) {
+        // 该候选不可用，尝试下一个
+      }
+    }
+    throw new Error('未找到可用的宿主机 Python（已尝试 HOST_PYTHON / python3 / python）');
+  }
+
+  // Windows-ARM64 交叉安装：用宿主机 pip 以「跨平台下载」方式拉取 win_arm64 轮子，
+  // 解包进嵌入式 site-packages，全程不执行目标（aarch64）解释器。
+  async installDependenciesOnnxCross(hostPython, sitePackagesPath, dependencies) {
+    // 派生 pip 跨平台目标参数：基于 armPythonVersion（如 3.11.15 → 3.11 / cp311）。
+    // 若无法简单派生则回退 3.11 / cp311。
+    const ver = (this.armPythonVersion || '3.11').split('.');
+    const minorVersion = ver.length >= 2 ? `${ver[0]}.${ver[1]}` : '3.11';
+    const abiTag = `cp${ver.length >= 2 ? ver[0] + ver[1] : '311'}`; // 例如 cp311
+    const platformArgs = `--platform win_arm64 --python-version ${minorVersion} --implementation cp --abi ${abiTag} --only-binary=:all:`;
+
+    // 干净环境：去掉指向 aarch64 布局的 PYTHONHOME/PYTHONPATH，避免污染宿主机解释器。
+    const crossEnv = { ...process.env };
+    delete crossEnv.PYTHONHOME;
+    delete crossEnv.PYTHONPATH;
+
+    for (const dep of dependencies) {
+      const spec = dep.spec;
+      console.log(`📦 [arm64 交叉] 安装 ${spec}...`);
+      try {
+        // 第一遍（不带依赖）：拿到目标包自身的 win_arm64 轮子
+        execSync(`"${hostPython}" -m pip install --target "${sitePackagesPath}" ${platformArgs} --no-deps "${spec}"`, {
+          stdio: 'inherit',
+          env: crossEnv
+        });
+
+        // 第二遍（带依赖，相同跨平台参数）：拉取纯 Python 传递依赖
+        try {
+          execSync(`"${hostPython}" -m pip install --target "${sitePackagesPath}" ${platformArgs} "${spec}"`, {
+            stdio: 'inherit',
+            env: crossEnv
+          });
+        } catch (depError) {
+          // 部分传递依赖只有 sdist（无 win_arm64 轮子），去掉 --platform 用宿主机轮子兜底
+          // （纯 Python 依赖与平台无关，宿主机轮子可直接用）。
+          console.warn(`⚠️ ${spec} 带依赖（跨平台）安装失败，回退安装纯 Python 依赖（不限平台）...`);
+          try {
+            execSync(`"${hostPython}" -m pip install --target "${sitePackagesPath}" --no-deps "${spec}"`, {
+              stdio: 'inherit',
+              env: crossEnv
+            });
+          } catch (fallbackError) {
+            console.warn(`⚠️ ${spec} 兜底安装也失败，继续后续依赖: ${fallbackError.message}`);
+          }
+        }
+
+        console.log(`✅ [arm64 交叉] ${spec} 安装完成`);
+      } catch (error) {
+        console.error(`❌ [arm64 交叉] ${spec} 安装失败:`, error.message);
+        // 继续安装其他依赖
+      }
+    }
+  }
+
   async installDependencies() {
     const pythonPath = this.pythonExecPath();
     const sitePackagesPath = this.sitePackagesPath();
@@ -217,6 +322,27 @@ class EmbeddedPythonBuilder {
     // Windows 的 site-packages 目录可能尚不存在，--target 安装前先建好
     if (!fs.existsSync(sitePackagesPath)) {
       fs.mkdirSync(sitePackagesPath, { recursive: true });
+    }
+
+    // 纯 ONNX 模式（Windows-ARM64 交叉准备）：嵌入式 python.exe 是 aarch64 二进制，
+    // 在 x64 跑机上无法执行。改用宿主机 pip 以跨平台方式拉取 win_arm64 轮子并解包，
+    // 全程不执行目标解释器。
+    if (this.onnxOnly) {
+      // 纯 numpy SenseVoice 引擎（sensevoice_onnx_engine.py）只需这三个依赖；
+      // 不装 funasr_onnx（其依赖 kaldi-native-fbank/torch，无 win-arm64 轮子）。
+      //   - numpy>=2.3.0：win_arm64 轮子自 2.3.0 起提供（旧的 <2 在 ARM 上无轮子）
+      //   - onnxruntime>=1.24.2：win-arm64 轮子自 1.24.2 起提供
+      //   - soundfile：读音频（替代 librosa，自带 libsndfile，有 win_arm64 轮子）
+      const dependencies = [
+        { spec: 'numpy>=2.3.0' },
+        { spec: 'onnxruntime>=1.24.2' },
+        { spec: 'soundfile>=0.12.1' },
+      ];
+      const hostPython = this.resolveHostPython();
+      await this.installDependenciesOnnxCross(hostPython, sitePackagesPath, dependencies);
+      // 文件系统校验（不执行 aarch64 解释器）
+      await this.verifyDependencies(pythonPath);
+      return;
     }
 
     // 确保pip是最新的
@@ -232,9 +358,9 @@ class EmbeddedPythonBuilder {
 
     // 定义依赖列表 - 确保numpy等核心依赖被正确安装。
     // 每项: { spec: 包约束, extraArgs?: 额外 pip 参数 }。
+    // 说明：纯 ONNX 模式（this.onnxOnly）在上面已 early-return，不会走到这里，
+    // 故此处只是 x64 的全量依赖（torch + funasr + funasr_onnx + librosa）。
     // torch 系用 CPU-only 轮子（--index-url .../whl/cpu），体积更小，ONNX 推理路径不需要 CUDA。
-    // funasr_onnx + onnxruntime 是 SenseVoice ONNX 推理引擎（funasr_server.py:136 导入 funasr_onnx），
-    // 缺失会导致运行时 ImportError，识别只能回退 Paraformer 甚至失败。
     const CPU_TORCH_INDEX = '--index-url https://download.pytorch.org/whl/cpu';
     const dependencies = [
       { spec: 'numpy<2' },  // 先安装numpy，作为其他库的基础依赖
@@ -291,10 +417,51 @@ class EmbeddedPythonBuilder {
     await this.verifyDependencies(pythonPath);
   }
 
+  // 关键依赖清单（按模式区分）：纯 ONNX 模式不含 torch/librosa/funasr。
+  criticalDeps() {
+    return this.onnxOnly
+      ? ['numpy', 'onnxruntime', 'soundfile']
+      : ['numpy', 'torch', 'librosa', 'funasr', 'onnxruntime', 'funasr_onnx'];
+  }
+
+  // 文件系统校验某个依赖是否已落地：site-packages 下存在「包目录」或「<dep>*.dist-info」。
+  // 用于 Windows-ARM64 交叉准备（不能执行 aarch64 解释器去 import）。
+  depExistsOnDisk(dep, sitePackagesPath) {
+    if (!fs.existsSync(sitePackagesPath)) return false;
+    // 直接存在包目录（如 numpy/、onnxruntime/、funasr_onnx/）
+    if (fs.existsSync(path.join(sitePackagesPath, dep))) return true;
+    // 否则看是否存在 <dep>*.dist-info 目录（pip 元数据，名称可能用 - 或 _）
+    const prefix = dep.replace(/_/g, '-').toLowerCase();
+    try {
+      const entries = fs.readdirSync(sitePackagesPath);
+      return entries.some((name) => {
+        const lower = name.toLowerCase();
+        return lower.endsWith('.dist-info') &&
+          (lower.startsWith(`${prefix}-`) || lower.startsWith(`${dep.toLowerCase()}-`));
+      });
+    } catch (error) {
+      return false;
+    }
+  }
+
   async verifyDependencies(pythonPath) {
     console.log('🔍 验证依赖安装...');
-    
-    const criticalDeps = ['numpy', 'torch', 'librosa', 'funasr', 'onnxruntime', 'funasr_onnx'];
+
+    const criticalDeps = this.criticalDeps();
+
+    // 纯 ONNX 模式（Windows-ARM64）：用文件系统检查代替执行 aarch64 解释器 import。
+    if (this.onnxOnly) {
+      const sitePackagesPath = this.sitePackagesPath();
+      for (const dep of criticalDeps) {
+        if (this.depExistsOnDisk(dep, sitePackagesPath)) {
+          console.log(`✅ ${dep} 验证通过（文件系统检查）`);
+        } else {
+          console.error(`❌ ${dep} 验证失败：site-packages 中未找到包目录或 dist-info`);
+          throw new Error(`关键依赖 ${dep} 安装失败：site-packages 中缺失`);
+        }
+      }
+      return;
+    }
 
     for (const dep of criticalDeps) {
       try {
@@ -323,9 +490,24 @@ class EmbeddedPythonBuilder {
         console.log('❌ Python可执行文件不存在');
         return false;
       }
-      
+
+      // 纯 ONNX 模式（Windows-ARM64）：用文件系统检查代替执行 aarch64 解释器 import。
+      if (this.onnxOnly) {
+        const sitePackagesPath = this.sitePackagesPath();
+        for (const dep of this.criticalDeps()) {
+          if (this.depExistsOnDisk(dep, sitePackagesPath)) {
+            console.log(`✅ ${dep} 可用（文件系统检查）`);
+          } else {
+            console.log(`❌ ${dep} 不可用：site-packages 中缺失`);
+            return false;
+          }
+        }
+        console.log('✅ 现有环境验证完成（文件系统检查），所有关键依赖都存在');
+        return true;
+      }
+
       // 检查关键依赖是否可用
-      const criticalDeps = ['numpy', 'torch', 'librosa', 'funasr', 'onnxruntime', 'funasr_onnx'];
+      const criticalDeps = this.criticalDeps();
       const verifyEnv = this.pythonEnv();
 
       for (const dep of criticalDeps) {
@@ -409,6 +591,18 @@ class EmbeddedPythonBuilder {
 
     if (!fs.existsSync(pythonPath)) {
       return null;
+    }
+
+    // 纯 ONNX 模式（Windows-ARM64）：嵌入式 python.exe 是 aarch64 二进制，
+    // 不能在 x64 跑机上执行 --version；直接给出标注信息，不执行解释器。
+    if (this.onnxOnly) {
+      const sizeInfo = this.getDirectorySize(this.pythonDir);
+      return {
+        version: `Python ${this.armPythonVersion} (aarch64, cross, not executed)`,
+        path: pythonPath,
+        size: sizeInfo,
+        ready: true
+      };
     }
 
     try {
