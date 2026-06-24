@@ -102,16 +102,20 @@ jobs:
           Write-Host "OK: $py 存在"
           $site = "python\Lib\site-packages"
           if (-not (Test-Path $site)) { Write-Error "FAIL: site-packages 不存在: $site"; exit 1 }
-          # 纯 numpy SenseVoice 引擎依赖：onnxruntime / numpy / soundfile 的顶层包目录应已就位。
+          # 纯 numpy SenseVoice 引擎依赖：onnxruntime / numpy / soundfile 应已就位。
           # （不含 funasr_onnx —— 其依赖 kaldi-native-fbank/torch 无 win-arm64 轮子，已用自带 numpy 引擎替代。）
+          # 注意：包可能是目录(numpy/、onnxruntime/)，也可能是单文件模块(soundfile.py)，
+          # 故同时接受 <name>/ 目录、<name>.py 单文件、或 <name>*.dist-info 元数据三种形态。
           $need = @("onnxruntime", "numpy", "soundfile")
           foreach ($n in $need) {
-            $p = Join-Path $site $n
-            if (-not (Test-Path $p)) {
-              Write-Error "FAIL: 缺少纯 ONNX 依赖包目录: $p（torch/funasr_onnx 已按设计排除）"
+            $asDir = Test-Path (Join-Path $site $n)
+            $asFile = Test-Path (Join-Path $site "$n.py")
+            $asDist = (Get-ChildItem -Path $site -Filter "$n*.dist-info" -Directory -ErrorAction SilentlyContinue | Measure-Object).Count -gt 0
+            if (-not ($asDir -or $asFile -or $asDist)) {
+              Write-Error "FAIL: 缺少纯 ONNX 依赖: $n（既无目录/单文件模块/dist-info；torch/funasr_onnx 已按设计排除）"
               exit 1
             }
-            Write-Host "OK: 依赖包存在 $n"
+            Write-Host "OK: 依赖存在 $n (dir=$asDir file=$asFile dist=$asDist)"
           }
           # 确认 torch 未被误装进 arm64 包（应不存在）。
           if (Test-Path (Join-Path $site "torch")) {

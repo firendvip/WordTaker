@@ -3,6 +3,11 @@
 All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/); versioning follows [SemVer](https://semver.org/).
 
+## [1.4.1] - 2026-06-24
+
+### Fixed
+- CI arm64 静态校验误判：`soundfile` 以单文件模块 `soundfile.py` 安装（而非 `soundfile/` 目录），导致 `Test-Path .../soundfile` 为假、arm64 作业在「Verify embedded Python (arm64 static)」步骤失败（实际 win_arm64 轮子已全部安装成功）。改为同时接受 `<name>/` 目录、`<name>.py` 单文件、`<name>*.dist-info` 三种形态。x64 作业不受影响。
+
 ## [1.4.0] - 2026-06-24
 
 ### Added
