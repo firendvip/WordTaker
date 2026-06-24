@@ -198,8 +198,13 @@ jobs:
         run: pnpm run build:renderer
 
       # 真正产出 .exe：nsis 安装器 + portable 便携版，按矩阵架构构建。--publish never 不发布到 GitHub。
+      # 关键修复（v1.4.6）：package.json 的 build.win.target 显式写了 arch:["x64","arm64"]，
+      # 此时 `--win --<arch>` 标志只作「无 arch 目标」的默认值，不会过滤显式 arch 列表——
+      # 结果每个矩阵作业都会构建 x64+arm64 两套，x64 作业产出的 arm64 包（内含 x64 python）
+      # 与 arm64 作业产出的真 aarch64 包同名，发布时后完成者覆盖前者，arm64 不可信。
+      # 用 `nsis:<arch> portable:<arch>` 形式会短路 config 的 target 列表，只构建本作业架构这一套。
       - name: Build Windows installer + portable
-        run: pnpm exec electron-builder --win --${{ matrix.arch }} --publish never
+        run: pnpm exec electron-builder --win nsis:${{ matrix.arch }} portable:${{ matrix.arch }} --publish never
         env:
           # 关闭代码签名自动发现（CI 无证书）。
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
@@ -313,14 +318,17 @@ jobs:
 
           Write-Host "$expectName PE 断言通过，共校验 $checked 个文件。"
 
-      # 计算各安装包的 SHA256 写入 SHA256SUMS.txt，随 Release 一并发布。
-      # 矩阵每个 arch 生成各自的 SHA256SUMS（按 arch 命名避免覆盖），上传后由 Release 汇总。
+      # 计算「本架构」安装包的 SHA256 写入按 arch 命名的校验文件。
+      # v1.4.6 加固：只对含本架构 token（-x64- / -arm64-）的 .exe 求和，绝不混入对方架构产物
+      # （即使构建步已只产出本架构，这里也按架构过滤作为二次防线）；每作业各写各的文件名，互不覆盖。
       - name: Compute SHA256SUMS for installers
         shell: pwsh
         run: |
-          $installers = Get-ChildItem -Path "dist" -Filter "*.exe" -File -ErrorAction SilentlyContinue
+          $arch = "${{ matrix.arch }}"
+          $installers = Get-ChildItem -Path "dist" -Filter "*.exe" -File -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -like "*-$arch-*" }
           if (-not $installers) {
-            Write-Error "FAIL: dist 下未找到任何 .exe 安装包，无法生成 SHA256SUMS。"
+            Write-Error "FAIL: dist 下未找到本架构($arch) .exe 安装包，无法生成 SHA256SUMS。"
             exit 1
           }
           $lines = @()
@@ -329,11 +337,33 @@ jobs:
             $lines += "$h  $($f.Name)"
             Write-Host "$h  $($f.Name)"
           }
-          Set-Content -Path "dist\SHA256SUMS-${{ matrix.arch }}.txt" -Value $lines -Encoding ascii
-          Write-Host "已写入 dist\SHA256SUMS-${{ matrix.arch }}.txt"
+          Set-Content -Path "dist\SHA256SUMS-$arch.txt" -Value $lines -Encoding ascii
+          Write-Host "已写入 dist\SHA256SUMS-$arch.txt"
+
+      # 收集「仅本架构」的待发布产物到 publish/ 目录，避免任何对方架构文件被误传到 Release。
+      # 关键：electron-builder 的 latest.yml/blockmap 是架构无关命名，两作业会互相覆盖且语义错误，
+      # 故 v1.4.6 起不再发布 latest*.yml/blockmap，只发布按架构命名的 setup/portable .exe + 校验文件。
+      - name: Stage per-arch release assets
+        shell: pwsh
+        run: |
+          $arch = "${{ matrix.arch }}"
+          New-Item -ItemType Directory -Force -Path "publish" | Out-Null
+          $assets = Get-ChildItem -Path "dist" -Filter "*.exe" -File -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -like "*-$arch-*" }
+          if (-not $assets) {
+            Write-Error "FAIL: 没有本架构($arch)的 .exe 可发布。"
+            exit 1
+          }
+          foreach ($f in $assets) {
+            Copy-Item $f.FullName "publish\" -Force
+            Write-Host "stage: $($f.Name)"
+          }
+          Copy-Item "dist\SHA256SUMS-$arch.txt" "publish\" -Force
+          Write-Host "stage: SHA256SUMS-$arch.txt"
+          Write-Host "publish/ 内容:"; Get-ChildItem "publish" | ForEach-Object { Write-Host "  $($_.Name)" }
 
       # 发布到 GitHub Release（Release 资产不计入 Actions 工件存储配额）。
-      # 两个 arch 作业都向同一 tag 的 Release 追加各自产物；artifactName 含 ${arch} 故文件名不冲突。
+      # 每个 arch 作业只上传 publish/ 下「本架构」产物，文件名含 -<arch>- 故跨作业互不覆盖。
       - name: Publish to GitHub Release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
@@ -343,11 +373,8 @@ jobs:
           generate_release_notes: true
           fail_on_unmatched_files: true
           files: |
-            dist/*-setup.exe
-            dist/*.exe
-            dist/*.blockmap
-            dist/latest*.yml
-            dist/SHA256SUMS-${{ matrix.arch }}.txt
+            publish/*.exe
+            publish/SHA256SUMS-${{ matrix.arch }}.txt
 
       # 备份性短保留工件（仅 workflow_dispatch 等无 tag 场景方便取包）。
       - name: Upload Windows artifacts (short retention)
@@ -358,8 +385,5 @@ jobs:
           if-no-files-found: error
           retention-days: 1
           path: |
-            dist/*-setup.exe
-            dist/*.exe
-            dist/*.blockmap
-            dist/latest*.yml
-            dist/SHA256SUMS-${{ matrix.arch }}.txt
+            publish/*.exe
+            publish/SHA256SUMS-${{ matrix.arch }}.txt

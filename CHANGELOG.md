@@ -3,6 +3,13 @@
 All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/); versioning follows [SemVer](https://semver.org/).
 
+## [1.4.6] - 2026-06-24
+
+### Fixed
+- CI 矩阵竞态——每个作业只构建并发布对应架构，arm64 不再被 x64 覆盖。根因：`package.json` 的 `build.win.target` 显式写了 `arch:["x64","arm64"]`，此时 `electron-builder --win --<arch>` 标志只作「无 arch 目标」的默认值、不过滤显式 arch 列表，导致每个矩阵作业都构建 x64+arm64 两套；x64 作业产出的 arm64 命名包内含 x64 python，发布时按完成顺序覆盖 arm64 作业产出的真 aarch64 包。改用 `electron-builder --win nsis:<arch> portable:<arch>` 短路 config 的 target 列表，每作业只构建本架构这一套。
+- 按架构分别发布 SHA256：SHA256 与发布步骤仅处理含本架构 token（`-x64-` / `-arm64-`）的 `.exe`，各作业写各自的 `SHA256SUMS-<arch>.txt`，互不覆盖；不再发布架构无关命名的 `latest*.yml`/`blockmap`（两作业会互相覆盖且语义错误）。portable 产物 `artifactName` 加入 `${arch}` 避免同名冲突。
+- 对已发布产物校验 PE 机器类型：保留并强化 PE machine-type 断言，arm64 作业对其上传的原生二进制断言 `0xAA64`、x64 断言 `0x8664`；每作业只构建本架构后解包目录唯一，断言不再误读对方架构。
+
 ## [1.4.5] - 2026-06-24
 
 ### Fixed
