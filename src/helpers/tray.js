@@ -1,4 +1,4 @@
-const { Tray, Menu, nativeImage } = require("electron");
+const { Tray, Menu, nativeImage, app, shell } = require("electron");
 const path = require("path");
 
 class TrayManager {
@@ -126,9 +126,24 @@ class TrayManager {
       },
       { type: "separator" },
       {
+        label: "打开日志文件夹",
+        click: () => {
+          // 打开 userData/logs（早期 app.log 与崩溃日志所在目录），方便排查启动崩溃。
+          try {
+            const logDir = path.join(app.getPath("userData"), "logs");
+            shell.openPath(logDir);
+          } catch (error) {
+            if (this.logger && this.logger.error) {
+              this.logger.error("打开日志文件夹失败:", error);
+            }
+          }
+        }
+      },
+      { type: "separator" },
+      {
         label: "退出",
         click: () => {
-          require("electron").app.quit();
+          app.quit();
         }
       }
     ]);

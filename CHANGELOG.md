@@ -3,6 +3,14 @@
 All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/); versioning follows [SemVer](https://semver.org/).
 
+## [1.3.6] - 2026-06-24
+
+### Added
+- 本地运行日志：在加载任何原生模块前于 `userData/logs/app.log` 落盘启动诊断（版本、`process.versions`、平台/架构、`os.release()`、内存、`resourcesPath`、日志路径），带 ~2MB 上限轮转；托盘菜单新增「打开日志文件夹」。
+- `crashReporter`（仅本地 minidump，不上传）尽早启动，路径写入日志；`uncaughtException`/`unhandledRejection` 全栈写入 `app.log`。
+- 原生模块加载守卫：`better-sqlite3`/`uiohook-napi` 的 require 与数据库初始化包 try/catch，先把“具体模块+错误”落盘再 rethrow，避免静默原生崩溃。
+- CI 校验原生模块（`better_sqlite3.node`/`uiohook.node`）与嵌入式 `python.exe` 的 PE 机器类型为 x64(0x8664)，防 mac/arm64 二进制误入 Windows 包；并生成 `SHA256SUMS.txt` 随 Release 发布，供校验下载完整性（排查 Windows 0xc0000017 启动崩溃）。
+
 ## [1.3.5] - 2026-06-23
 
 ### Fixed

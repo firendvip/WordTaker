@@ -132,35 +132,89 @@ jobs:
           # 关闭代码签名自动发现（CI 无证书）。
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
 
-      # 断言打包进 asar.unpacked 的原生模块确为 Windows PE（以 "MZ" 开头），
-      # 防止 Mach-O（mac）二进制被误打进 Windows 包导致运行即崩。
-      - name: Assert native modules are Windows PE
+      # 断言打包进 asar.unpacked 的原生模块/可执行文件确为 Windows PE 且机器类型为 x64(AMD64)。
+      # 仅校验 "MZ" 头不够——Mach-O/arm64 都可能蒙混；这里读 PE COFF 头的
+      # IMAGE_FILE_HEADER.Machine（位于 e_lfanew+4 处的 2 字节），断言等于 0x8664(x64)。
+      # 覆盖 better_sqlite3.node、uiohook.node 以及嵌入式 python.exe，
+      # 防止 mac/arm64 二进制混入 Windows 包导致 0xc0000017 之类的启动崩溃。
+      - name: Assert native modules + python.exe are Windows x64 PE
         shell: pwsh
         run: |
-          $root = "dist\win-unpacked\resources\app.asar.unpacked"
-          if (-not (Test-Path $root)) {
-            $root = "dist\win-unpacked\resources"
-          }
-          $targets = @("better_sqlite3.node", "uiohook.node")
-          $checked = 0
-          foreach ($name in $targets) {
-            $files = Get-ChildItem -Path $root -Recurse -Filter $name -ErrorAction SilentlyContinue
-            foreach ($f in $files) {
-              $bytes = [System.IO.File]::ReadAllBytes($f.FullName)[0..1]
-              $sig = [System.Text.Encoding]::ASCII.GetString($bytes)
-              Write-Host "$($f.FullName) -> sig=$sig"
-              if ($sig -ne "MZ") {
-                Write-Error "FAIL: $($f.FullName) is not a Windows PE (sig=$sig). Likely Mach-O — @electron/rebuild did not produce a Windows binary."
+          $unpacked = "dist\win-unpacked\resources\app.asar.unpacked"
+          $resources = "dist\win-unpacked\resources"
+          $root = if (Test-Path $unpacked) { $unpacked } else { $resources }
+
+          function Assert-X64Pe([string]$file) {
+            $fs = [System.IO.File]::OpenRead($file)
+            try {
+              $br = New-Object System.IO.BinaryReader($fs)
+              # DOS 头：偏移 0 必须是 "MZ"
+              $mz = $br.ReadBytes(2)
+              if ($mz[0] -ne 0x4D -or $mz[1] -ne 0x5A) {
+                Write-Error "FAIL: $file 不是 PE（缺少 MZ 头，疑似 Mach-O/损坏）"
                 exit 1
               }
-              $checked++
+              # e_lfanew 位于偏移 0x3C，4 字节，指向 PE 签名
+              $fs.Seek(0x3C, [System.IO.SeekOrigin]::Begin) | Out-Null
+              $peOffset = $br.ReadUInt32()
+              # PE 签名 "PE\0\0"
+              $fs.Seek($peOffset, [System.IO.SeekOrigin]::Begin) | Out-Null
+              $pe = $br.ReadBytes(4)
+              if ($pe[0] -ne 0x50 -or $pe[1] -ne 0x45 -or $pe[2] -ne 0 -or $pe[3] -ne 0) {
+                Write-Error "FAIL: $file 缺少 PE\0\0 签名（偏移 $peOffset）"
+                exit 1
+              }
+              # 紧跟 PE 签名的是 IMAGE_FILE_HEADER，其首 2 字节是 Machine
+              $machine = $br.ReadUInt16()
+              $hex = "0x{0:X4}" -f $machine
+              Write-Host "$file -> Machine=$hex"
+              if ($machine -ne 0x8664) {
+                Write-Error "FAIL: $file 机器类型为 $hex，非 x64(0x8664)。疑似 mac/arm64 二进制误入 Windows 包。"
+                exit 1
+              }
+            } finally {
+              $fs.Close()
             }
           }
-          if ($checked -eq 0) {
-            Write-Error "FAIL: no native .node modules found under $root to verify"
+
+          $checked = 0
+          foreach ($name in @("better_sqlite3.node", "uiohook.node")) {
+            $files = Get-ChildItem -Path $root -Recurse -Filter $name -ErrorAction SilentlyContinue
+            foreach ($f in $files) { Assert-X64Pe $f.FullName; $checked++ }
+          }
+          if ($checked -lt 2) {
+            Write-Error "FAIL: 应至少校验 better_sqlite3.node 与 uiohook.node 两个原生模块，实际仅 $checked 个。"
             exit 1
           }
-          Write-Host "PE assertion passed for $checked native module(s)."
+
+          # 嵌入式 python.exe（打到 resources 下）也必须是 Windows x64 PE。
+          $pyFiles = Get-ChildItem -Path $resources -Recurse -Filter "python.exe" -ErrorAction SilentlyContinue
+          if ($pyFiles) {
+            foreach ($f in $pyFiles) { Assert-X64Pe $f.FullName; $checked++ }
+          } else {
+            Write-Host "WARN: 未在 $resources 下找到 python.exe（跳过其 PE 校验）"
+          }
+
+          Write-Host "x64 PE 断言通过，共校验 $checked 个文件。"
+
+      # 计算各安装包的 SHA256 写入 SHA256SUMS.txt，随 Release 一并发布，
+      # 供用户校验下载完整性（损坏的下载是 0xc0000017 的头号嫌疑）。
+      - name: Compute SHA256SUMS for installers
+        shell: pwsh
+        run: |
+          $installers = Get-ChildItem -Path "dist" -Filter "*.exe" -File -ErrorAction SilentlyContinue
+          if (-not $installers) {
+            Write-Error "FAIL: dist 下未找到任何 .exe 安装包，无法生成 SHA256SUMS。"
+            exit 1
+          }
+          $lines = @()
+          foreach ($f in $installers) {
+            $h = (Get-FileHash -Algorithm SHA256 -Path $f.FullName).Hash.ToLower()
+            $lines += "$h  $($f.Name)"
+            Write-Host "$h  $($f.Name)"
+          }
+          Set-Content -Path "dist\SHA256SUMS.txt" -Value $lines -Encoding ascii
+          Write-Host "已写入 dist\SHA256SUMS.txt"
 
       # 发布到 GitHub Release（Release 资产不计入 Actions 工件存储配额，
       # 这是此前 CI 因配额满而失败的根因修复）。tag 即触发本工作流的 tag。
@@ -177,6 +231,7 @@ jobs:
             dist/*.exe
             dist/*.blockmap
             dist/latest*.yml
+            dist/SHA256SUMS.txt
 
       # 备份性短保留工件（仅 workflow_dispatch 等无 tag 场景方便取包）；
       # retention-days 设到最小 1 天，尽量不占用存储配额。

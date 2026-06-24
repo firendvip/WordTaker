@@ -1,6 +1,98 @@
-const { app, globalShortcut, BrowserWindow, ipcMain, dialog } = require("electron");
+const { app, globalShortcut, BrowserWindow, ipcMain, dialog, shell, crashReporter } = require("electron");
 const path = require("path");
+const os = require("os");
+const fs = require("fs");
 const { spawn } = require("child_process");
+
+// ============================================================================
+// 早期本地文件日志（在加载任何原生模块 better-sqlite3 / uiohook-napi 之前就绪）
+// 设计约束：日志绝不能抛异常/阻塞启动——本应用历史上出现过全屏卡死事故，
+// 所有写日志路径全部包在 try/catch 里，失败即静默降级，绝不影响主流程。
+//
+// 注意：Windows 0xc0000017 属于 PE 映像加载器层面的失败，发生在 Node/JS 运行之前，
+// 可能导致 app.log 为空——这是预期内的。本日志只能捕获“已经进入 JS”的一切信息；
+// 真正 pre-JS 的原生崩溃由下方 crashReporter 落 minidump 兜底。
+// ============================================================================
+const MAX_LOG_BYTES = 2 * 1024 * 1024; // 单文件上限 ~2MB，超过则截断轮转，防止无界增长
+let earlyLogFile = null;
+
+function resolveEarlyLogDir() {
+  // 首选 Electron userData；若此刻 app 尚不可用，回退到 APPDATA / 家目录。
+  try {
+    if (app && typeof app.getPath === "function") {
+      return path.join(app.getPath("userData"), "logs");
+    }
+  } catch (_) { /* app 未就绪，走回退 */ }
+  try {
+    const base = process.env.APPDATA || os.homedir() || os.tmpdir();
+    return path.join(base, "WordTaker", "logs");
+  } catch (_) {
+    return null;
+  }
+}
+
+function rotateEarlyLogIfNeeded() {
+  try {
+    if (!earlyLogFile) return;
+    const st = fs.statSync(earlyLogFile);
+    if (st.size > MAX_LOG_BYTES) {
+      // 简单轮转：保留上一份为 .1，再清空当前文件
+      try { fs.renameSync(earlyLogFile, earlyLogFile + ".1"); } catch (_) {}
+    }
+  } catch (_) { /* 文件不存在或无法 stat，忽略 */ }
+}
+
+function earlyLog(message, extra) {
+  try {
+    if (!earlyLogFile) return;
+    rotateEarlyLogIfNeeded();
+    const ts = new Date().toISOString();
+    let line = `[${ts}] ${message}`;
+    if (extra !== undefined) {
+      try { line += " " + (typeof extra === "string" ? extra : JSON.stringify(extra)); }
+      catch (_) { line += " [unserializable]"; }
+    }
+    fs.appendFileSync(earlyLogFile, line + "\n");
+  } catch (_) { /* 写日志绝不抛 */ }
+}
+
+function setupEarlyFileLogging() {
+  try {
+    const dir = resolveEarlyLogDir();
+    if (!dir) return;
+    try { fs.mkdirSync(dir, { recursive: true }); } catch (_) {}
+    earlyLogFile = path.join(dir, "app.log");
+
+    let appVersion = "unknown";
+    try { appVersion = app.getVersion(); } catch (_) {}
+    let totalmem = 0, freemem = 0;
+    try { totalmem = os.totalmem(); freemem = os.freemem(); } catch (_) {}
+
+    earlyLog("========== WordTaker 启动 ==========", {
+      appVersion,
+      versions: process.versions,
+      platform: process.platform,
+      arch: process.arch,
+      osRelease: (() => { try { return os.release(); } catch (_) { return "?"; } })(),
+      totalmemMB: Math.round(totalmem / 1048576),
+      freememMB: Math.round(freemem / 1048576),
+      resourcesPath: process.resourcesPath,
+      logFile: earlyLogFile
+    });
+  } catch (_) { /* 整个早期日志初始化失败也绝不影响启动 */ }
+}
+
+setupEarlyFileLogging();
+
+// crashReporter：尽早启动，让“接近原生”的崩溃在本地落 minidump（不上传任何服务器）。
+try {
+  crashReporter.start({ submitURL: "", uploadToServer: false });
+  let dumpDir = "unknown";
+  try { dumpDir = app.getPath("crashDumps"); } catch (_) {}
+  earlyLog("crashReporter 已启动（仅本地 minidump，不上传）", { crashDumps: dumpDir });
+} catch (e) {
+  earlyLog("crashReporter 启动失败", String(e && e.stack ? e.stack : e));
+}
 
 // 导入日志管理器
 const LogManager = require("./src/helpers/logManager");
@@ -8,8 +100,9 @@ const LogManager = require("./src/helpers/logManager");
 // 初始化日志管理器
 const logger = new LogManager();
 
-// 添加全局错误处理
+// 添加全局错误处理（同时写入早期 app.log，保证崩溃栈一定落盘）
 process.on("uncaughtException", (error) => {
+  earlyLog("uncaughtException", String(error && error.stack ? error.stack : error));
   logger.error("Uncaught Exception:", error);
   if (error.code === "EPIPE") {
     return;
@@ -18,19 +111,34 @@ process.on("uncaughtException", (error) => {
 });
 
 process.on("unhandledRejection", (reason, promise) => {
+  earlyLog("unhandledRejection", String(reason && reason.stack ? reason.stack : reason));
   logger.error("Unhandled Rejection at:", { promise, reason });
 });
 
-// 导入助手模块
-const EnvironmentManager = require("./src/helpers/environment");
-const WindowManager = require("./src/helpers/windowManager");
-const DatabaseManager = require("./src/helpers/database");
-const ClipboardManager = require("./src/helpers/clipboard");
-const FunASRManager = require("./src/helpers/funasrManager");
-const TrayManager = require("./src/helpers/tray");
-const HotkeyManager = require("./src/helpers/hotkeyManager");
-const TriggerManager = require("./src/helpers/triggerManager");
-const IPCHandlers = require("./src/helpers/ipcHandlers");
+// 导入助手模块。原生模块（better-sqlite3 / uiohook-napi）经由这些 helper 间接 require，
+// 若某个 .node 架构/ABI 不符或损坏会在此抛错——包在 try/catch 里先把“具体模块+错误”落盘，
+// 再原样 rethrow，避免静默原生崩溃只留一个无信息的退出码。
+let EnvironmentManager, WindowManager, DatabaseManager, ClipboardManager,
+    FunASRManager, TrayManager, HotkeyManager, TriggerManager, IPCHandlers;
+try {
+  EnvironmentManager = require("./src/helpers/environment");
+  WindowManager = require("./src/helpers/windowManager");
+  earlyLog("即将加载 database.js（间接 require better-sqlite3 原生模块）");
+  DatabaseManager = require("./src/helpers/database");
+  earlyLog("database.js 加载成功（better-sqlite3 .node 可加载）");
+  ClipboardManager = require("./src/helpers/clipboard");
+  FunASRManager = require("./src/helpers/funasrManager");
+  earlyLog("即将加载 tray/trigger（间接 require uiohook-napi 原生模块）");
+  TrayManager = require("./src/helpers/tray");
+  HotkeyManager = require("./src/helpers/hotkeyManager");
+  TriggerManager = require("./src/helpers/triggerManager");
+  earlyLog("uiohook-napi 相关模块加载成功");
+  IPCHandlers = require("./src/helpers/ipcHandlers");
+} catch (e) {
+  earlyLog("原生/助手模块加载失败（很可能是某个 .node 架构/ABI 不符或损坏）",
+    String(e && e.stack ? e.stack : e));
+  throw e;
+}
 
 // 设置生产环境PATH
 function setupProductionPath() {
@@ -455,8 +563,12 @@ ipcMain.on('recorder-state', (event, recording) => {
 // 这里捕获后弹出可见错误对话框并干净退出，避免静默崩溃（DB-1）。
 const dataDirectory = environmentManager.ensureDataDirectory();
 try {
+  earlyLog("初始化 better-sqlite3 数据库", { dataDirectory });
   databaseManager.initialize(dataDirectory);
+  earlyLog("数据库初始化成功");
 } catch (error) {
+  earlyLog("数据库初始化失败（better-sqlite3 运行期错误）",
+    String(error && error.stack ? error.stack : error));
   logger.error("数据库初始化失败:", error);
   try {
     dialog.showErrorBox(
