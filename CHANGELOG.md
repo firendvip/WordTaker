@@ -3,6 +3,11 @@
 All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/); versioning follows [SemVer](https://semver.org/).
 
+## [1.4.7] - 2026-06-25
+
+### Changed
+- App 图标更换为小猫头像(白底,留白94%) — 替换 build/icon.icns 与 build/icon.ico。
+
 ## [1.4.6] - 2026-06-24
 
 ### Fixed
