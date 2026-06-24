@@ -3,6 +3,11 @@
 All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/); versioning follows [SemVer](https://semver.org/).
 
+## [1.4.9] - 2026-06-25
+
+### Fixed
+- macOS 托盘图标在深色菜单栏不可见——改用单色 template 猫头剪影(挖空眼睛)，自动反色，深浅菜单栏均可见。新增 assets/cat-trayTemplate.svg / cat-trayTemplate.png / cat-trayTemplate@2x.png。
+
 ## [1.4.8] - 2026-06-25
 
 ### Changed

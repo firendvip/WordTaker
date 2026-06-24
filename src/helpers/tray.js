@@ -36,11 +36,19 @@ class TrayManager {
       let trayIcon;
       
       if (process.platform === "darwin") {
-        // macOS 菜单栏：彩色小猫头品牌图标（透明底 PNG，@2x 同目录时 Electron 自动选用）。
-        // 用品牌色图标而非模板图，故关闭模板模式（template=true 会被渲染成单色）。
+        // macOS 菜单栏：单色 template 猫头剪影（透明底 PNG，挖空眼睛；@2x 同目录时 Electron 自动选用）。
+        // 文件名以 Template 结尾 + setTemplateImage(true)，macOS 自动按明暗菜单栏反色，深浅都可见。
         const catIconPath = this.getCatTrayIconPath();
         trayIcon = nativeImage.createFromPath(catIconPath);
-        trayIcon.setTemplateImage(false);
+        if (trayIcon.isEmpty()) {
+          const msg = "托盘图标加载失败（图片为空）: " + catIconPath;
+          if (this.logger && this.logger.error) {
+            this.logger.error(msg);
+          } else {
+            console.error(msg);
+          }
+        }
+        trayIcon.setTemplateImage(true);
       } else if (process.platform === "win32" && iconPath && require("fs").existsSync(iconPath)) {
         // Windows 托盘：彩色 .ico，缩放到 16px 并关闭模板图（否则会被渲染成单色）
         trayIcon = nativeImage.createFromPath(iconPath).resize({ width: 16, height: 16 });
@@ -95,13 +103,13 @@ class TrayManager {
     return nativeImage.createFromBitmap(buf, { width: S, height: S, scaleFactor: 2 });
   }
 
-  // macOS 彩色猫头托盘图标路径（@1x；同目录的 @2x 由 Electron 自动选用），dev/打包均可解析
+  // macOS 单色 template 猫头托盘图标路径（@1x；同目录的 @2x 由 Electron 自动选用），dev/打包均可解析
   getCatTrayIconPath() {
     const isDev = process.env.NODE_ENV === "development";
     if (isDev) {
-      return path.join(__dirname, "..", "..", "assets", "cat-tray.png");
+      return path.join(__dirname, "..", "..", "assets", "cat-trayTemplate.png");
     }
-    return path.join(process.resourcesPath, "assets", "cat-tray.png");
+    return path.join(process.resourcesPath, "assets", "cat-trayTemplate.png");
   }
 
   getTrayIconPath() {
