@@ -128,12 +128,18 @@ jobs:
       # arm64 嵌入式 Python 是 aarch64 解释器，无法在 x64 runner 上原地执行——故 arm64 作业改用
       # runner 自带的 host Python（已装 onnxruntime/funasr_onnx/modelscope 见下）跑下载脚本，
       # 产物 model_quant.onnx/tokens.json 与架构无关（纯模型文件），可安全打进 arm64 包。
-      # host runner 是 x64：这里在 host(x64) Python 上装全量 funasr_onnx 及其导入期依赖
-      # （jieba、kaldi-native-fbank 等在 x64 都有轮子），用于把 iic/SenseVoiceSmall 导出/量化为
-      # model_quant.onnx。注意：这些只装在 host，不进 arm64 包；arm64 包用自带 numpy 引擎，不需要它们。
+      # host runner 是 x64：在 host(x64) Python 上装与 x64 嵌入式构建「完全相同」的导出依赖集，
+      # 用于把 iic/SenseVoiceSmall 导出/量化为 model_quant.onnx（产物与架构无关，可打进 arm64 包）。
+      # 关键：torch 必须钉 2.0.1（与 x64 嵌入式一致）——新版 torch 的 onnx 导出器需要 onnxscript 等
+      # 额外依赖，会引入无谓的依赖链；2.0.1 的导出路径自洽、已在 x64 作业验证可用。
+      # 用 CPU 轮子(--index-url .../whl/cpu)。这些只装在 host，不进 arm64 包。
       - name: Install host tooling for model download (arm64)
         if: matrix.arch == 'arm64'
-        run: python -m pip install --upgrade pip "numpy<2" onnxruntime funasr_onnx funasr modelscope jieba kaldi-native-fbank torch torchaudio
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install "numpy<2" onnxruntime modelscope jieba kaldi-native-fbank
+          python -m pip install torch==2.0.1 torchaudio==2.0.2 --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install "funasr>=1.2.7" "funasr_onnx>=0.4.1"
 
       - name: Download SenseVoice ONNX model
         shell: pwsh

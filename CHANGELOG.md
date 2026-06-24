@@ -3,6 +3,11 @@
 All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/); versioning follows [SemVer](https://semver.org/).
 
+## [1.4.4] - 2026-06-24
+
+### Fixed
+- CI arm64 模型导出钉死 torch 2.0.1：v1.4.3 host 装了最新 torch，其 onnx 导出器需 `onnxscript` 报 `ModuleNotFoundError`。改为 host 导出依赖集与 x64 嵌入式构建完全一致（torch==2.0.1 + torchaudio==2.0.2 CPU 轮子 + funasr + funasr_onnx），torch 2.0.1 导出路径自洽、已在 x64 作业验证可用。
+
 ## [1.4.3] - 2026-06-24
 
 ### Fixed
