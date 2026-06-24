@@ -222,23 +222,22 @@ jobs:
             $winDirToken = "win32-x64"
           }
 
-          $candidates = @(
-            "dist\win-unpacked\resources\app.asar.unpacked",
-            "dist\win-arm64-unpacked\resources\app.asar.unpacked",
-            "dist\win-unpacked\resources",
-            "dist\win-arm64-unpacked\resources"
-          )
-          $root = $null
-          $resources = $null
-          foreach ($c in $candidates) {
-            if (Test-Path $c) {
-              if ($c.EndsWith("app.asar.unpacked") -and -not $root) { $root = $c }
-              if ($c.EndsWith("resources") -and -not $resources) { $resources = $c }
-            }
+          # 关键：必须按目标架构选对解包目录。electron-builder 把 x64 解包到
+          # dist\win-unpacked，arm64 解包到 dist\win-arm64-unpacked。即便 arm64 作业里
+          # 多 arch nsis 目标也会顺带产出 x64 的 win-unpacked，故这里严格只看本架构的目录，
+          # 否则会误读到对方架构的 .node 而误判（曾在 arm64 作业读到 win-unpacked 的 x64 0x8664）。
+          if ($arch -eq "arm64") {
+            $unpackDir = "dist\win-arm64-unpacked"
+          } else {
+            $unpackDir = "dist\win-unpacked"
           }
-          if (-not $root) { $root = $resources }
-          if (-not $root) { Write-Error "FAIL: 未找到 win-unpacked 解包目录"; exit 1 }
-          Write-Host "解包根目录: $root"
+          $root = Join-Path $unpackDir "resources\app.asar.unpacked"
+          $resources = Join-Path $unpackDir "resources"
+          if (-not (Test-Path $root)) {
+            if (Test-Path $resources) { $root = $resources }
+            else { Write-Error "FAIL: 未找到本架构解包目录: $unpackDir"; exit 1 }
+          }
+          Write-Host "目标架构: $arch；解包根目录: $root"
 
           function Assert-Pe([string]$file, [int]$expect, [string]$expectLabel) {
             $fs = [System.IO.File]::OpenRead($file)

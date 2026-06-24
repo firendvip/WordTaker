@@ -3,6 +3,11 @@
 All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/); versioning follows [SemVer](https://semver.org/).
 
+## [1.4.5] - 2026-06-24
+
+### Fixed
+- CI arm64 PE 断言读错架构目录：electron-builder 把 x64 解包到 `win-unpacked`、arm64 解包到 `win-arm64-unpacked`；arm64 作业里多 arch nsis 目标会顺带产出 x64 的 `win-unpacked`，旧断言按候选顺序先命中它、读到 x64 的 `better_sqlite3.node`(0x8664) 而误判。改为严格按本作业架构只看对应解包目录（arm64→win-arm64-unpacked，x64→win-unpacked）。注：arm64 安装包(`WordTaker-1.4.5-arm64-setup.exe`)与 electron-builder 已成功产出，仅断言步骤读错目录。
+
 ## [1.4.4] - 2026-06-24
 
 ### Fixed
