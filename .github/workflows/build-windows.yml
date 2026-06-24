@@ -196,11 +196,12 @@ jobs:
           # 这里检测到就发 warning 提示（不致命，运行期 node-gyp-build 只加载 win32-x64 版本）。
           $allUiohook = Get-ChildItem -Path $root -Recurse -ErrorAction SilentlyContinue |
             Where-Object { $_.Name -eq "uiohook_napi.node" -or $_.Name -eq "uiohook-napi.node" }
+          # 用 .Contains 而非 -match，避免 "build\Release" 里的 \R 被当成正则转义而抛异常。
           $uiohookWin = $allUiohook | Where-Object {
-            $_.FullName -match "win32-x64" -or $_.FullName -match "build\\Release"
+            $_.FullName.Contains("win32-x64") -or $_.FullName.Contains("build\Release")
           }
           $uiohookForeign = $allUiohook | Where-Object {
-            $_.FullName -match "darwin" -or $_.FullName -match "linux"
+            $_.FullName.Contains("darwin") -or $_.FullName.Contains("linux")
           }
           foreach ($f in $uiohookForeign) {
             Write-Host "WARN: 包内含非 Windows uiohook 预编译二进制（冗余，可后续从打包中排除）：$($f.FullName)"

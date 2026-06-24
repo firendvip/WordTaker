@@ -3,6 +3,11 @@
 All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/); versioning follows [SemVer](https://semver.org/).
 
+## [1.3.9] - 2026-06-24
+
+### Fixed
+- CI PE 断言路径匹配改用 `.Contains` 而非正则：`build\Release` 里的 `\R` 在 .NET 正则中是未定义转义、`-match` 可能抛异常。改用字符串 `.Contains` 判断 `win32-x64` / `build\Release` / `darwin` / `linux`，消除该风险（承接 1.3.8 的“只校验 Windows x64 uiohook 二进制”修正）。
+
 ## [1.3.8] - 2026-06-24
 
 ### Fixed
