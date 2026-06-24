@@ -3,6 +3,11 @@
 All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/); versioning follows [SemVer](https://semver.org/).
 
+## [1.4.8] - 2026-06-25
+
+### Changed
+- macOS 托盘图标改为小猫头(彩色, 非 template); 新增 assets/cat-tray.png / cat-tray@2x.png。
+
 ## [1.4.7] - 2026-06-25
 
 ### Changed

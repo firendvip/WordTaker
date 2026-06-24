@@ -36,9 +36,11 @@ class TrayManager {
       let trayIcon;
       
       if (process.platform === "darwin") {
-        // macOS 菜单栏：代码生成透明底的单色波形模板图标（避免 SVG 渲染丢失透明度）
-        trayIcon = this.buildWaveformTrayIcon();
-        trayIcon.setTemplateImage(true);
+        // macOS 菜单栏：彩色小猫头品牌图标（透明底 PNG，@2x 同目录时 Electron 自动选用）。
+        // 用品牌色图标而非模板图，故关闭模板模式（template=true 会被渲染成单色）。
+        const catIconPath = this.getCatTrayIconPath();
+        trayIcon = nativeImage.createFromPath(catIconPath);
+        trayIcon.setTemplateImage(false);
       } else if (process.platform === "win32" && iconPath && require("fs").existsSync(iconPath)) {
         // Windows 托盘：彩色 .ico，缩放到 16px 并关闭模板图（否则会被渲染成单色）
         trayIcon = nativeImage.createFromPath(iconPath).resize({ width: 16, height: 16 });
@@ -91,6 +93,15 @@ class TrayManager {
       x += bw + gap;
     }
     return nativeImage.createFromBitmap(buf, { width: S, height: S, scaleFactor: 2 });
+  }
+
+  // macOS 彩色猫头托盘图标路径（@1x；同目录的 @2x 由 Electron 自动选用），dev/打包均可解析
+  getCatTrayIconPath() {
+    const isDev = process.env.NODE_ENV === "development";
+    if (isDev) {
+      return path.join(__dirname, "..", "..", "assets", "cat-tray.png");
+    }
+    return path.join(process.resourcesPath, "assets", "cat-tray.png");
   }
 
   getTrayIconPath() {
