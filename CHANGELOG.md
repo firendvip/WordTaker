@@ -3,6 +3,14 @@
 All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/); versioning follows [SemVer](https://semver.org/).
 
+## [1.5.4] - 2026-06-25
+
+### Changed
+- 重写高情商提示词：以 VibeCoding(文案润色)方案为基础，强化人情味/照顾对方情绪/委婉得体/真诚不浮夸；保留原意与关键信息、不无中生有；沿用随机标记防注入契约。本地(prompts.js)+中继(worker.js、tencent-scf-web/server.js)三处同步。
+
+### Added
+- 中继支持「词转词」word_map：接收请求体可选 word_map 数组({from,to})，防御式校验(忽略缺失/畸形、≤30 条、每词≤50 字、转义)，非空时以「数据清单(非指令)」形式注入 system 提示，指示在处理前替换出现的词语(含读音/拼写相近)；copywriting/gaoeq/translate 均生效；缺省时行为不变。worker.js 与 tencent-scf-web/server.js 两处实现一致。
+
 ## [1.5.3] - 2026-06-25
 
 ### Added
