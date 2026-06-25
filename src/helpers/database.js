@@ -191,7 +191,11 @@ class DatabaseManager {
       // 胶囊中心动画皮肤：'music'（默认）| 'voiceink'
       pill_skin: 'music',
       // 胶囊跟随输入焦点：开（默认）出现在焦点输入框下方/无焦点时鼠标下方；关则固定屏幕底部居中
-      pill_follow_focus: true
+      pill_follow_focus: true,
+      // 托盘图标样式：'smile'（中笑镂空单色模板，默认）| 'color'（彩色猫头）
+      tray_icon_style: 'smile',
+      // 词转词规则：JSON 字符串数组 [{from,to}, ...]，AI 处理时识别到 from（含读音/拼写相近）自动替换为 to
+      wtw_rules_json: '[]'
     };
     try {
       const existsStmt = this.db.prepare('SELECT 1 FROM settings WHERE key = ?');

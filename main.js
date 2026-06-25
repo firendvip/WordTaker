@@ -425,6 +425,19 @@ ipcMain.handle('reload-pill-skin', () => {
   }
 });
 
+// 托盘图标样式变更后实时刷新托盘（设置-皮肤下方「托盘图标」切换时调用）
+ipcMain.handle('reload-tray-icon', () => {
+  try {
+    const style = databaseManager.getSetting('tray_icon_style', 'smile');
+    if (trayManager && typeof trayManager.rebuildTray === 'function') {
+      trayManager.rebuildTray();
+    }
+    return { success: true, style };
+  } catch (e) {
+    return { success: false, error: String((e && e.message) || e) };
+  }
+});
+
 // 隐藏胶囊（粘贴完成 / 取消后由渲染层调用）
 ipcMain.handle('hide-recorder', () => {
   windowManager.hideMainWindow();
@@ -700,6 +713,10 @@ async function startApp() {
   trayManager.setWindows(windowManager.mainWindow, null);
   trayManager.setOpenSettings(() => windowManager.showSettingsWindow());
   trayManager.setOpenHistory(() => windowManager.showHistoryWindow());
+  // 注入数据库管理器，托盘据此读取 tray_icon_style（中笑/彩色）
+  if (typeof trayManager.setDatabaseManager === "function") {
+    trayManager.setDatabaseManager(databaseManager);
+  }
   await trayManager.createTray();
   logger.info('系统托盘设置完成');
 

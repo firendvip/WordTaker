@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" width="100" height="100">
+  <!-- Solid black cat silhouette: ears + head -->
+  <g fill="#000">
+    <path d="M22,42 L29,9 L51,33 Z"/>
+    <path d="M78,42 L71,9 L49,33 Z"/>
+    <ellipse cx="50" cy="58" rx="35" ry="31"/>
+  </g>
+
+  <!-- Transparent cutouts: inner ears, eyes, smile (rendered as bg color here for readable source) -->
+  <g fill="none" stroke="none">
+    <path d="M31,33 L34,17 L44,30 Z"/>
+    <path d="M69,33 L66,17 L56,30 Z"/>
+    <ellipse cx="38" cy="55" rx="7.5" ry="9.5"/>
+    <ellipse cx="62" cy="55" rx="7.5" ry="9.5"/>
+    <path d="M43,71 q7,7.5 14,0" fill="none" stroke="#000" stroke-width="2.8" stroke-linecap="round"/>
+  </g>
+</svg>

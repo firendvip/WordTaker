@@ -38,8 +38,15 @@ const SettingsPage = () => {
     translate_trigger_taps: 2,
     translate_fallback_select_all: false,
     keep_result_in_clipboard: false,
-    pill_follow_focus: true
+    pill_follow_focus: true,
+    tray_icon_style: "smile",
+    wtw_rules_json: "[]"
   });
+
+  // 词转词规则在 UI 里以数组形态编辑，保存时序列化为 wtw_rules_json
+  const [wtwRules, setWtwRules] = useState([]);
+  const WTW_MAX_RULES = 30;
+  const WTW_MAX_LEN = 50;
 
   const isMac = typeof navigator !== "undefined" && !!navigator.platform && navigator.platform.toLowerCase().includes("mac");
   
@@ -63,6 +70,7 @@ const SettingsPage = () => {
     { id: "sound", label: "提示音", icon: Volume2 },
     { id: "skin", label: "皮肤", icon: Palette },
     { id: "role", label: "角色", icon: Drama },
+    { id: "wordtoword", label: "词转词", icon: Sparkles },
     { id: "general", label: "实验", icon: Settings },
     { id: "about", label: "关于", icon: Info },
   ];
@@ -121,9 +129,30 @@ const SettingsPage = () => {
           translate_fallback_select_all: allSettings.translate_fallback_select_all === true,
           keep_result_in_clipboard: allSettings.keep_result_in_clipboard === true,
           // 胶囊跟随焦点：缺省视为开启（默认 true）
-          pill_follow_focus: allSettings.pill_follow_focus !== false
+          pill_follow_focus: allSettings.pill_follow_focus !== false,
+          // 托盘图标样式：缺省为中笑（'smile'）
+          tray_icon_style: allSettings.tray_icon_style === "color" ? "color" : "smile",
+          // 词转词规则 JSON 字符串
+          wtw_rules_json: typeof allSettings.wtw_rules_json === "string" ? allSettings.wtw_rules_json : "[]"
         };
         setSettings(prev => ({ ...prev, ...loadedSettings }));
+
+        // 解析词转词规则到可编辑数组（解析异常一律降级为空数组）
+        try {
+          const parsed = JSON.parse(loadedSettings.wtw_rules_json || "[]");
+          if (Array.isArray(parsed)) {
+            setWtwRules(parsed
+              .filter((r) => r && typeof r === "object")
+              .map((r) => ({
+                from: typeof r.from === "string" ? r.from : "",
+                to: typeof r.to === "string" ? r.to : "",
+              })));
+          } else {
+            setWtwRules([]);
+          }
+        } catch {
+          setWtwRules([]);
+        }
 
         // 检查是否使用自定义模型
         const predefinedModels = ["deepseek-v4-flash", "deepseek-v4-pro", "gpt-3.5-turbo", "gpt-4", "gpt-4-turbo", "gpt-4o", "gpt-4o-mini", "qwen3-30b-a3b-instruct-2507"];
@@ -232,6 +261,13 @@ const SettingsPage = () => {
       if (changed.has("pill_follow_focus")) {
         await window.electronAPI.setSetting("pill_follow_focus", next.pill_follow_focus === true);
       }
+      if (changed.has("tray_icon_style")) {
+        await window.electronAPI.setSetting("tray_icon_style", next.tray_icon_style === "color" ? "color" : "smile");
+        if (window.electronAPI.reloadTrayIcon) await window.electronAPI.reloadTrayIcon();
+      }
+      if (changed.has("wtw_rules_json")) {
+        await window.electronAPI.setSetting("wtw_rules_json", next.wtw_rules_json);
+      }
       if (changed.has("translate_fallback_select_all")) {
         await window.electronAPI.setSetting("translate_fallback_select_all", next.translate_fallback_select_all === true);
       }
@@ -270,6 +306,29 @@ const SettingsPage = () => {
     const next = { ...settings, ...patch };
     setSettings(next);
     persistChangedFields(next, changedFields);
+  };
+
+  // 词转词：更新本地数组并序列化保存（过滤掉 from/to 任一为空的行）。
+  const commitWtwRules = (rules) => {
+    setWtwRules(rules);
+    const cleaned = rules
+      .map((r) => ({ from: (r.from || "").trim(), to: (r.to || "").trim() }))
+      .filter((r) => r.from && r.to);
+    updateAndSave("wtw_rules_json", JSON.stringify(cleaned));
+  };
+
+  const updateWtwRule = (index, field, value) => {
+    const v = typeof value === "string" ? value.slice(0, WTW_MAX_LEN) : "";
+    commitWtwRules(wtwRules.map((r, i) => (i === index ? { ...r, [field]: v } : r)));
+  };
+
+  const addWtwRule = () => {
+    if (wtwRules.length >= WTW_MAX_RULES) return;
+    commitWtwRules([...wtwRules, { from: "", to: "" }]);
+  };
+
+  const removeWtwRule = (index) => {
+    commitWtwRules(wtwRules.filter((_, i) => i !== index));
   };
 
   // 单独保存并立即应用录音触发键（不依赖 API Key）
@@ -1177,6 +1236,64 @@ const SettingsPage = () => {
                     />
                   </button>
                 </div>
+
+                {/* 托盘图标选择：中笑(透明模板) / 彩色猫头 */}
+                <div className="py-4 border-t border-gray-100 dark:border-neutral-800">
+                  <label className={`${rowLabelClass} chinese-title`}>托盘图标</label>
+                  <p className="mt-0.5 mb-2 text-[13px] text-gray-500 dark:text-neutral-400">
+                    菜单栏（系统托盘）显示的小猫图标样式
+                  </p>
+                  {/* 中笑(透明) */}
+                  <button
+                    type="button"
+                    onClick={() => updateAndSave('tray_icon_style', 'smile')}
+                    className="w-full flex items-center justify-between gap-4 py-3 text-left"
+                  >
+                    <div className="min-w-0">
+                      <label className={`${rowLabelClass} chinese-title`}>中笑（透明）</label>
+                      <p className="mt-0.5 text-[13px] text-gray-500 dark:text-neutral-400">
+                        单色镂空模板，跟随菜单栏明暗自适配（默认）
+                      </p>
+                    </div>
+                    <span
+                      aria-hidden="true"
+                      className={`flex-shrink-0 w-5 h-5 rounded-full border-2 flex items-center justify-center ${
+                        settings.tray_icon_style !== 'color'
+                          ? 'border-blue-600 dark:border-blue-400'
+                          : 'border-gray-300 dark:border-neutral-600'
+                      }`}
+                    >
+                      {settings.tray_icon_style !== 'color' && (
+                        <span className="w-2.5 h-2.5 rounded-full bg-blue-600 dark:bg-blue-400" />
+                      )}
+                    </span>
+                  </button>
+                  {/* 彩色猫头 */}
+                  <button
+                    type="button"
+                    onClick={() => updateAndSave('tray_icon_style', 'color')}
+                    className="w-full flex items-center justify-between gap-4 py-3 text-left"
+                  >
+                    <div className="min-w-0">
+                      <label className={`${rowLabelClass} chinese-title`}>彩色猫头</label>
+                      <p className="mt-0.5 text-[13px] text-gray-500 dark:text-neutral-400">
+                        保留原图配色的彩色猫头图标
+                      </p>
+                    </div>
+                    <span
+                      aria-hidden="true"
+                      className={`flex-shrink-0 w-5 h-5 rounded-full border-2 flex items-center justify-center ${
+                        settings.tray_icon_style === 'color'
+                          ? 'border-blue-600 dark:border-blue-400'
+                          : 'border-gray-300 dark:border-neutral-600'
+                      }`}
+                    >
+                      {settings.tray_icon_style === 'color' && (
+                        <span className="w-2.5 h-2.5 rounded-full bg-blue-600 dark:bg-blue-400" />
+                      )}
+                    </span>
+                  </button>
+                </div>
               </div>
             </div>
           )}
@@ -1234,6 +1351,64 @@ const SettingsPage = () => {
                       <span className="w-2.5 h-2.5 rounded-full bg-blue-600 dark:bg-blue-400" />
                     )}
                   </span>
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* 词转词 */}
+          {activeCategory === "wordtoword" && (
+            <div className="bg-white dark:bg-neutral-900 rounded-2xl shadow-sm border border-gray-100 dark:border-neutral-800">
+              <div className="px-6 py-4">
+                <p className="text-[13px] leading-relaxed text-gray-500 dark:text-neutral-400">
+                  把「原词」转为「目标词」。例如把「web coding」转为「VibeCoding」。识别到该词（含读音/拼写相近的词）时，会在 AI 处理时自动替换为目标词。每个词最多 50 字，最多 {WTW_MAX_RULES} 条规则。
+                </p>
+
+                <div className="mt-4 space-y-3">
+                  {wtwRules.length === 0 && (
+                    <p className="text-[13px] text-gray-400 dark:text-neutral-500">
+                      暂无规则，点击下方「添加规则」开始。
+                    </p>
+                  )}
+                  {wtwRules.map((rule, index) => (
+                    <div key={index} className="flex items-center gap-2">
+                      <input
+                        type="text"
+                        value={rule.from}
+                        maxLength={WTW_MAX_LEN}
+                        onChange={(e) => updateWtwRule(index, 'from', e.target.value)}
+                        placeholder="原词"
+                        className="flex-1 min-w-0 px-3 py-2 text-[14px] rounded-lg border border-gray-200 dark:border-neutral-700 bg-white dark:bg-neutral-800 text-gray-900 dark:text-gray-100 focus:outline-none focus:border-blue-500 dark:focus:border-blue-400"
+                      />
+                      <span className="flex-shrink-0 text-gray-400 dark:text-neutral-500">→</span>
+                      <input
+                        type="text"
+                        value={rule.to}
+                        maxLength={WTW_MAX_LEN}
+                        onChange={(e) => updateWtwRule(index, 'to', e.target.value)}
+                        placeholder="目标词"
+                        className="flex-1 min-w-0 px-3 py-2 text-[14px] rounded-lg border border-gray-200 dark:border-neutral-700 bg-white dark:bg-neutral-800 text-gray-900 dark:text-gray-100 focus:outline-none focus:border-blue-500 dark:focus:border-blue-400"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => removeWtwRule(index)}
+                        aria-label="删除该规则"
+                        className="flex-shrink-0 p-1.5 rounded-lg text-gray-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors"
+                      >
+                        <XCircle className="w-5 h-5" />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+
+                <button
+                  type="button"
+                  onClick={addWtwRule}
+                  disabled={wtwRules.length >= WTW_MAX_RULES}
+                  className="mt-4 inline-flex items-center gap-1.5 px-3 py-2 text-[14px] rounded-lg border border-dashed border-gray-300 dark:border-neutral-600 text-gray-600 dark:text-neutral-300 hover:border-blue-500 hover:text-blue-600 dark:hover:border-blue-400 dark:hover:text-blue-400 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                >
+                  <Sparkles className="w-4 h-4" />
+                  添加规则
                 </button>
               </div>
             </div>

@@ -3,6 +3,15 @@
 All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/); versioning follows [SemVer](https://semver.org/).
 
+## [1.5.3] - 2026-06-25
+
+### Added
+- 设置「皮肤」下方新增「托盘图标」选择：中笑(透明镂空模板,默认)/彩色猫头，切换后菜单栏托盘实时刷新
+- 左侧新增「词转词」功能(置于「实验」上方)：可配置「原词→目标词」规则，识别到该词(含读音/拼写相近)时在 AI 处理时自动替换；每词≤50 字、最多 30 条；规则随请求以 word_map 字段提交 API(relay 模式需待中转更新后完整生效)，直连模式即时注入提示词生效
+
+### Changed
+- macOS 托盘默认图标改为「中笑」镂空单色模板(setTemplateImage(true),深浅菜单栏自适配)
+
 ## [1.5.2] - 2026-06-25
 
 ### Changed
