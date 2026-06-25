@@ -625,6 +625,22 @@ async function startApp() {
   // 清理上次异常退出残留的临时音频
   cleanupOrphanTempAudio();
 
+  // ⚡ 唤醒键即时生效：在任何重活（开发模式等待 Vite、FunASR 启动、窗口/托盘创建）之前
+  // 就先注册全局热键并 uIOhook.start()。原生钩子需要约 0.5–2s 预热，越早启动越早接管，
+  // 否则启动头几秒的按键会落空（根因：此前在窗口/托盘创建之后才注册）。
+  // 依赖说明：databaseManager 已在模块加载阶段同步 initialize（见上方 567 行），
+  // 故此处 getSetting 安全；fire 回调对 mainWindow 为空已做空判，早按不显示胶囊但按键不丢。
+  try {
+    logger.info('⚡ 提前注册全局录音/转英文触发键（启动即生效）...');
+    setupRecordingTrigger();
+    setupTranslateTrigger();
+    // 触发器已挂载：允许 recorder-state 在录音时停用转英文触发器
+    appFullyInitialized = true;
+    logger.info('⚡ 全局触发键已提前就绪');
+  } catch (error) {
+    logger.error('提前注册全局触发键失败（稍后窗口就绪后行为不变）:', error);
+  }
+
   // 注释掉 accessibility 支持 - 可能干扰文本插入
   // try {
   //   app.setAccessibilitySupportEnabled(true);
@@ -687,15 +703,7 @@ async function startApp() {
   await trayManager.createTray();
   logger.info('系统托盘设置完成');
 
-  // 设置全局录音触发键
-  logger.info('设置录音触发键...');
-  setupRecordingTrigger();
-
-  // 设置「转英文」全局触发键
-  logger.info('设置转英文触发键...');
-  setupTranslateTrigger();
-  // 触发器已挂载，标记应用完成初始化（允许 recorder-state 在录音时停用转英文触发器）
-  appFullyInitialized = true;
+  // 全局录音/转英文触发键已在 startApp 顶部提前注册（启动即生效），此处不再重复注册。
 
   logger.info('应用启动完成');
 }

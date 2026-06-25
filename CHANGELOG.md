@@ -3,6 +3,11 @@
 All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/); versioning follows [SemVer](https://semver.org/).
 
+## [1.5.1] - 2026-06-25
+
+### Fixed
+- 启动后唤醒键延迟/无效——提前注册全局热键监听并即时响应，引擎未就绪改为缓冲/排队不再丢按键。把 uIOhook 全局热键注册提到 startApp 顶部（先于开发模式等待、FunASR 启动、窗口/托盘创建），原生钩子尽早接管；渲染端唤醒键不再因"模型加载中/未就绪"而拦截，立即开始麦克风录音并给出"引擎加载中"提示，音频在停止时由主进程等引擎就绪后自动转写（funasrManager.transcribeAudio 排队等待 initializationPromise，必要时按需拉起）。
+
 ## [1.4.11] - 2026-06-25
 
 ### Fixed

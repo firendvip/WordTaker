@@ -1304,10 +1304,17 @@ class FunASRManager {
       throw new Error("FunASR 未安装。请先安装 FunASR。");
     }
 
-    // 如果服务器还未就绪，等待初始化完成
-    if (!this.serverReady && this.initializationPromise) {
-      this.logger.info && this.logger.info('等待FunASR服务器就绪...');
-      await this.initializationPromise;
+    // 如果服务器还未就绪，等待初始化完成（缓冲/排队：启动后立刻录的音频在这里等引擎就绪，不丢）。
+    // 若初始化尚未启动（initializationPromise 为空），主动拉起一次，避免早录音频因"无人初始化"被直接判失败。
+    if (!this.serverReady) {
+      if (!this.initializationPromise) {
+        this.logger.info && this.logger.info('引擎尚未初始化，按需拉起 FunASR 服务器...');
+        try { this.preInitializeModels(); } catch (_) {}
+      }
+      if (this.initializationPromise) {
+        this.logger.info && this.logger.info('等待FunASR服务器就绪（早录音频排队中）...');
+        try { await this.initializationPromise; } catch (_) { /* 失败下方统一处理 */ }
+      }
     }
 
     const tempAudioPath = await this.createTempAudioFile(audioBlob);

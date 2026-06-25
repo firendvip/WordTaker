@@ -70,15 +70,10 @@ export const useRecording = ({ onTranscriptionCompleteRef, onAIOptimizationCompl
       cancelledRef.current = false;
       rawOnlyRef.current = false; // 每次新录音重置"不走 API"标记
 
-      // 检查FunASR是否就绪
-      if (!modelStatus.isReady) {
-        if (modelStatus.isLoading) {
-          throw new Error('FunASR服务器正在启动中，请稍候...');
-        } else if (modelStatus.error) {
-          throw new Error('FunASR服务器未就绪，请检查配置');
-        } else {
-          throw new Error('正在准备FunASR服务器，请稍候...');
-        }
+      // 唤醒键即时生效：引擎只是"正在加载/未就绪"时不再阻止录音——麦克风采集不依赖模型。
+      // 仅当引擎处于明确错误态时才中止（无法转写）。其余情况照常采集，音频在停止时排队等引擎就绪转写。
+      if (!modelStatus.isReady && modelStatus.error && !modelStatus.isLoading) {
+        throw new Error('FunASR服务器未就绪，请检查配置');
       }
 
       // 检查浏览器支持

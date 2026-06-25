@@ -378,33 +378,29 @@ function RecorderApp() {
 
   // 切换录音状态
   const toggleRecording = useCallback(() => {
-    // 检查模型状态
+    // 唤醒键即时生效：只有"模型文件缺失/正在下载/致命错误"这种真的没法转写的情况才拦截。
+    // 引擎只是"正在加载/未就绪"时，不再丢按键——立即开始录音（麦克风不依赖模型），
+    // 音频会在停止时由主进程等引擎就绪后转写（见 funasrManager.transcribeAudio 排队逻辑）。
     if (modelStatus.stage === 'need_download') {
       toast.warning("📥 请先下载AI模型文件");
       return;
     }
-    
+
     if (modelStatus.stage === 'downloading') {
       toast.warning("⬇️ 模型正在下载中，请稍候...");
       return;
     }
-    
-    if (modelStatus.stage === 'loading') {
-      toast.warning("🤖 模型正在加载中，请稍候...");
-      return;
-    }
-    
+
     if (modelStatus.stage === 'error') {
       toast.error(`❌ 模型错误: ${modelStatus.error}`);
       return;
     }
-    
-    if (!modelStatus.isReady) {
-      toast.warning("⏳ 模型未就绪，请稍候...");
-      return;
-    }
 
     if (!isRecording && !isRecordingProcessing) {
+      // 引擎还在加载：先给可见反馈，再照常开始录音并缓冲，绝不丢按键。
+      if (!modelStatus.isReady) {
+        toast.info("🤖 引擎加载中，已开始录音，将在就绪后自动转写…");
+      }
       recordingStartRef.current = Date.now();
       startRecording();
     } else if (isRecording) {
