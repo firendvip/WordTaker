@@ -178,7 +178,14 @@ class EmbeddedPythonBuilder {
     console.log(`📥 下载Python运行时 (${this.targetPlatform}/${this.targetArch})...`);
     console.log(`URL: ${url}`);
 
-    await this.downloadFile(url, tarPath);
+    // 优先使用预先暂存的 tarball（cleanup() 会清空 python/，故暂存到 python/ 之外）。
+    const stagedTar = process.env.EMBEDDED_PYTHON_TARBALL;
+    if (stagedTar && fs.existsSync(stagedTar)) {
+      console.log(`📦 复用已暂存的运行时包: ${stagedTar}`);
+      fs.copyFileSync(stagedTar, tarPath);
+    } else {
+      await this.downloadFile(url, tarPath);
+    }
     
     console.log('📦 解压Python运行时...');
     await tar.extract({

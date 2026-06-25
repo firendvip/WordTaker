@@ -3,6 +3,17 @@
 All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/); versioning follows [SemVer](https://semver.org/).
 
+## [1.5.7] - 2026-06-26
+
+### Fixed
+- mac 识别变慢真因——嵌入式 Python 缺 funasr_onnx 致 SenseVoice 加载失败回退 Paraformer（每句 +~0.8s）；补 funasr_onnx 恢复 SenseVoice（~1.0s→~0.15s）。
+
+### Added
+- 录音时调用 prewarm 预热连接（TLS/TCP），减少首句延迟。
+
+### Changed
+- max_tokens 2000→600，降低 LLM 输出延迟。
+
 ## [1.5.6] - 2026-06-26
 
 ### Fixed

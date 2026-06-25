@@ -149,7 +149,7 @@ class DatabaseManager {
       // 提示词模板（默认采用 zuiti 的润色 system 提示，含防注入设计；用户可在设置里改）
       llm_prompt_template: DEFAULT_COPYWRITING_PROMPT,
       llm_temperature: 0.7,
-      llm_max_tokens: 2000,
+      llm_max_tokens: 600,
       // LLM 失败时是否回退粘贴识别原文（默认是，保证"说完一定有文本贴到光标"）
       llm_fallback_paste_raw: true,
       // 透传到请求体的额外字段：关闭 DeepSeek 思考模式（v4-flash 默认会思考，关闭后约快 1.3 秒）

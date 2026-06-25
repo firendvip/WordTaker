@@ -29,7 +29,7 @@ const ALLOWED_ORIGINS = [
 const ALLOWED_UPSTREAM_HOSTS = ["api.deepseek.com"];
 const DEFAULT_MODEL = "deepseek-v4-flash";
 const DEFAULT_MAX_INPUT_CHARS = 1000;
-const DEFAULT_MAX_TOKENS = 2000;
+const DEFAULT_MAX_TOKENS = 600;
 const DEFAULT_TEMPERATURE = 0.7;
 const UPSTREAM_TIMEOUT_MS = 30000;
 
