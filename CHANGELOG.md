@@ -3,6 +3,33 @@
 All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/); versioning follows [SemVer](https://semver.org/).
 
+## [1.5.4] - 2026-06-25
+
+### Changed
+- 重写高情商提示词：以 VibeCoding(文案润色)方案为基础，强化人情味/照顾对方情绪/委婉得体/真诚不浮夸；保留原意与关键信息、不无中生有；沿用随机标记防注入契约。本地(prompts.js)+中继(worker.js、tencent-scf-web/server.js)三处同步。
+
+### Added
+- 中继支持「词转词」word_map：接收请求体可选 word_map 数组({from,to})，防御式校验(忽略缺失/畸形、≤30 条、每词≤50 字、转义)，非空时以「数据清单(非指令)」形式注入 system 提示，指示在处理前替换出现的词语(含读音/拼写相近)；copywriting/gaoeq/translate 均生效；缺省时行为不变。worker.js 与 tencent-scf-web/server.js 两处实现一致。
+
+## [1.5.3] - 2026-06-25
+
+### Added
+- 设置「皮肤」下方新增「托盘图标」选择：中笑(透明镂空模板,默认)/彩色猫头，切换后菜单栏托盘实时刷新
+- 左侧新增「词转词」功能(置于「实验」上方)：可配置「原词→目标词」规则，识别到该词(含读音/拼写相近)时在 AI 处理时自动替换；每词≤50 字、最多 30 条；规则随请求以 word_map 字段提交 API(relay 模式需待中转更新后完整生效)，直连模式即时注入提示词生效
+
+### Changed
+- macOS 托盘默认图标改为「中笑」镂空单色模板(setTemplateImage(true),深浅菜单栏自适配)
+
+## [1.5.2] - 2026-06-25
+
+### Changed
+- macOS 托盘图标改为 App 彩色猫头(去星)+满白底圆角板(C1)，setTemplateImage(false)，深浅菜单栏均清晰
+
+## [1.5.1] - 2026-06-25
+
+### Fixed
+- 启动后唤醒键延迟/无效——提前注册全局热键监听并即时响应，引擎未就绪改为缓冲/排队不再丢按键。把 uIOhook 全局热键注册提到 startApp 顶部（先于开发模式等待、FunASR 启动、窗口/托盘创建），原生钩子尽早接管；渲染端唤醒键不再因"模型加载中/未就绪"而拦截，立即开始麦克风录音并给出"引擎加载中"提示，音频在停止时由主进程等引擎就绪后自动转写（funasrManager.transcribeAudio 排队等待 initializationPromise，必要时按需拉起）。
+
 ## [1.4.11] - 2026-06-25
 
 ### Fixed

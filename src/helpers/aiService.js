@@ -63,6 +63,33 @@ class AiService {
     }
   }
 
+  // 读取并解析「词转词」规则：返回 [{from,to}, ...]，仅保留 from/to 均非空的项。
+  // 任何解析异常一律降级为空数组，绝不抛出，保证不影响主润色链路。
+  async getWordMapRules() {
+    try {
+      const raw = await this.databaseManager.getSetting('wtw_rules_json', '[]');
+      const arr = JSON.parse(typeof raw === 'string' ? raw : '[]');
+      if (!Array.isArray(arr)) return [];
+      return arr
+        .filter((r) => r && typeof r === 'object')
+        .map((r) => ({
+          from: typeof r.from === 'string' ? r.from.trim() : '',
+          to: typeof r.to === 'string' ? r.to.trim() : '',
+        }))
+        .filter((r) => r.from && r.to);
+    } catch (e) {
+      return [];
+    }
+  }
+
+  // 把词转词规则编织成一段简短的中文指令，供直连模式注入到 system 提示。
+  // 直连模式本地构建 prompt，无法靠 relay 端处理 word_map，故在此显式告知模型。
+  buildWordMapDirective(rules) {
+    if (!Array.isArray(rules) || rules.length === 0) return '';
+    const lines = rules.map((r) => `「${r.from}」→「${r.to}」`).join('；');
+    return '此外，请在输出中执行以下「词转词」替换：当文本中出现下列左侧词（含读音或拼写相近的写法）时，统一替换为右侧目标词，保持大小写与原样式：' + lines + '。';
+  }
+
   // 「转英文」：把选中文本翻译成地道英文。优先走中转（key 留在服务器端），否则本地直连。
   async translateToEnglish(text) {
     if (typeof text !== 'string' || !text.trim()) return { success: false, error: '无有效文本' };
@@ -102,13 +129,19 @@ class AiService {
       if (token) headers['X-App-Token'] = token;
       if (deviceId) headers['X-Device-Id'] = deviceId;
 
-      this.logger.info('AI文案处理(中转·流式)请求:', { mode, inputLength: text.length });
+      // 词转词规则：非空时随请求带上 word_map（relay 端将来更新后据此替换）
+      const wordMap = await this.getWordMapRules();
+
+      this.logger.info('AI文案处理(中转·流式)请求:', { mode, inputLength: text.length, wordMapCount: wordMap.length });
+
+      const body = { text, mode, stream: true };
+      if (wordMap.length > 0) body.word_map = wordMap;
 
       // 流式不重试(重试会重复输出);用带超时的 fetch
       const response = await fetchWithTimeout(relayUrl, {
         method: 'POST',
         headers,
-        body: JSON.stringify({ text, mode, stream: true }),
+        body: JSON.stringify(body),
       });
       if (!response.ok || !response.body) {
         return { success: false, error: `中转服务错误: ${response.status}` };
@@ -172,12 +205,18 @@ class AiService {
       if (token) headers['X-App-Token'] = token;
       if (deviceId) headers['X-Device-Id'] = deviceId; // 供中转端按设备限流
 
-      this.logger.info('AI文案处理(中转)请求:', { mode, inputLength: text.length });
+      // 词转词规则：非空时随请求带上 word_map，relay 端将来更新后据此替换（当前 relay 会忽略，无害）
+      const wordMap = await this.getWordMapRules();
+
+      this.logger.info('AI文案处理(中转)请求:', { mode, inputLength: text.length, wordMapCount: wordMap.length });
+
+      const body = { text, mode };
+      if (wordMap.length > 0) body.word_map = wordMap;
 
       const response = await fetchWithRetry(relayUrl, {
         method: 'POST',
         headers,
-        body: JSON.stringify({ text, mode }),
+        body: JSON.stringify(body),
       });
 
       if (!response.ok) {
@@ -269,6 +308,21 @@ class AiService {
           { role: 'system', content: OPTIMIZE_SYSTEM },
           { role: 'user', content: userContent },
         ];
+      }
+
+      // 词转词（直连模式）：本地构建 prompt，relay 不参与，故把替换规则编织进提示词，立即生效。
+      // 注入到 system 消息末尾；若无 system（用户自定义 ${text} 模板的单 user 情况）则补一条 system。
+      const wordMapRules = await this.getWordMapRules();
+      const wordMapDirective = this.buildWordMapDirective(wordMapRules);
+      if (wordMapDirective && Array.isArray(messages) && messages.length > 0) {
+        const sysIdx = messages.findIndex((m) => m && m.role === 'system');
+        if (sysIdx >= 0) {
+          messages = messages.map((m, i) =>
+            i === sysIdx ? { ...m, content: `${m.content}\n\n${wordMapDirective}` } : m
+          );
+        } else {
+          messages = [{ role: 'system', content: wordMapDirective }, ...messages];
+        }
       }
 
       const temperature = await this.databaseManager.getSetting('llm_temperature', 0.7);

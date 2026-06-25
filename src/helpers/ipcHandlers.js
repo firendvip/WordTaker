@@ -19,6 +19,10 @@ const ALLOWED_SETTING_KEYS = new Set([
   "pill_skin",
   // 胶囊跟随输入焦点：true 跟随焦点/鼠标；false 固定屏幕底部居中
   "pill_follow_focus",
+  // 托盘图标样式（'smile' 中笑模板，默认 | 'color' 彩色猫头）
+  "tray_icon_style",
+  // 词转词规则 JSON 字符串数组 [{from,to}]，AI 处理时自动替换
+  "wtw_rules_json",
 ]);
 // 转录选项白名单：渲染层只能透传这些键到 Python 边界，丢弃未知键（IPCVAL-1）。
 // 与 funasr_server.py 的 default_options 对齐。
