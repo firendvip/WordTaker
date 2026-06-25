@@ -200,7 +200,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
 
 // 添加一些实用的常量
 contextBridge.exposeInMainWorld("constants", {
-  APP_NAME: "WordTaker (WordTaker)",
+  APP_NAME: "弦外小猫",
   // 版本号不在此硬编码（避免与 package.json 漂移）。
   // 单一来源 = package.json：渲染层通过 electronAPI.getAppVersion() 取 app.getVersion()。
   SUPPORTED_AUDIO_FORMATS: ["wav", "mp3", "m4a", "flac"],

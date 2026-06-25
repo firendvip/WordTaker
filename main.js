@@ -572,7 +572,7 @@ try {
   logger.error("数据库初始化失败:", error);
   try {
     dialog.showErrorBox(
-      "WordTaker 启动失败",
+      "弦外小猫 启动失败",
       `无法初始化本地数据库，应用将退出。\n\n${error?.message || error}`
     );
   } catch (e) {
@@ -667,7 +667,7 @@ async function startApp() {
   if (!windowManager.mainWindow) {
     try {
       dialog.showErrorBox(
-        "WordTaker 启动失败",
+        "弦外小猫 启动失败",
         "无法创建主窗口，应用将退出。请重试或重新安装。"
       );
     } catch (e) {

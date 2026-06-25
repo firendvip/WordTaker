@@ -1,6 +1,6 @@
 {
-  "name": "wordtaker",
-  "version": "1.4.11",
+  "name": "kittyecho",
+  "version": "1.5.0",
   "description": "WordTaker — 基于 FunASR 本地识别与 DeepSeek 润色的本地中文语音输入工具",
   "main": "main.js",
   "private": true,
@@ -115,8 +115,8 @@
     "unzipper": "^0.12.3"
   },
   "build": {
-    "appId": "com.wordtaker.app",
-    "productName": "WordTaker",
+    "appId": "com.kittyecho.app",
+    "productName": "弦外小猫",
     "directories": {
       "output": "dist"
     },
@@ -169,7 +169,8 @@
     },
     "win": {
       "icon": "build/icon.ico",
-      "artifactName": "${productName}-${version}-${arch}.${ext}",
+      "executableName": "KittyEcho",
+      "artifactName": "KittyEcho-${version}-${arch}.${ext}",
       "target": [
         {
           "target": "nsis",
@@ -195,11 +196,14 @@
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
-      "shortcutName": "WordTaker",
-      "artifactName": "${productName}-${version}-${arch}-setup.${ext}"
+      "shortcutName": "弦外小猫",
+      "artifactName": "KittyEcho-${version}-${arch}-setup.${ext}"
     },
     "portable": {
-      "artifactName": "${productName}-${version}-${arch}-portable.exe"
+      "artifactName": "KittyEcho-${version}-${arch}-portable.exe"
+    },
+    "dmg": {
+      "artifactName": "KittyEcho-${version}-${arch}.${ext}"
     },
     "linux": {
       "icon": "assets/icon.png",
