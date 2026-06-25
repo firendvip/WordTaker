@@ -3,6 +3,11 @@
 All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/); versioning follows [SemVer](https://semver.org/).
 
+## [1.5.5] - 2026-06-26
+
+### Fixed
+- 高情商模式会"回答问题"而非润色——以 VibeCoding 写法重定位为纯改写器(不回答/不回应/只输出改写)，加入示例锁定行为；本地+中继三处同步
+
 ## [1.5.4] - 2026-06-25
 
 ### Changed
