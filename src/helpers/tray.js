@@ -36,8 +36,8 @@ class TrayManager {
       let trayIcon;
       
       if (process.platform === "darwin") {
-        // macOS 菜单栏：单色 template 猫头剪影（透明底 PNG，挖空眼睛；@2x 同目录时 Electron 自动选用）。
-        // 文件名以 Template 结尾 + setTemplateImage(true)，macOS 自动按明暗菜单栏反色，深浅都可见。
+        // macOS 菜单栏：彩色猫头(C1) + 满白底圆角板（透明底 PNG；@2x 同目录时 Electron 自动选用）。
+        // 非 template 图（setTemplateImage(false)），保留原图配色，深浅菜单栏均清晰可见。
         const catIconPath = this.getCatTrayIconPath();
         trayIcon = nativeImage.createFromPath(catIconPath);
         if (trayIcon.isEmpty()) {
@@ -48,7 +48,7 @@ class TrayManager {
             console.error(msg);
           }
         }
-        trayIcon.setTemplateImage(true);
+        trayIcon.setTemplateImage(false);
       } else if (process.platform === "win32" && iconPath && require("fs").existsSync(iconPath)) {
         // Windows 托盘：彩色 .ico，缩放到 16px 并关闭模板图（否则会被渲染成单色）
         trayIcon = nativeImage.createFromPath(iconPath).resize({ width: 16, height: 16 });
@@ -103,12 +103,12 @@ class TrayManager {
     return nativeImage.createFromBitmap(buf, { width: S, height: S, scaleFactor: 2 });
   }
 
-  // macOS 单色 template 猫头托盘图标路径（@1x；同目录的 @2x 由 Electron 自动选用），dev/打包均可解析。
+  // macOS 彩色猫头(C1) 托盘图标路径（@1x；同目录的 @2x 由 Electron 自动选用），dev/打包均可解析。
   // 资源随 assets/**/* 打进 app.asar，__dirname 在打包态为 .../app.asar/src/helpers，
-  // 上跳两级即 .../app.asar/assets/cat-trayTemplate.png（nativeImage.createFromPath 可直读 asar），
+  // 上跳两级即 .../app.asar/assets/cat-tray-color.png（nativeImage.createFromPath 可直读 asar），
   // dev 态 __dirname 为 .../ququ/src/helpers，同样上跳两级命中 .../ququ/assets/。故 dev/打包统一用 __dirname 相对路径。
   getCatTrayIconPath() {
-    return path.join(__dirname, "..", "..", "assets", "cat-trayTemplate.png");
+    return path.join(__dirname, "..", "..", "assets", "cat-tray-color.png");
   }
 
   getTrayIconPath() {

@@ -3,6 +3,11 @@
 All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/); versioning follows [SemVer](https://semver.org/).
 
+## [1.5.2] - 2026-06-25
+
+### Changed
+- macOS 托盘图标改为 App 彩色猫头(去星)+满白底圆角板(C1)，setTemplateImage(false)，深浅菜单栏均清晰
+
 ## [1.5.1] - 2026-06-25
 
 ### Fixed
