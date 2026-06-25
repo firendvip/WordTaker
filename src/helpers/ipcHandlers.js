@@ -1,6 +1,10 @@
 const { ipcMain } = require("electron");
 const AiService = require("./aiService");
 
+// AI 处理硬超时（毫秒）：LLM 中转/请求挂起时，渲染层 await 会被永久阻塞导致卡死，
+// 用 Promise.race 兜底超时，超时一律返回结构化失败（稳定性优先）。
+const IPC_PROCESS_TIMEOUT_MS = 40000;
+
 // 设置键白名单：渲染层只能写入这些键，杜绝写入 __proto__ 等任意键
 const ALLOWED_SETTING_KEYS = new Set([
   "ai_api_key", "ai_base_url", "ai_model", "enable_ai_optimization",
@@ -149,7 +153,21 @@ class IPCHandlers {
       // 润色模式（copywriting）按当前「角色」解析：vibecoding→copywriting / gaoeq→gaoeq。
       // 其它模式（如 optimize）保持原样透传。
       const effectiveMode = mode === 'copywriting' ? await this.aiService.getPolishMode() : mode;
-      return await this.aiService.processTextWithAI(text, effectiveMode);
+      // 硬超时兜底：LLM 请求挂起时不让渲染层 await 永久阻塞（稳定性优先）。
+      let timer = null;
+      try {
+        return await Promise.race([
+          this.aiService.processTextWithAI(text, effectiveMode),
+          new Promise((_, reject) => {
+            timer = setTimeout(() => reject(new Error('处理超时')), IPC_PROCESS_TIMEOUT_MS);
+          }),
+        ]);
+      } catch (error) {
+        this.logger.error("process-text 处理失败:", error?.message || error);
+        return { success: false, error: '处理超时' };
+      } finally {
+        if (timer) clearTimeout(timer);
+      }
     });
 
     ipcMain.handle("check-ai-status", async (event, testConfig = null) => {
@@ -213,7 +231,39 @@ class IPCHandlers {
 
       // 润色模式按当前「角色」决定：vibecoding→copywriting / gaoeq→gaoeq
       const polishMode = await this.aiService.getPolishMode();
-      const result = await this.aiService.processTextViaRelayStream(text, polishMode, relayUrl, onDelta);
+      // 硬超时兜底：流式请求挂起时，渲染层 await 会被永久阻塞（卡死）。超时即收尾并返回失败，
+      // 让渲染层的 await 立即得到终态（本 handler 的「终态信号」就是返回值的 resolve）。
+      let streamTimer = null;
+      let result;
+      try {
+        result = await Promise.race([
+          this.aiService.processTextViaRelayStream(text, polishMode, relayUrl, onDelta),
+          new Promise((_, reject) => {
+            streamTimer = setTimeout(() => reject(new Error('处理超时')), IPC_PROCESS_TIMEOUT_MS);
+          }),
+        ]);
+      } catch (error) {
+        this.logger.error("process-text-stream 处理失败:", error?.message || error);
+        // 超时也要收尾：贴出已攒缓冲并恢复剪贴板，避免残留状态。
+        try {
+          flush(true);
+          await this.clipboardManager.appendChunk("");
+        } catch (e) {
+          this.logger.error("流式超时收尾失败:", e?.message || String(e));
+        }
+        let keepResultOnTimeout = false;
+        try {
+          keepResultOnTimeout = await this.databaseManager.getSetting("keep_result_in_clipboard", false);
+        } catch (e) {
+          keepResultOnTimeout = false;
+        }
+        if (!keepResultOnTimeout) {
+          setTimeout(() => this.clipboardManager.restoreClipboard(original), 500);
+        }
+        return { success: false, error: '处理超时', pastedAny };
+      } finally {
+        if (streamTimer) clearTimeout(streamTimer);
+      }
       let flushError = null;
       try {
         flush(true); // 结束：强制贴出剩余缓冲（绕过上限）

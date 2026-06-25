@@ -3,6 +3,11 @@
 All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/); versioning follows [SemVer](https://semver.org/).
 
+## [1.5.6] - 2026-06-26
+
+### Fixed
+- 全链路超时兜底——渲染层管线总超时(45s)、IPC 处理器超时(40s)、aiService 重试收敛(最坏~40s)+流式整体上限/无终止标记判错、FunASR 初始化等待有界(60s)、中继上游超时并必定收尾；任何卡住自动结束"处理中"并提示，不再永久卡死
+
 ## [1.5.5] - 2026-06-26
 
 ### Fixed

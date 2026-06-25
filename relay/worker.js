@@ -31,6 +31,7 @@ const DEFAULT_MODEL = "deepseek-v4-flash";
 const DEFAULT_MAX_INPUT_CHARS = 1000;
 const DEFAULT_MAX_TOKENS = 2000;
 const DEFAULT_TEMPERATURE = 0.7;
+const UPSTREAM_TIMEOUT_MS = 30000;
 
 // 文案润色 system 提示（含最高优先级的防注入规则），与客户端保持一致。
 const COPYWRITING_PROMPT = `你是一位资深中文文本润色与校对专家，尤其擅长处理口语化、逻辑松散且可能包含错别字的表达。你的唯一任务是：接收用户提交的一段中文原始文本，将其整理成通顺、不啰嗦、准确的书面语，并且**直接输出润色后的结果**，不需要解释修改过程。
@@ -304,6 +305,8 @@ export default {
     };
 
     // 6) 转发到 DeepSeek（在服务端注入真实 key）
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), UPSTREAM_TIMEOUT_MS);
     try {
       const upstream = await fetch(`${baseUrl}/chat/completions`, {
         method: "POST",
@@ -312,6 +315,7 @@ export default {
           "Content-Type": "application/json",
         },
         body: JSON.stringify(requestData),
+        signal: controller.signal,
       });
 
       if (!upstream.ok) {
@@ -331,7 +335,12 @@ export default {
       }
       return json({ success: true, text: out.trim() }, 200, cors);
     } catch (e) {
+      if (e && e.name === "AbortError") {
+        return json({ success: false, error: "上游超时" }, 504, cors);
+      }
       return json({ success: false, error: "Relay request failed" }, 502, cors);
+    } finally {
+      clearTimeout(timer);
     }
   },
 };

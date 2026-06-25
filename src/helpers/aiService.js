@@ -11,7 +11,7 @@ const ALLOWED_LLM_EXTRA_KEYS = new Set([
 ]);
 
 // LLM 请求默认超时（毫秒）：防止 relay/DeepSeek 挂起导致请求永久 pending、卡死后续录音
-const LLM_REQUEST_TIMEOUT_MS = 30000;
+const LLM_REQUEST_TIMEOUT_MS = 20000;
 
 // 带超时的 fetch：超时后 abort，触发各调用处已有的 AbortError 处理分支
 async function fetchWithTimeout(url, options = {}, timeoutMs = LLM_REQUEST_TIMEOUT_MS) {
@@ -26,21 +26,24 @@ async function fetchWithTimeout(url, options = {}, timeoutMs = LLM_REQUEST_TIMEO
 
 const _sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-// 在 fetchWithTimeout 之上加指数退避重试：仅对瞬时错误(429/5xx)与网络异常重试，最多 3 次。
+// 在 fetchWithTimeout 之上加指数退避重试：仅对瞬时错误(429/5xx)与网络异常重试，最多 2 次。
+// 最坏耗时收敛到 ≲40s：2 次 × 20s 单次超时 + 1 次 ≤2s 退避 = 约 42s 上界，实际 AbortError 多在 20s 内触发，远低于此。
+const MAX_FETCH_ATTEMPTS = 2;
 async function fetchWithRetry(url, options = {}, timeoutMs = LLM_REQUEST_TIMEOUT_MS) {
-  const backoff = [1000, 3000];
+  const backoff = [2000];
   let lastErr;
-  for (let attempt = 0; attempt < 3; attempt++) {
+  for (let attempt = 0; attempt < MAX_FETCH_ATTEMPTS; attempt++) {
+    const isLast = attempt >= MAX_FETCH_ATTEMPTS - 1;
     try {
       const res = await fetchWithTimeout(url, options, timeoutMs);
-      if ((res.status === 429 || res.status >= 500) && attempt < 2) {
+      if ((res.status === 429 || res.status >= 500) && !isLast) {
         await _sleep(backoff[attempt]);
         continue;
       }
       return res;
     } catch (e) {
       lastErr = e;
-      if (attempt < 2) { await _sleep(backoff[attempt]); continue; }
+      if (!isLast) { await _sleep(backoff[attempt]); continue; }
       throw e;
     }
   }
@@ -150,12 +153,17 @@ class AiService {
       // 流式空闲看门狗：headers 到达后 fetch 的超时已失效，若上游中途停滞，
       // 读循环会永久挂起。每收到一个分片就重置计时，超时则取消 reader 解挂。
       const STREAM_IDLE_TIMEOUT_MS = 20000;
+      // 流式总时长硬上限：即便分片持续到达（空闲看门狗不触发），也强制在 40s 封顶，
+      // 避免上游慢速涓流导致整体长时间挂起、卡死后续录音。
+      const STREAM_HARD_CAP_MS = 40000;
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
       let buf = '';
       let full = '';
       let idleTimer = null;
       let timedOut = false;
+      let hardCapped = false;
+      let sawDone = false; // 是否收到 done 终止标记；未收到即视为流被截断=错误
       const resetIdle = () => {
         if (idleTimer) clearTimeout(idleTimer);
         idleTimer = setTimeout(() => {
@@ -163,6 +171,11 @@ class AiService {
           try { reader.cancel(); } catch (e) { /* 忽略 */ }
         }, STREAM_IDLE_TIMEOUT_MS);
       };
+      const hardCapTimer = setTimeout(() => {
+        hardCapped = true;
+        timedOut = true;
+        try { reader.cancel(); } catch (e) { /* 忽略 */ }
+      }, STREAM_HARD_CAP_MS);
       try {
         resetIdle();
         for (;;) {
@@ -178,17 +191,22 @@ class AiService {
             try {
               const j = JSON.parse(line);
               if (j.d) { full += j.d; if (typeof onDelta === 'function') onDelta(j.d); }
-              else if (j.done && typeof j.text === 'string' && j.text) full = j.text;
+              else if (j.done) { sawDone = true; if (typeof j.text === 'string' && j.text) full = j.text; }
             } catch { /* 跳过坏行 */ }
           }
         }
       } finally {
         if (idleTimer) clearTimeout(idleTimer);
+        clearTimeout(hardCapTimer);
         try { reader.cancel(); } catch (e) { /* 忽略 */ }
       }
       const out = full.trim();
-      if (timedOut && !out) return { success: false, error: '流式响应超时' };
+      // 超时（空闲或硬上限）一律按错误返回，绝不把部分/空内容当成功
+      if (hardCapped) return { success: false, error: '流式响应超过最长时限' };
+      if (timedOut) return { success: false, error: '流式响应超时' };
       if (!out) return { success: false, error: '流式返回为空' };
+      // 流在未收到 done 终止标记的情况下结束=被上游截断，按错误返回防止吞掉不完整结果
+      if (!sawDone) return { success: false, error: '流式响应未完成（缺少结束标记）' };
       this.logger.info('AI文案处理(中转·流式)完成:', { outputLength: out.length });
       return { success: true, text: out };
     } catch (error) {

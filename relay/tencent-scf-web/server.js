@@ -23,6 +23,7 @@ const DEFAULT_MODEL = "deepseek-v4-flash";
 const DEFAULT_MAX_INPUT_CHARS = 1000;
 const DEFAULT_MAX_TOKENS = 2000;
 const DEFAULT_TEMPERATURE = 0.7;
+const UPSTREAM_TIMEOUT_MS = 30000;
 
 const COPYWRITING_PROMPT = [
   "你是一位资深中文文本润色与校对专家，任务是把口语化、逻辑松散、可能含错别字的中文，整理成通顺、不啰嗦、准确的书面语，并直接输出结果，不解释修改过程。",
@@ -231,20 +232,28 @@ async function handlePost(req, res, body) {
     return sendJson(res, 500, { success: false, error: "Relay misconfigured" }, cors);
   }
 
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), UPSTREAM_TIMEOUT_MS);
   let upstream;
   try {
     upstream = await fetch(baseUrl + "/chat/completions", {
       method: "POST",
       headers: { Authorization: "Bearer " + env.DEEPSEEK_API_KEY, "Content-Type": "application/json" },
       body: JSON.stringify(buildRequestBody(text, wantStream, mode, wordMap)),
+      signal: controller.signal,
     });
   } catch {
+    clearTimeout(timer);
     return sendJson(res, 502, { success: false, error: "Relay request failed" }, cors);
   }
-  if (!upstream.ok) return sendJson(res, 502, { success: false, error: "Upstream error: " + upstream.status }, cors);
+  if (!upstream.ok) {
+    clearTimeout(timer);
+    return sendJson(res, 502, { success: false, error: "Upstream error: " + upstream.status }, cors);
+  }
 
   // 非流式：照旧返回 { success, text }
   if (!wantStream) {
+    clearTimeout(timer);
     const data = await upstream.json();
     const out = data && data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content;
     if (!out) return sendJson(res, 502, { success: false, error: "Empty completion" }, cors);
@@ -287,7 +296,9 @@ async function handlePost(req, res, body) {
       }
     }
   } catch {
-    partial = true; // 上游中断
+    partial = true; // 上游中断或超时（含 AbortError）
+  } finally {
+    clearTimeout(timer);
   }
   const terminal = { done: true, text: full.trim() };
   if (partial) terminal.partial = true;

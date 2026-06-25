@@ -16,6 +16,10 @@ const BAND_RENDER_INTERVAL_MS = 1000 / BAND_RENDER_FPS;
 
 const createZeroBands = () => new Array(BAND_COUNT).fill(0);
 
+// 异步处理链（LLM/流式/落库）的硬性总超时：超过即强制结束本次处理，
+// 释放 isOptimizing 与并发守卫，避免任何一步卡死导致整个胶囊永久卡住（稳定性优先）。
+const PIPELINE_HARD_TIMEOUT_MS = 45000;
+
 /**
  * 录音功能Hook
  * 提供录音、停止录音、音频处理等功能
@@ -347,7 +351,10 @@ export const useRecording = ({ onTranscriptionCompleteRef, onAIOptimizationCompl
                 window.electronAPI.log(level, ...args);
               }
             };
-            try {
+            // 硬超时句柄：在 finally 里清除，避免定时器泄漏
+            let hardTimeoutId = null;
+            // 把原有处理逻辑包成一个 promise，与硬超时竞速：任一先结算即返回
+            const pipelinePromise = (async () => {
               // 一次性快照所有设置：把热路径上原本 4~5 次串行 getSetting(IPC+读库)往返
               // 压成一次 getAllSettings，单句不会中途改设置，快照足够安全且更快。
               const _settings =
@@ -503,6 +510,18 @@ export const useRecording = ({ onTranscriptionCompleteRef, onAIOptimizationCompl
                   })
                   .catch((err) => log('error', '补写转录失败:', err));
               }
+            })();
+
+            // 硬超时：45s 内整条链未结算则 reject，由下方 catch 走统一失败通知
+            const timeoutPromise = new Promise((_, reject) => {
+              hardTimeoutId = setTimeout(
+                () => reject(new Error('处理超时')),
+                PIPELINE_HARD_TIMEOUT_MS
+              );
+            });
+
+            try {
+              await Promise.race([pipelinePromise, timeoutPromise]);
             } catch (err) {
               log('error', '处理和保存转录时出错:', err);
               if (onAIOptimizationCompleteRef?.current) {
@@ -516,6 +535,8 @@ export const useRecording = ({ onTranscriptionCompleteRef, onAIOptimizationCompl
                 });
               }
             } finally {
+              // 清除硬超时句柄，避免定时器泄漏
+              if (hardTimeoutId) clearTimeout(hardTimeoutId);
               setIsOptimizing(false);
               // 异步粘贴/入库链全部结束后才释放并发守卫，避免新录音抢在粘贴链前插队（ROB-2）
               processingRef.current.isProcessingAudio = false;

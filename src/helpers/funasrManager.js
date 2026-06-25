@@ -10,6 +10,7 @@ const { runCommand, TIMEOUTS } = require("../utils/process");
 let globalModelCheckCache = null;
 let globalModelCheckTime = 0;
 const GLOBAL_CACHE_TIME = 2000; // 减少到2秒缓存，确保及时更新
+const INIT_WAIT_TIMEOUT_MS = 60000; // 等待初始化最长 60s，超时则拒绝，避免无限等待卡死
 
 class FunASRManager {
   constructor(logger = null) {
@@ -1313,7 +1314,17 @@ class FunASRManager {
       }
       if (this.initializationPromise) {
         this.logger.info && this.logger.info('等待FunASR服务器就绪（早录音频排队中）...');
-        try { await this.initializationPromise; } catch (_) { /* 失败下方统一处理 */ }
+        let initTimeoutHandle = null;
+        try {
+          await Promise.race([
+            this.initializationPromise,
+            new Promise((_, reject) => {
+              initTimeoutHandle = setTimeout(() => reject(new Error('FunASR 初始化超时')), INIT_WAIT_TIMEOUT_MS);
+            }),
+          ]);
+        } catch (_) { /* 失败下方统一处理 */ } finally {
+          if (initTimeoutHandle) clearTimeout(initTimeoutHandle);
+        }
       }
     }
 
