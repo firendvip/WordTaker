@@ -61,6 +61,9 @@ const SettingsPage = () => {
   // 左侧分类导航：当前选中的分类
   const [activeCategory, setActiveCategory] = useState("permissions");
 
+  // 应用版本号（运行时从 app.getVersion() 获取，不硬编码）
+  const [appVersion, setAppVersion] = useState("");
+
   // 行标签统一字号（权限行与快捷键行保持一致）
   const rowLabelClass = "text-[15px] font-medium text-gray-900 dark:text-gray-100";
 
@@ -93,6 +96,21 @@ const SettingsPage = () => {
   // 加载设置
   useEffect(() => {
     loadSettings();
+  }, []);
+
+  // 加载应用版本号（运行时获取，不硬编码）
+  useEffect(() => {
+    const loadAppVersion = async () => {
+      try {
+        if (window.electronAPI && window.electronAPI.getAppVersion) {
+          const version = await window.electronAPI.getAppVersion();
+          if (version) setAppVersion(version);
+        }
+      } catch (err) {
+        console.error("获取应用版本号失败:", err);
+      }
+    };
+    loadAppVersion();
   }, []);
 
   const loadSettings = async () => {
@@ -1472,6 +1490,17 @@ const SettingsPage = () => {
           {activeCategory === "about" && (
             <div className="bg-white dark:bg-neutral-900 rounded-2xl shadow-sm border border-gray-100 dark:border-neutral-800">
               <div className="px-6">
+                {/* 应用信息 */}
+                <div className="py-5 border-b border-gray-100 dark:border-neutral-800">
+                  <h3 className={`${rowLabelClass} chinese-title mb-3`}>应用信息：</h3>
+                  <div className="flex items-center justify-between">
+                    <span className="text-[14px] text-gray-700 dark:text-neutral-300">弦外小猫 / KittyEcho</span>
+                    <span className="text-[13px] text-gray-500 dark:text-neutral-400">
+                      版本 {appVersion || "—"}
+                    </span>
+                  </div>
+                </div>
+
                 {/* 功能建议 / bug反馈 */}
                 <div className="py-5 border-b border-gray-100 dark:border-neutral-800">
                   <h3 className={`${rowLabelClass} chinese-title mb-3`}>功能建议 / bug反馈：</h3>

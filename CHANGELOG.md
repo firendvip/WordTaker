@@ -3,6 +3,12 @@
 All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/); versioning follows [SemVer](https://semver.org/).
 
+## [1.5.8] - 2026-06-26
+
+### Added
+- 设置「关于」显示应用版本号（运行时 `app.getVersion()`，不硬编码）。
+- 新增项目规则：版本号须显示在关于处且用运行时获取（见 CLAUDE.md）。
+
 ## [1.5.7] - 2026-06-26
 
 ### Fixed
