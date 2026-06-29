@@ -3,6 +3,20 @@
 All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/); versioning follows [SemVer](https://semver.org/).
 
+## [1.6.0] - 2026-06-30
+
+### Added
+- 新增润色「角色」「常规」（mode `normal`，设为新用户默认）：风格介于「高情商」与「VibeCoding专用」之间，像正常人自然表达，重点理顺逻辑、去重复啰嗦；保留原意与关键信息，不无中生有、不回答问句。本地直连与中继（SCF/worker）双轨同步提示词。
+
+### Changed
+- 词转词规则上限 30 → 200（客户端 UI 与中继 `sanitizeWordMap` 双端同步；每条仍 ≤50 字并转义）。
+- 设置导航「实验」更名为「其他」（id 不变）。
+- 「托盘图标」选择整块从「皮肤」面板移至「其他」面板（行为不变：`tray_icon_style` + `reloadTrayIcon` 实时重建）。
+- 托盘选项文案：「中笑（透明）」→「透明小猫」、「彩色猫头」→「彩色小猫」。
+
+### Note
+- 「常规」角色在中继重新部署前会回退到 VibeCoding 提示词（中继生效需重新部署 SCF Web 函数）。
+
 ## [1.5.9] - 2026-06-29
 
 ### Added

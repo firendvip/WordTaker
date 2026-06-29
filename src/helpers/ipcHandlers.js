@@ -150,7 +150,7 @@ class IPCHandlers {
       if (text.length > MAX_TEXT_LENGTH) {
         return { success: false, error: '文本过长' };
       }
-      // 润色模式（copywriting）按当前「角色」解析：vibecoding→copywriting / gaoeq→gaoeq。
+      // 润色模式（copywriting）按当前「角色」解析：normal→normal / gaoeq→gaoeq / vibecoding→copywriting。
       // 其它模式（如 optimize）保持原样透传。
       const effectiveMode = mode === 'copywriting' ? await this.aiService.getPolishMode() : mode;
       // 硬超时兜底：LLM 请求挂起时不让渲染层 await 永久阻塞（稳定性优先）。
@@ -229,7 +229,7 @@ class IPCHandlers {
         if (len >= STREAM_FLUSH_MIN_CHARS || SENTENCE_BOUNDARY.test(d)) flush();
       };
 
-      // 润色模式按当前「角色」决定：vibecoding→copywriting / gaoeq→gaoeq
+      // 润色模式按当前「角色」决定：normal→normal / gaoeq→gaoeq / vibecoding→copywriting
       const polishMode = await this.aiService.getPolishMode();
       // 硬超时兜底：流式请求挂起时，渲染层 await 会被永久阻塞（卡死）。超时即收尾并返回失败，
       // 让渲染层的 await 立即得到终态（本 handler 的「终态信号」就是返回值的 resolve）。

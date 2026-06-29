@@ -32,7 +32,7 @@ const SettingsPage = () => {
     sound_volume: 0.3,
     asr_engine: "sensevoice",
     llm_streaming_enabled: false,
-    llm_active_role: "vibecoding",
+    llm_active_role: "normal",
     pill_skin: "music",
     translate_trigger_key: "LeftCtrl",
     translate_trigger_taps: 2,
@@ -45,7 +45,7 @@ const SettingsPage = () => {
 
   // 词转词规则在 UI 里以数组形态编辑，保存时序列化为 wtw_rules_json
   const [wtwRules, setWtwRules] = useState([]);
-  const WTW_MAX_RULES = 30;
+  const WTW_MAX_RULES = 200;
   const WTW_MAX_LEN = 50;
 
   const isMac = typeof navigator !== "undefined" && !!navigator.platform && navigator.platform.toLowerCase().includes("mac");
@@ -74,7 +74,7 @@ const SettingsPage = () => {
     { id: "skin", label: "皮肤", icon: Palette },
     { id: "role", label: "角色", icon: Drama },
     { id: "wordtoword", label: "词转词", icon: Sparkles },
-    { id: "general", label: "实验", icon: Settings },
+    { id: "general", label: "其他", icon: Settings },
     { id: "about", label: "关于", icon: Info },
   ];
 
@@ -140,7 +140,7 @@ const SettingsPage = () => {
           sound_volume: typeof allSettings.sound_volume === "number" ? allSettings.sound_volume : 0.3,
           asr_engine: allSettings.asr_engine || "sensevoice",
           llm_streaming_enabled: allSettings.llm_streaming_enabled === true,
-          llm_active_role: allSettings.llm_active_role || "vibecoding",
+          llm_active_role: allSettings.llm_active_role || "normal",
           pill_skin: allSettings.pill_skin || "music",
           translate_trigger_key: (allSettings.translate_trigger && allSettings.translate_trigger.key) || "LeftCtrl",
           translate_trigger_taps: (allSettings.translate_trigger && allSettings.translate_trigger.taps) || 2,
@@ -1254,64 +1254,6 @@ const SettingsPage = () => {
                     />
                   </button>
                 </div>
-
-                {/* 托盘图标选择：中笑(透明模板) / 彩色猫头 */}
-                <div className="py-4 border-t border-gray-100 dark:border-neutral-800">
-                  <label className={`${rowLabelClass} chinese-title`}>托盘图标</label>
-                  <p className="mt-0.5 mb-2 text-[13px] text-gray-500 dark:text-neutral-400">
-                    菜单栏（系统托盘）显示的小猫图标样式
-                  </p>
-                  {/* 中笑(透明) */}
-                  <button
-                    type="button"
-                    onClick={() => updateAndSave('tray_icon_style', 'smile')}
-                    className="w-full flex items-center justify-between gap-4 py-3 text-left"
-                  >
-                    <div className="min-w-0">
-                      <label className={`${rowLabelClass} chinese-title`}>中笑（透明）</label>
-                      <p className="mt-0.5 text-[13px] text-gray-500 dark:text-neutral-400">
-                        单色镂空模板，跟随菜单栏明暗自适配（默认）
-                      </p>
-                    </div>
-                    <span
-                      aria-hidden="true"
-                      className={`flex-shrink-0 w-5 h-5 rounded-full border-2 flex items-center justify-center ${
-                        settings.tray_icon_style !== 'color'
-                          ? 'border-blue-600 dark:border-blue-400'
-                          : 'border-gray-300 dark:border-neutral-600'
-                      }`}
-                    >
-                      {settings.tray_icon_style !== 'color' && (
-                        <span className="w-2.5 h-2.5 rounded-full bg-blue-600 dark:bg-blue-400" />
-                      )}
-                    </span>
-                  </button>
-                  {/* 彩色猫头 */}
-                  <button
-                    type="button"
-                    onClick={() => updateAndSave('tray_icon_style', 'color')}
-                    className="w-full flex items-center justify-between gap-4 py-3 text-left"
-                  >
-                    <div className="min-w-0">
-                      <label className={`${rowLabelClass} chinese-title`}>彩色猫头</label>
-                      <p className="mt-0.5 text-[13px] text-gray-500 dark:text-neutral-400">
-                        保留原图配色的彩色猫头图标
-                      </p>
-                    </div>
-                    <span
-                      aria-hidden="true"
-                      className={`flex-shrink-0 w-5 h-5 rounded-full border-2 flex items-center justify-center ${
-                        settings.tray_icon_style === 'color'
-                          ? 'border-blue-600 dark:border-blue-400'
-                          : 'border-gray-300 dark:border-neutral-600'
-                      }`}
-                    >
-                      {settings.tray_icon_style === 'color' && (
-                        <span className="w-2.5 h-2.5 rounded-full bg-blue-600 dark:bg-blue-400" />
-                      )}
-                    </span>
-                  </button>
-                </div>
               </div>
             </div>
           )}
@@ -1320,6 +1262,31 @@ const SettingsPage = () => {
           {activeCategory === "role" && (
             <div className="bg-white dark:bg-neutral-900 rounded-2xl shadow-sm border border-gray-100 dark:border-neutral-800">
               <div className="px-6">
+                {/* 常规（默认） */}
+                <button
+                  type="button"
+                  onClick={() => updateAndSave('llm_active_role', 'normal')}
+                  className="w-full flex items-center justify-between gap-4 py-4 border-b border-gray-100 dark:border-neutral-800 text-left"
+                >
+                  <div className="min-w-0">
+                    <label className={`${rowLabelClass} chinese-title`}>常规</label>
+                    <p className="mt-0.5 text-[13px] text-gray-500 dark:text-neutral-400">
+                      像正常人自然表达，理顺逻辑、去重复啰嗦，让话更顺更清楚
+                    </p>
+                  </div>
+                  <span
+                    aria-hidden="true"
+                    className={`flex-shrink-0 w-5 h-5 rounded-full border-2 flex items-center justify-center ${
+                      settings.llm_active_role === 'normal'
+                        ? 'border-blue-600 dark:border-blue-400'
+                        : 'border-gray-300 dark:border-neutral-600'
+                    }`}
+                  >
+                    {settings.llm_active_role === 'normal' && (
+                      <span className="w-2.5 h-2.5 rounded-full bg-blue-600 dark:bg-blue-400" />
+                    )}
+                  </span>
+                </button>
                 {/* VibeCoding 专用 */}
                 <button
                   type="button"
@@ -1480,6 +1447,64 @@ const SettingsPage = () => {
                         settings.keep_result_in_clipboard ? 'translate-x-5' : 'translate-x-0.5'
                       }`}
                     />
+                  </button>
+                </div>
+
+                {/* 托盘图标选择：透明小猫(透明模板) / 彩色小猫 */}
+                <div className="py-4 border-t border-gray-100 dark:border-neutral-800">
+                  <label className={`${rowLabelClass} chinese-title`}>托盘图标</label>
+                  <p className="mt-0.5 mb-2 text-[13px] text-gray-500 dark:text-neutral-400">
+                    菜单栏（系统托盘）显示的小猫图标样式
+                  </p>
+                  {/* 透明小猫 */}
+                  <button
+                    type="button"
+                    onClick={() => updateAndSave('tray_icon_style', 'smile')}
+                    className="w-full flex items-center justify-between gap-4 py-3 text-left"
+                  >
+                    <div className="min-w-0">
+                      <label className={`${rowLabelClass} chinese-title`}>透明小猫</label>
+                      <p className="mt-0.5 text-[13px] text-gray-500 dark:text-neutral-400">
+                        单色镂空模板，跟随菜单栏明暗自适配（默认）
+                      </p>
+                    </div>
+                    <span
+                      aria-hidden="true"
+                      className={`flex-shrink-0 w-5 h-5 rounded-full border-2 flex items-center justify-center ${
+                        settings.tray_icon_style !== 'color'
+                          ? 'border-blue-600 dark:border-blue-400'
+                          : 'border-gray-300 dark:border-neutral-600'
+                      }`}
+                    >
+                      {settings.tray_icon_style !== 'color' && (
+                        <span className="w-2.5 h-2.5 rounded-full bg-blue-600 dark:bg-blue-400" />
+                      )}
+                    </span>
+                  </button>
+                  {/* 彩色小猫 */}
+                  <button
+                    type="button"
+                    onClick={() => updateAndSave('tray_icon_style', 'color')}
+                    className="w-full flex items-center justify-between gap-4 py-3 text-left"
+                  >
+                    <div className="min-w-0">
+                      <label className={`${rowLabelClass} chinese-title`}>彩色小猫</label>
+                      <p className="mt-0.5 text-[13px] text-gray-500 dark:text-neutral-400">
+                        保留原图配色的彩色猫头图标
+                      </p>
+                    </div>
+                    <span
+                      aria-hidden="true"
+                      className={`flex-shrink-0 w-5 h-5 rounded-full border-2 flex items-center justify-center ${
+                        settings.tray_icon_style === 'color'
+                          ? 'border-blue-600 dark:border-blue-400'
+                          : 'border-gray-300 dark:border-neutral-600'
+                      }`}
+                    >
+                      {settings.tray_icon_style === 'color' && (
+                        <span className="w-2.5 h-2.5 rounded-full bg-blue-600 dark:bg-blue-400" />
+                      )}
+                    </span>
                   </button>
                 </div>
               </div>
