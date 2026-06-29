@@ -26,8 +26,6 @@ const SettingsPage = () => {
     recording_trigger_taps: 1,
     cancel_key: "Escape",
     cancel_taps: 1,
-    raw_stop_key: "LeftCtrl",
-    raw_stop_taps: 1,
     sound_scheme: "soft",
     sound_volume: 0.3,
     asr_engine: "sensevoice",
@@ -134,8 +132,6 @@ const SettingsPage = () => {
             || (isMac ? 1 : 2),
           cancel_key: allSettings.cancel_key || "Escape",
           cancel_taps: Number(allSettings.cancel_taps) === 2 ? 2 : 1,
-          raw_stop_key: allSettings.raw_stop_key || "LeftCtrl",
-          raw_stop_taps: Number(allSettings.raw_stop_taps) === 2 ? 2 : 1,
           sound_scheme: allSettings.sound_scheme || "soft",
           sound_volume: typeof allSettings.sound_volume === "number" ? allSettings.sound_volume : 0.3,
           asr_engine: allSettings.asr_engine || "sensevoice",
@@ -254,11 +250,6 @@ const SettingsPage = () => {
         await window.electronAPI.setSetting("cancel_key", next.cancel_key);
         await window.electronAPI.setSetting("cancel_taps", Number(next.cancel_taps) || 1);
         if (window.electronAPI.reloadRecordingTrigger) await window.electronAPI.reloadRecordingTrigger();
-      }
-      if (changed.has("raw_stop_key") || changed.has("raw_stop_taps")) {
-        // 录音期间动态注册，下次录音即生效，无需重载主触发器
-        await window.electronAPI.setSetting("raw_stop_key", next.raw_stop_key);
-        await window.electronAPI.setSetting("raw_stop_taps", Number(next.raw_stop_taps) || 1);
       }
       if (changed.has("sound_scheme")) {
         await window.electronAPI.setSetting("sound_scheme", next.sound_scheme);
@@ -382,12 +373,11 @@ const SettingsPage = () => {
     }
   };
 
-  // 统一的"单击/双击 × 修饰键"下拉项（唤醒/取消/原文共用）
+  // 统一的"单击/双击 × 修饰键"下拉项（唤醒/取消共用）
   const modifierShortcutOptions = buildModifierShortcutOptions(isMac);
 
   // 当前各快捷键的下拉 value（"<Key>:<taps>"）
   const wakeValue = toModifierShortcutValue(settings.recording_trigger_key, settings.recording_trigger_taps);
-  const rawStopValue = toModifierShortcutValue(settings.raw_stop_key, settings.raw_stop_taps);
   // 取消键：value = "<Key>:<taps>"（如 "Escape:1"、"F1:2"）
   const cancelValue = `${settings.cancel_key}:${Number(settings.cancel_taps) === 2 ? 2 : 1}`;
 
@@ -395,12 +385,6 @@ const SettingsPage = () => {
   const handleWakeChange = (value) => {
     const { key, taps } = parseModifierShortcutValue(value);
     updateAndSave({ recording_trigger_key: key, recording_trigger_taps: taps });
-  };
-
-  // 原文：原子地写 raw_stop_key + raw_stop_taps（SET-2）
-  const handleRawStopChange = (value) => {
-    const { key, taps } = parseModifierShortcutValue(value);
-    updateAndSave({ raw_stop_key: key, raw_stop_taps: taps });
   };
 
   // 转英文：原子地写 translate_trigger_key + translate_trigger_taps（SET-2）
@@ -1012,25 +996,6 @@ const SettingsPage = () => {
                     className="w-48 px-3 py-2 text-[15px] border border-gray-300 dark:border-neutral-700 rounded-lg focus:ring-1 focus:ring-neutral-400 focus:border-transparent bg-white dark:bg-neutral-800 text-gray-900 dark:text-gray-100"
                   >
                     {CANCEL_KEY_OPTIONS.map((opt) => (
-                      <option key={opt.value} value={opt.value}>{opt.label}</option>
-                    ))}
-                  </select>
-                </div>
-
-                {/* 不走 AI 的结束键 */}
-                <div className="flex items-center justify-between gap-4 py-4 border-b border-gray-100 dark:border-neutral-800">
-                  <div className="min-w-0">
-                    <label className={`${rowLabelClass} chinese-title`}>原文</label>
-                    <p className="mt-0.5 text-[13px] text-gray-500 dark:text-neutral-400">
-                      按它结束＝直接贴原文，不走 AI
-                    </p>
-                  </div>
-                  <select
-                    value={rawStopValue}
-                    onChange={(e) => handleRawStopChange(e.target.value)}
-                    className="w-48 flex-shrink-0 px-3 py-2 text-[15px] border border-gray-300 dark:border-neutral-700 rounded-lg focus:ring-1 focus:ring-neutral-400 focus:border-transparent bg-white dark:bg-neutral-800 text-gray-900 dark:text-gray-100"
-                  >
-                    {modifierShortcutOptions.map((opt) => (
                       <option key={opt.value} value={opt.value}>{opt.label}</option>
                     ))}
                   </select>

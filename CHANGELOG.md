@@ -3,6 +3,11 @@
 All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/); versioning follows [SemVer](https://semver.org/).
 
+## [1.6.1] - 2026-06-30
+
+### Removed
+- 移除「原文 / raw 结束键（双击右 Option 直贴原文不走 AI）」功能，任何情况下录音结束均走 AI 润色；清理 `raw_stop_key`/`raw_stop_taps`/`rawOnly` 相关设置项、UI 行、主进程触发器与渲染层逻辑（preload `onRawStop`、IPC `raw-stop`）。短句跳过润色（`skip_polish_max_chars`）不受影响。
+
 ## [1.6.0] - 2026-06-30
 
 ### Added

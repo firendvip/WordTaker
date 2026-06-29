@@ -162,10 +162,6 @@ class DatabaseManager {
       cancel_key: 'Escape',
       // 取消键为裸修饰键时的连击次数（加速键如 Esc 时忽略此值）
       cancel_taps: 1,
-      // "不走 API 的结束键"（裸修饰键，录音时生效）：按它结束=只贴原始识别、不调用大模型
-      raw_stop_key: 'LeftCtrl',
-      // 原文结束键的连击次数（单击=1 / 双击=2）
-      raw_stop_taps: 1,
       // 短句优化：识别结果 ≤ 该字数且干净时，跳过润色直接贴原文（0=关闭）
       skip_polish_max_chars: 10,
       // 润色「角色」：normal（默认，常规改写）/ vibecoding（走 llm_prompt_template）/ gaoeq（高情商改写）

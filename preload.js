@@ -81,12 +81,6 @@ contextBridge.exposeInMainWorld("electronAPI", {
   // 流式润色 + 增量上屏（主进程边收边贴）
   processTextStream: (text) => ipcRenderer.invoke("process-text-stream", text),
 
-  // 监听"不走 API 的结束键"（默认左 Ctrl）：结束录音但只贴原始识别、不调用大模型
-  onRawStop: (callback) => {
-    ipcRenderer.on("raw-stop", callback);
-    return () => ipcRenderer.removeListener("raw-stop", callback);
-  },
-  
   // F2热键管理
   registerF2Hotkey: () => ipcRenderer.invoke("register-f2-hotkey"),
   unregisterF2Hotkey: () => ipcRenderer.invoke("unregister-f2-hotkey"),

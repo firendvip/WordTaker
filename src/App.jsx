@@ -134,7 +134,6 @@ function RecorderApp() {
     startRecording,
     stopRecording,
     cancelRecording,
-    requestRawStop,
     error: recordingError
   } = useRecording({ onTranscriptionCompleteRef, onAIOptimizationCompleteRef });
   
@@ -277,17 +276,6 @@ function RecorderApp() {
       if (typeof off === "function") off();
     };
   }, [cancelRecording]);
-
-  // 监听"不走 API 的结束键"：标记本句跳过大模型，再正常停止录音（贴原始识别）
-  useEffect(() => {
-    if (!window.electronAPI || !window.electronAPI.onRawStop) return;
-    const off = window.electronAPI.onRawStop(() => {
-      requestRawStop();
-    });
-    return () => {
-      if (typeof off === "function") off();
-    };
-  }, [requestRawStop]);
 
   // 监听"转换为英文"状态：驱动胶囊的翻译进度 UI
   useEffect(() => {

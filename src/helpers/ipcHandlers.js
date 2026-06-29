@@ -10,7 +10,7 @@ const ALLOWED_SETTING_KEYS = new Set([
   "ai_api_key", "ai_base_url", "ai_model", "enable_ai_optimization",
   "copywriting_mode_enabled", "llm_prompt_template", "llm_temperature",
   "llm_max_tokens", "llm_extra_body", "llm_fallback_paste_raw",
-  "recording_trigger", "cancel_key", "cancel_taps", "raw_stop_key", "raw_stop_taps",
+  "recording_trigger", "cancel_key", "cancel_taps",
   "sound_scheme", "sound_volume",
   "asr_engine", "skip_polish_max_chars",
   // 润色角色 + 「转英文」触发键

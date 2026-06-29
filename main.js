@@ -232,16 +232,13 @@ const funasrManager = new FunASRManager(logger); // 传递logger实例
 const trayManager = new TrayManager();
 const hotkeyManager = new HotkeyManager();
 const triggerManager = new TriggerManager(logger);
-// 第二个触发器：录音期间监听"不走 API 的结束键"（默认左 Ctrl）。
-// uiohook 是单例（TriggerManager._hookRunning 守卫），多个实例可共存、各自挂自己的监听。
-const rawStopTriggerManager = new TriggerManager(logger);
-// 第三个触发器：取消键若被设为裸修饰键（单/双击），则用它监听；否则走 globalShortcut（Esc/F 键）。
+// 第二个触发器：取消键若被设为裸修饰键（单/双击），则用它监听；否则走 globalShortcut（Esc/F 键）。
 const cancelTriggerManager = new TriggerManager(logger);
-// 第四个触发器：「转英文」全局键（默认单击左 Ctrl）。仅在非录音时生效，
-// 录音中按左 Ctrl 走「不走 API 的结束键(raw-stop)」，二者由 isRecording 互斥。
+// 第三个触发器：「转英文」全局键（默认单击左 Ctrl）。仅在非录音时生效，
+// 录音期间让位给录音结束，二者由 isRecording 互斥。
 const translateTriggerManager = new TriggerManager(logger);
 
-// 录音状态（由 recorder-state 同步）：转英文键在录音中必须让位给 raw-stop。
+// 录音状态（由 recorder-state 同步）：转英文键在录音中必须让位。
 let isRecording = false;
 // 「转英文」重入守卫：一次捕获→翻译→粘贴未完成前，忽略再次触发，避免键盘风暴。
 let isTranslating = false;
@@ -320,7 +317,7 @@ ipcMain.handle('reload-recording-trigger', () => {
 });
 
 // 「转英文」热键处理：捕获选中文本 → 翻译为地道英文 → 粘贴回去。
-// 录音中（左 Ctrl 走 raw-stop）或上一次仍在进行时直接跳过。全程在主进程编排，串行防风暴。
+// 录音中或上一次仍在进行时直接跳过。全程在主进程编排，串行防风暴。
 async function handleTranslateHotkey() {
   const sendTranslateStatus = (phase, extra = {}) => {
     try {
@@ -330,7 +327,7 @@ async function handleTranslateHotkey() {
   };
   const hidePillLater = (ms) => setTimeout(() => { try { windowManager.hideMainWindow(); } catch (_) {} }, ms);
   logger.info('转英文快捷键触发');
-  if (isRecording) return; // 录音中按 Ctrl = 结束(raw-stop)，不触发转英文
+  if (isRecording) return; // 录音中不触发转英文
   if (isTranslating) return; // 重入守卫
   if (!ipcHandlers || !ipcHandlers.aiService || !clipboardManager) {
     logger.error('转英文：服务未就绪');
@@ -441,10 +438,9 @@ ipcMain.handle('reload-tray-icon', () => {
 // 隐藏胶囊（粘贴完成 / 取消后由渲染层调用）
 ipcMain.handle('hide-recorder', () => {
   windowManager.hideMainWindow();
-  // 安全网：胶囊隐藏即视为本次录音结束，确保全局 Esc / 裸结束键被释放，
+  // 安全网：胶囊隐藏即视为本次录音结束，确保全局 Esc 被释放，
   // 即使渲染层漏发 recorder-state(false) 也不会让 Esc 被全局长期吞掉。
   unregisterCancelKey();
-  unregisterRawStopKey();
   return { success: true };
 });
 
@@ -459,34 +455,6 @@ function getRecordingTriggerModifier() {
 
 function isSameModifierTap(a, b) {
   return !!a && !!b && a.key === b.key && Number(a.taps) === Number(b.taps);
-}
-
-// "不走 API 的结束键"（裸修饰键，默认左 Ctrl）：仅录音期间监听，停止后注销。
-// 触发时通知渲染层走"原始识别、不调用大模型"的结束路径。
-function registerRawStopKey() {
-  try {
-    const key = databaseManager.getSetting('raw_stop_key', 'LeftCtrl') || 'LeftCtrl';
-    const taps = Number(databaseManager.getSetting('raw_stop_taps', 1)) === 2 ? 2 : 1;
-    if (!TriggerManager.VALID_KEYS.has(key)) {
-      logger.warn('raw_stop_key 非法，跳过注册', { key });
-      return;
-    }
-    // 与录音触发键的 {key,taps} 完全相同则跳过，避免同一次按键被两个监听器同时当成结束
-    const trig = getRecordingTriggerModifier();
-    if (isSameModifierTap(trig, { key, taps })) {
-      logger.warn('raw_stop_key 与录音触发键相同，跳过注册', { key, taps });
-      return;
-    }
-    rawStopTriggerManager.start({ type: 'modifier-tap', key, taps }, () => {
-      const win = windowManager.mainWindow;
-      if (win && !win.isDestroyed()) win.webContents.send('raw-stop');
-    });
-  } catch (error) {
-    logger.error('注册 raw 结束键失败:', error);
-  }
-}
-function unregisterRawStopKey() {
-  try { rawStopTriggerManager.stop(); } catch (_) { /* 忽略 */ }
 }
 
 // 取消录音：仅在录音期间注册，避免平时吞掉按键。
@@ -518,12 +486,6 @@ function registerCancelKey() {
         logger.warn('cancel_key 与录音触发键相同，跳过注册', target);
         return;
       }
-      const rawKey = databaseManager.getSetting('raw_stop_key', 'LeftCtrl') || 'LeftCtrl';
-      const rawTaps = Number(databaseManager.getSetting('raw_stop_taps', 1)) === 2 ? 2 : 1;
-      if (isSameModifierTap({ key: rawKey, taps: rawTaps }, target)) {
-        logger.warn('cancel_key 与原文结束键相同，跳过注册', target);
-        return;
-      }
       cancelTriggerManager.start({ type: 'modifier-tap', key, taps }, fireCancel);
       return;
     }
@@ -549,22 +511,20 @@ function unregisterCancelKey() {
   try { cancelTriggerManager.stop(); } catch (_) { /* 忽略 */ }
 }
 
-// 渲染层在录音开始/结束时通知主进程，用于按需注册/注销 Esc 取消键 + raw 结束键
+// 渲染层在录音开始/结束时通知主进程，用于按需注册/注销 Esc 取消键
 ipcMain.on('recorder-state', (event, recording) => {
-  // 记录录音状态：转英文键在录音中让位给 raw-stop（见 handleTranslateHotkey）。
+  // 记录录音状态：转英文键在录音中让位（见 handleTranslateHotkey）。
   isRecording = !!recording;
   if (recording) {
     recordStartedAt = Date.now();
     registerCancelKey();
-    registerRawStopKey();
-    // 录音期间左 Ctrl 必须让位给 raw-stop：停掉转英文触发器，避免裸修饰键被双重监听。
+    // 录音期间转英文键必须让位：停掉转英文触发器，避免裸修饰键被双重监听。
     // 仅在应用完成初始化（触发器已挂载）后才停用，避免早期/边缘的 recorder-state(true) 误调用。
     if (appFullyInitialized) {
       try { translateTriggerManager.stop(); } catch (_) {}
     }
   } else {
     unregisterCancelKey();
-    unregisterRawStopKey();
     // 录音结束后重新挂回转英文触发器。
     try {
       setupTranslateTrigger();
@@ -773,9 +733,6 @@ app.on("will-quit", () => {
   } catch (error) {
     logger.error('关闭 FunASR 失败:', error);
   }
-  try {
-    rawStopTriggerManager.stop();
-  } catch (_) { /* 忽略 */ }
   try {
     cancelTriggerManager.stop();
   } catch (_) { /* 忽略 */ }
