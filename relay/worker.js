@@ -133,6 +133,85 @@ function pickSystemPrompt(mode) {
   }
 }
 
+// 当前对外提供的全部「活跃」模式，与 pickSystemPrompt 的分支一一对应。
+// 心跳保活会对这里的每个模式各发一次极小同前缀请求，预热 DeepSeek 的
+// 提示词缓存（prompt cache）；将来新增模式只需在此追加即可自动被保活。
+const ACTIVE_MODES = ["copywriting", "gaoeq", "translate-en"];
+
+// 防御式提取 usage（缓存命中/未命中/总 token）。无 usage 时返回 null。
+function pickUsage(usageSource) {
+  const u = usageSource && usageSource.usage ? usageSource.usage : usageSource;
+  if (!u || typeof u !== "object") return null;
+  if (
+    u.prompt_cache_hit_tokens === undefined &&
+    u.prompt_cache_miss_tokens === undefined &&
+    u.total_tokens === undefined
+  ) return null;
+  return {
+    prompt_cache_hit_tokens: u.prompt_cache_hit_tokens ?? 0,
+    prompt_cache_miss_tokens: u.prompt_cache_miss_tokens ?? 0,
+    total_tokens: u.total_tokens ?? 0,
+  };
+}
+
+// 心跳保活：对单个 mode 发一次最小化（max_tokens:1、无 word_map、无 cache_control）
+// 的同前缀请求，保持 DeepSeek prompt cache 温热。DeepSeek 自动缓存，切勿手动加
+// cache_control。失败静默；命中信息打到 Worker 日志便于排查。
+async function warmOneMode(env, baseUrl, mode) {
+  try {
+    const reqBody = {
+      model: env.DEEPSEEK_MODEL || DEFAULT_MODEL,
+      messages: [
+        { role: "system", content: pickSystemPrompt(mode) },
+        { role: "user", content: "." },
+      ],
+      max_tokens: 1,
+      stream: false,
+      thinking: { type: "disabled" },
+    };
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), UPSTREAM_TIMEOUT_MS);
+    let data = null;
+    try {
+      const upstream = await fetch(`${baseUrl}/chat/completions`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${env.DEEPSEEK_API_KEY}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(reqBody),
+        signal: controller.signal,
+      });
+      if (upstream.ok) data = await upstream.json();
+    } finally {
+      clearTimeout(timer);
+    }
+    const u = data && data.usage;
+    if (u) {
+      console.log(
+        `[heartbeat] mode=${mode} cache_hit=${u.prompt_cache_hit_tokens ?? 0} cache_miss=${u.prompt_cache_miss_tokens ?? 0}`
+      );
+    } else {
+      console.log(`[heartbeat] mode=${mode} (no usage)`);
+    }
+  } catch (e) {
+    console.log(`[heartbeat] mode=${mode} failed: ${e && e.name ? e.name : "error"}`);
+  }
+}
+
+// 对全部 ACTIVE_MODES 各发一次最小化预热请求。
+async function runHeartbeat(env) {
+  const baseUrl = env.DEEPSEEK_BASE_URL || DEFAULT_BASE_URL;
+  let upstreamHostname;
+  try {
+    upstreamHostname = new URL(baseUrl).hostname.toLowerCase();
+  } catch {
+    upstreamHostname = "";
+  }
+  if (!ALLOWED_UPSTREAM_HOSTS.includes(upstreamHostname)) return;
+  await Promise.all(ACTIVE_MODES.map((mode) => warmOneMode(env, baseUrl, mode)));
+}
+
 // 词转词（word_map）约束。
 const WORD_MAP_MAX_ENTRIES = 30;
 const WORD_MAP_MAX_TERM_CHARS = 50;
@@ -216,7 +295,7 @@ async function rateLimited(env, ip) {
 }
 
 export default {
-  async fetch(request, env) {
+  async fetch(request, env, ctx) {
     const origin = request.headers.get("Origin");
     const cors = corsHeadersFor(origin);
 
@@ -261,6 +340,18 @@ export default {
     } catch {
       return json({ success: false, error: "Invalid JSON" }, 400, cors);
     }
+
+    // 提示词缓存心跳保活：{ "__heartbeat": true } 触发对全部 ACTIVE_MODES 的预热。
+    // Worker 支持 ctx.waitUntil，可在响应返回后继续跑预热请求，立即回 200。
+    if (payload?.__heartbeat === true) {
+      if (ctx && typeof ctx.waitUntil === "function") {
+        ctx.waitUntil(runHeartbeat(env));
+      } else {
+        await runHeartbeat(env);
+      }
+      return json({ success: true, warm: true }, 200, cors);
+    }
+
     const text = typeof payload?.text === "string" ? payload.text : "";
     if (!text.trim()) {
       return json({ success: false, error: "Empty text" }, 400, cors);
@@ -333,7 +424,10 @@ export default {
       if (!out) {
         return json({ success: false, error: "Empty completion" }, 502, cors);
       }
-      return json({ success: true, text: out.trim() }, 200, cors);
+      const resp = { success: true, text: out.trim() };
+      const usage = pickUsage(data);
+      if (usage) resp.usage = usage;
+      return json(resp, 200, cors);
     } catch (e) {
       if (e && e.name === "AbortError") {
         return json({ success: false, error: "上游超时" }, 504, cors);

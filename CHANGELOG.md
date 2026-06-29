@@ -3,6 +3,11 @@
 All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/); versioning follows [SemVer](https://semver.org/).
 
+## [1.5.9] - 2026-06-29
+
+### Added
+- 中继「提示词缓存心跳」——`__heartbeat` 触发对全部 active 模式发极小同前缀请求保活 DeepSeek prompt cache（兼 SCF 冷启动保活）；正常响应透传 `prompt_cache_hit/miss_tokens` 便于实测命中。
+
 ## [1.5.8] - 2026-06-26
 
 ### Added
