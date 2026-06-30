@@ -3,6 +3,14 @@
 All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/); versioning follows [SemVer](https://semver.org/).
 
+## [1.7.0] - 2026-06-30
+
+### Security
+- 提示词移出仓库与安装包：中继改为从 SCF 私有环境变量 `PROMPTS_B64`（base64(JSON)）读取四类提示词（copywriting/gaoeq/normal/translate-en），仓库源码与客户端安装包均不再含提示词明文。解析失败时回退到一段非机密的通用润色指令。
+
+### Changed
+- 客户端严格只走云端中继（relay）：移除本地直连模式下的提示词构建与 `prompts.js`；`aiService` 在中继未配置/不可达时直接返回失败，由既有「回退粘贴识别原文」逻辑兜底。`database` 中 `llm_prompt_template` 默认值改为空字符串。
+
 ## [1.6.1] - 2026-06-30
 
 ### Removed
