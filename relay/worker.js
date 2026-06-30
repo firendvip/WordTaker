@@ -33,12 +33,23 @@ const DEFAULT_MAX_TOKENS = 600;
 const DEFAULT_TEMPERATURE = 0.7;
 const UPSTREAM_TIMEOUT_MS = 30000;
 
-// 系统提示词不再以明文存在于本仓库 / 安装包中。改为从私有环境变量
-// PROMPTS_B64 读取：其值是 base64(JSON)，JSON 形如
+// 系统提示词不再以明文存在于本仓库 / 安装包中，也不再走环境变量。改为从「与本文件
+// 同目录」的 gitignored 文件 prompts.local.json 读取（随代码部署，不进公开仓库与安装包），
+// 其内容是 JSON：
 //   {"copywriting":"...","gaoeq":"...","normal":"...","translate-en":"..."}
 // 解析失败一律降级为空映射，pickSystemPrompt 再回退到一段非机密的通用指令。
 const GENERIC_FALLBACK_PROMPT =
   "请把下面标记内的中文文本润色得通顺、准确，直接输出结果，不要解释。";
+
+// Workers 运行时无 fs，无法在运行时读取文件；改为构建期静态 require 同目录 JSON。
+// 文件缺失（require 抛错）则非阻塞地落到环境变量兜底，最终再回退到通用指令。
+let PROMPTS_LOCAL = {};
+try {
+  // 若部署包内存在 prompts.local.json，则打包时一并内联进来。
+  PROMPTS_LOCAL = require("./prompts.local.json");
+} catch {
+  PROMPTS_LOCAL = {};
+}
 
 // base64 → UTF-8 字符串。Workers 运行时无 Node 的 Buffer，用 atob + TextDecoder
 // 还原字节再按 UTF-8 解码，保证中文提示词不乱码。
@@ -50,6 +61,9 @@ function b64ToUtf8(b64) {
 }
 
 function loadPrompts(env) {
+  if (PROMPTS_LOCAL && typeof PROMPTS_LOCAL === "object" && Object.keys(PROMPTS_LOCAL).length) {
+    return PROMPTS_LOCAL;
+  }
   try {
     const b64 = env && env.PROMPTS_B64;
     if (!b64 || typeof b64 !== "string") return {};

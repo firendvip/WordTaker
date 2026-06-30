@@ -10,6 +10,8 @@
 //          可选 DEEPSEEK_BASE_URL/DEEPSEEK_MODEL/MAX_INPUT_CHARS/MAX_TOKENS
 
 const http = require("http");
+const fs = require("fs");
+const path = require("path");
 
 const PORT = Number(process.env.PORT) || 9000;
 const DEFAULT_BASE_URL = "https://api.deepseek.com";
@@ -25,23 +27,34 @@ const DEFAULT_MAX_TOKENS = 600;
 const DEFAULT_TEMPERATURE = 0.7;
 const UPSTREAM_TIMEOUT_MS = 30000;
 
-// 系统提示词不再以明文存在于本仓库 / 安装包中。改为从私有环境变量
-// PROMPTS_B64 读取：其值是 base64(JSON)，JSON 形如
+// 系统提示词不再以明文存在于本仓库 / 安装包中，也不再走 SCF 环境变量
+// （SCF 环境变量上限 4KB，提示词总量 ~14KB 已超限）。改为从「与本文件同目录」
+// 的 gitignored 文件 prompts.local.json 读取，其内容是 JSON：
 //   {"copywriting":"...","gaoeq":"...","normal":"...","translate-en":"..."}
-// 进程启动时解析一次；解析失败一律降级为空映射，pickSystemPrompt 再回退到
-// 一段非机密的通用指令。
+// 该文件随函数代码一起部署，但不进公开仓库、不进客户端安装包。
+// 进程启动时解析一次；读取/解析失败一律降级为空映射，pickSystemPrompt 再回退到
+// 一段非机密的通用指令。（兼容兜底：文件缺失但仍设置了 PROMPTS_B64 时也尝试解码。）
 const GENERIC_FALLBACK_PROMPT =
   "请把下面标记内的中文文本润色得通顺、准确，直接输出结果，不要解释。";
 
 function loadPrompts() {
   try {
-    const b64 = process.env.PROMPTS_B64;
-    if (!b64 || typeof b64 !== "string") return {};
-    const obj = JSON.parse(Buffer.from(b64, "base64").toString("utf8"));
-    return obj && typeof obj === "object" ? obj : {};
+    const file = path.join(__dirname, "prompts.local.json");
+    const obj = JSON.parse(fs.readFileSync(file, "utf8"));
+    if (obj && typeof obj === "object") return obj;
   } catch {
-    return {};
+    // 文件缺失/无法解析时落到下方兜底
   }
+  try {
+    const b64 = process.env.PROMPTS_B64;
+    if (b64 && typeof b64 === "string") {
+      const obj = JSON.parse(Buffer.from(b64, "base64").toString("utf8"));
+      if (obj && typeof obj === "object") return obj;
+    }
+  } catch {
+    // 忽略：继续降级为空映射
+  }
+  return {};
 }
 
 const PROMPTS = loadPrompts();

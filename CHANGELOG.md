@@ -3,6 +3,11 @@
 All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/); versioning follows [SemVer](https://semver.org/).
 
+## [1.7.1] - 2026-06-30
+
+### Changed
+- 中继提示词改为读取同目录 gitignored 文件 `prompts.local.json`，替代超 4KB 限制的 SCF 环境变量方案（`PROMPTS_B64`）；该文件随函数代码部署，不进公开仓库与安装包。`server.js` 启动时 `fs` 读取同目录 JSON（失败保留 `PROMPTS_B64` 兜底），`worker.js` 改为构建期 `require('./prompts.local.json')`；均回退到非机密通用指令。
+
 ## [1.7.0] - 2026-06-30
 
 ### Security
