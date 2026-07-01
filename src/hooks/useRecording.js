@@ -16,9 +16,12 @@ const BAND_RENDER_INTERVAL_MS = 1000 / BAND_RENDER_FPS;
 
 const createZeroBands = () => new Array(BAND_COUNT).fill(0);
 
-// 异步处理链（LLM/流式/落库）的硬性总超时：超过即强制结束本次处理，
-// 释放 isOptimizing 与并发守卫，避免任何一步卡死导致整个胶囊永久卡住（稳定性优先）。
-const PIPELINE_HARD_TIMEOUT_MS = 45000;
+// 录音内存感知保护（WS6）：动态预测内存峰值，仅在临界时自动停止，尽量给久。
+const MEM_CHECK_INTERVAL_MS = 5000; // 录音中每 ~5 秒检查一次预测峰值
+const WAV_BYTES_PER_SEC = 16000 * 2; // 16kHz、16bit 单声道 WAV 每秒字节数
+const CONVERT_PEAK_MULTIPLIER = 3; // 转换期峰值 ≈ 3 × WAV字节
+const MEM_FRACTION_BUDGET = 0.6; // 安全预算上限：可用内存的 60%
+const MEM_ABSOLUTE_BUDGET_BYTES = 1.2 * 1024 ** 3; // 与 1.2GB 取小
 
 /**
  * 录音功能Hook
@@ -41,6 +44,9 @@ export const useRecording = ({ onTranscriptionCompleteRef, onAIOptimizationCompl
   const audioCtxRef = useRef(null);
   const analyserRef = useRef(null);
   const levelRafRef = useRef(null);
+  // 内存感知保护（WS6）：录音开始时间戳 + 周期性内存检查定时器句柄
+  const recordStartedAtRef = useRef(0);
+  const memCheckTimerRef = useRef(null);
 
   // 添加防重复处理机制
   const processingRef = useRef({ isProcessingAudio: false, lastProcessTime: 0 });
@@ -52,8 +58,15 @@ export const useRecording = ({ onTranscriptionCompleteRef, onAIOptimizationCompl
   // 使用模型状态Hook
   const modelStatus = useModelStatus();
 
+  // 停止内存感知保护定时器（停止/取消/结束录音都会触发，避免定时器泄漏）
+  const stopMemoryGuard = () => {
+    try { if (memCheckTimerRef.current) clearInterval(memCheckTimerRef.current); } catch (_) {}
+    memCheckTimerRef.current = null;
+  };
+
   // 停止实时音频电平分析并释放 AudioContext（停止与取消都必须调用，避免泄漏）
   const stopAudioAnalysis = () => {
+    stopMemoryGuard();
     try { if (levelRafRef.current) cancelAnimationFrame(levelRafRef.current); } catch (_) {}
     levelRafRef.current = null;
     try { if (analyserRef.current) analyserRef.current.disconnect(); } catch (_) {}
@@ -243,6 +256,55 @@ export const useRecording = ({ onTranscriptionCompleteRef, onAIOptimizationCompl
       // 开始录音
       mediaRecorder.start(1000); // 每秒收集一次数据
       setIsRecording(true);
+      recordStartedAtRef.current = Date.now();
+
+      // 内存感知动态保护（WS6）：每 ~5 秒预测内存峰值，仅在临界时自动停止，尽量给久。
+      // 预测峰值 = 转换期倍数 × (16000*2*已录秒数)；安全预算 = min(60%可用内存, 1.2GB)。
+      stopMemoryGuard();
+      const memLog = (level, ...args) => {
+        if (window.electronAPI && window.electronAPI.log) {
+          window.electronAPI.log(level, ...args);
+        }
+      };
+      memCheckTimerRef.current = setInterval(async () => {
+        try {
+          if (!window.electronAPI || !window.electronAPI.getMemoryInfo) return;
+          const elapsedSec = (Date.now() - recordStartedAtRef.current) / 1000;
+          const wavBytes = WAV_BYTES_PER_SEC * elapsedSec;
+          const predictedPeak = CONVERT_PEAK_MULTIPLIER * wavBytes;
+
+          const { freeBytes } = await window.electronAPI.getMemoryInfo();
+          const safeBudget = Math.min(
+            MEM_FRACTION_BUDGET * freeBytes,
+            MEM_ABSOLUTE_BUDGET_BYTES
+          );
+
+          if (predictedPeak > safeBudget) {
+            memLog('warn',
+              `内存保护触发：预测峰值 ${Math.round(predictedPeak / 1024 / 1024)}MB > ` +
+              `安全预算 ${Math.round(safeBudget / 1024 / 1024)}MB（已录 ${Math.round(elapsedSec)}s），自动停止录音`
+            );
+            stopMemoryGuard();
+            // 自动停止：照常进入转写流程（onstop 会处理已录音频，不丢弃）。
+            // 不依赖闭包里的 isRecording（捕获即过期）；以 mediaRecorderRef 录制中状态为准。
+            const mr = mediaRecorderRef.current;
+            if (mr && mr.state !== 'inactive') {
+              try { mr.stop(); } catch (_) {}
+              stopAudioAnalysis();
+              if (streamRef.current) {
+                streamRef.current.getTracks().forEach((track) => track.stop());
+                streamRef.current = null;
+              }
+            }
+            try {
+              window.electronAPI?.showNotification?.('弦外小猫', '录音较长，已自动停止以防内存不足，本段已保存');
+            } catch (_) {}
+          }
+        } catch (e) {
+          // 内存检查为尽力而为，失败不影响录音
+          memLog('warn', '内存保护检查失败:', e?.message || e);
+        }
+      }, MEM_CHECK_INTERVAL_MS);
 
     } catch (err) {
       setError(`无法开始录音: ${err.message}`);
@@ -343,10 +405,8 @@ export const useRecording = ({ onTranscriptionCompleteRef, onAIOptimizationCompl
                 window.electronAPI.log(level, ...args);
               }
             };
-            // 硬超时句柄：在 finally 里清除，避免定时器泄漏
-            let hardTimeoutId = null;
-            // 把原有处理逻辑包成一个 promise，与硬超时竞速：任一先结算即返回
-            const pipelinePromise = (async () => {
+            // 去掉渲染层硬超时（WS1）：直接 await 整条异步链，避免误杀慢但正常的 LLM 流式。
+            const runPipeline = (async () => {
               // 一次性快照所有设置：把热路径上原本 4~5 次串行 getSetting(IPC+读库)往返
               // 压成一次 getAllSettings，单句不会中途改设置，快照足够安全且更快。
               const _settings =
@@ -381,11 +441,11 @@ export const useRecording = ({ onTranscriptionCompleteRef, onAIOptimizationCompl
               }
 
               if (copywriting) {
-                // —— 流式优先：开启 Web 函数流式时，边生成边贴(粘贴在主进程完成) ——
+                // —— 流式优先：只要主进程支持流式且处于文案/润色路径就走流式，
+                //    边生成边贴(粘贴在主进程完成)；不再读 llm_streaming_enabled 开关 ——
                 let streamed = false;
                 try {
-                  const streaming = getS('llm_streaming_enabled', false);
-                  if (streaming && window.electronAPI.processTextStream) {
+                  if (window.electronAPI.processTextStream) {
                     const _sT0 = Date.now();
                     const sres = await window.electronAPI.processTextStream(raw_text);
                     if (sres && (sres.success || sres.pastedAny)) {
@@ -497,16 +557,8 @@ export const useRecording = ({ onTranscriptionCompleteRef, onAIOptimizationCompl
               }
             })();
 
-            // 硬超时：45s 内整条链未结算则 reject，由下方 catch 走统一失败通知
-            const timeoutPromise = new Promise((_, reject) => {
-              hardTimeoutId = setTimeout(
-                () => reject(new Error('处理超时')),
-                PIPELINE_HARD_TIMEOUT_MS
-              );
-            });
-
             try {
-              await Promise.race([pipelinePromise, timeoutPromise]);
+              await runPipeline;
             } catch (err) {
               log('error', '处理和保存转录时出错:', err);
               if (onAIOptimizationCompleteRef?.current) {
@@ -520,8 +572,6 @@ export const useRecording = ({ onTranscriptionCompleteRef, onAIOptimizationCompl
                 });
               }
             } finally {
-              // 清除硬超时句柄，避免定时器泄漏
-              if (hardTimeoutId) clearTimeout(hardTimeoutId);
               setIsOptimizing(false);
               // 异步粘贴/入库链全部结束后才释放并发守卫，避免新录音抢在粘贴链前插队（ROB-2）
               processingRef.current.isProcessingAudio = false;

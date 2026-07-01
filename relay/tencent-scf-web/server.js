@@ -22,10 +22,14 @@ const ALLOWED_ORIGINS = [
 ];
 const ALLOWED_UPSTREAM_HOSTS = ["api.deepseek.com"];
 const DEFAULT_MODEL = "deepseek-v4-flash";
-const DEFAULT_MAX_INPUT_CHARS = 1000;
-const DEFAULT_MAX_TOKENS = 600;
+// 已停用输入长度上限：任意长度文本都允许润色（去除长文本被 413 拦截后回退直贴原文的 BUG）。
+// 输出 max_tokens 默认提高到 32768：容纳超长单次直出润色的完整输出，避免长口述被截断；仍可被环境变量 MAX_TOKENS 覆盖。
+const DEFAULT_MAX_TOKENS = 32768;
 const DEFAULT_TEMPERATURE = 0.7;
-const UPSTREAM_TIMEOUT_MS = 30000;
+// 已停用主请求上游超时（WS1）：为支持超长口述的「单次直出流式润色」，去掉中转自带的上游超时，
+// 不再因时间到而 abort 上游 DeepSeek 请求（非流式与流式分支均不再设主超时）。
+// 心跳保活（warmOneMode）仍保留一个独立的短超时常量，仅用于预热、不影响主请求。
+const HEARTBEAT_TIMEOUT_MS = 30000;
 
 // 系统提示词不再以明文存在于本仓库 / 安装包中，也不再走 SCF 环境变量
 // （SCF 环境变量上限 4KB，提示词总量 ~14KB 已超限）。改为从「与本文件同目录」
@@ -190,7 +194,7 @@ async function warmOneMode(env, baseUrl, mode) {
       thinking: { type: "disabled" },
     };
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), UPSTREAM_TIMEOUT_MS);
+    const timer = setTimeout(() => controller.abort(), HEARTBEAT_TIMEOUT_MS);
     let data = null;
     try {
       const upstream = await fetch(baseUrl + "/chat/completions", {
@@ -268,8 +272,7 @@ async function handlePost(req, res, body) {
 
   const text = typeof payload.text === "string" ? payload.text : "";
   if (!text.trim()) return sendJson(res, 400, { success: false, error: "Empty text" }, cors);
-  const maxChars = Number(env.MAX_INPUT_CHARS || DEFAULT_MAX_INPUT_CHARS);
-  if (text.length > maxChars) return sendJson(res, 413, { success: false, error: "Text too long" }, cors);
+  // 已停用输入长度上限：任意长度文本都允许润色（去除长文本被 413 拦截后回退直贴原文的 BUG）。
 
   const wantStream = payload.stream === true;
   const mode = typeof payload.mode === "string" ? payload.mode : "copywriting";
@@ -287,28 +290,24 @@ async function handlePost(req, res, body) {
     return sendJson(res, 500, { success: false, error: "Relay misconfigured" }, cors);
   }
 
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), UPSTREAM_TIMEOUT_MS);
+  // WS1：主请求不再设置上游超时（去掉 AbortController + setTimeout），
+  // 以支持超长口述的「单次直出流式润色」；保留正常 fetch 与错误处理。
   let upstream;
   try {
     upstream = await fetch(baseUrl + "/chat/completions", {
       method: "POST",
       headers: { Authorization: "Bearer " + env.DEEPSEEK_API_KEY, "Content-Type": "application/json" },
       body: JSON.stringify(buildRequestBody(text, wantStream, mode, wordMap)),
-      signal: controller.signal,
     });
   } catch {
-    clearTimeout(timer);
     return sendJson(res, 502, { success: false, error: "Relay request failed" }, cors);
   }
   if (!upstream.ok) {
-    clearTimeout(timer);
     return sendJson(res, 502, { success: false, error: "Upstream error: " + upstream.status }, cors);
   }
 
   // 非流式：照旧返回 { success, text }，并透传 usage（缓存命中/未命中）便于实测。
   if (!wantStream) {
-    clearTimeout(timer);
     const data = await upstream.json();
     const out = data && data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content;
     if (!out) return sendJson(res, 502, { success: false, error: "Empty completion" }, cors);
@@ -357,9 +356,7 @@ async function handlePost(req, res, body) {
       }
     }
   } catch {
-    partial = true; // 上游中断或超时（含 AbortError）
-  } finally {
-    clearTimeout(timer);
+    partial = true; // 上游中断（WS1 后不再有主请求超时触发的 AbortError）
   }
   const terminal = { done: true, text: full.trim() };
   if (partial) terminal.partial = true;

@@ -1,6 +1,6 @@
 {
   "name": "wordtaker-relay",
-  "version": "1.0.0",
+  "version": "1.2.0",
   "private": true,
   "type": "module",
   "description": "WordTaker文案优化中转 (Cloudflare Worker)：服务端持有 DeepSeek key，客户端只发待润色文本。",

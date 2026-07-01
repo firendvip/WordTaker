@@ -3,6 +3,42 @@
 All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/); versioning follows [SemVer](https://semver.org/).
 
+## [1.9.0] - 2026-07-01
+
+### Added
+- 超长口述支持：长录音转写改为 VAD 自动分段（`funasr_server.py` 启用原已加载但闲置的 FSMN-VAD，>60s 音频按语音段切片逐段识别再拼接，内存峰值约 854MB→350MB，失败回退整段）。
+- 小猫头顶「吐字进度气泡」：长润色等待时实时显示「已生成 N 字」+ 进度条（真实反映流式吐字进度，进入后延迟 ~1.5s 显示避免短句闪烁）；非小猫皮肤在胶囊内复用进度条样式显示同样字数。
+- 新增 IPC：`polish-progress`（主→渲染，流式 start/delta/done 进度）、`get-memory-info`、`show-notification`（系统通知）。
+
+### Changed
+- AI 润色默认走流式（不再依赖 `llm_streaming_enabled` 开关），边生成边贴到光标，并驱动头顶进度气泡。
+- 录音时长改为「内存感知」动态保护：不设固定上限、尽量给久，仅当预测内存峰值超过 `min(60%可用内存, 1.2GB)` 时自动停止录音并发系统通知（本段照常转写不丢）。
+- 中转输出上限 `DEFAULT_MAX_TOKENS` 8000→32768（三套 relay + wrangler.toml），容纳超长单次直出润色；可被环境变量 `MAX_TOKENS` 覆盖。
+
+### Removed
+- 去除全链路时间超时：渲染层 `PIPELINE_HARD_TIMEOUT_MS`(45s)、FunASR 转写命令 30s 超时（转写传 0=不限时）、中转 `UPSTREAM_TIMEOUT_MS`(30s，非流式+流式)；心跳预热超时独立保留。
+
+### Fixed
+- `database.js` 入库加 ~10MB 文本软上限保护（超限截断 + 告警），防异常超大文本卡死写入。
+
+> 注：中转去上游超时 + max_tokens=32768 需**重新部署中转**才在服务端生效；线上当前可先设环境变量 `MAX_TOKENS=32768` 立即放开输出长度。分段转写需在装有嵌入式 python+funasr 的真实环境实跑验证。
+
+## [1.8.0] - 2026-07-01
+
+### Added
+- 首次安装后首启自动打开「设置 → 权限」页：新增一次性标志 `onboarding_completed`（默认 `false`，已加入 IPC 设置白名单），首启弹出权限页并置位，之后不再自动弹出；设置窗口支持 `?tab=permissions` 定位初始分类。
+
+### Changed
+- 提示音「喵」方案：结尾喵叫改为下行/低沉变体（样本 `playbackRate 0.82` + `1/√rate` 增益补偿，合成回退用下行轮廓），与开头上扬喵声听感可区分、音量一致；开头喵声及其它提示音方案保持不变。
+- 中继 `max_tokens` 默认提至 8000（worker / tencent-scf / tencent-scf-web 及 `wrangler.toml`），避免长文本润色输出被截断；心跳保活 `max_tokens:1` 不变。
+
+### Fixed
+- 长语音转写（如 628 字）未被 AI 润色而直贴原文的问题：根因为中继输入长度上限 `Text too long (413)` 拦截后客户端回退贴原文。现移除客户端（`process-text` / `process-text-stream` 的 10000 字上限）与三套中继的输入长度拦截，任意长度文本均可送润色。
+- 去除润色链路的时间超时兜底（按需求）：移除 `ipcHandlers` 的 `IPC_PROCESS_TIMEOUT_MS`、`aiService` 的请求 AbortController 超时与流式空闲/硬上限看门狗；保留 429/5xx 退避重试与正常成功/失败解析。
+- 修复「录音胶囊/小猫在转写或 AI 润色阶段突然消失」：根因为录音状态与处理状态耦合——`onstop` 一停录音即上报空闲，主进程过早重挂「转英文」触发器并放开隐藏路径，处理阶段误触转英文键即抢占/隐藏胶囊。改为主进程新增 `isBusy` 贯穿整段会话（录音→处理→润色→胶囊隐藏），期间 `handleTranslateHotkey` 被 `isRecording || isBusy` 拦截，会话级清理统一由幂等 `endSession()` 在胶囊真正隐藏（`hide-recorder`）或取消（`fireCancel`）时执行。
+
+> 注：中继为独立部署服务（腾讯云 SCF / Cloudflare Worker），上述「去长度限制 + max_tokens=8000」需**重新部署中继**后方在服务端生效。
+
 ## [1.7.1] - 2026-06-30
 
 ### Changed

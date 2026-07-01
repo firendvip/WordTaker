@@ -38,6 +38,15 @@ def get_log_path():
     return os.path.join(log_dir, "funasr_server.log")
 
 
+# —— 长音频 VAD 分段转写阈值（WS5）——
+# 仅当音频时长超过该阈值（秒）时启用「VAD 分段」路径，短音频走原有单段逻辑保持不变。
+LONG_AUDIO_THRESHOLD_S = 60.0
+# 相邻 VAD 语音段合并的目标最大时长（秒）：把很短的段合并成约 ≤ 此值的块，减少 ASR 调用次数。
+SEGMENT_MERGE_MAX_S = 45.0
+# 标准采样率（FunASR/SenseVoice 均为 16kHz）。
+TARGET_SAMPLE_RATE = 16000
+
+
 log_file_path = get_log_path()
 
 logging.basicConfig(
@@ -389,6 +398,209 @@ class FunASRServer:
         except Exception as e:
             logger.warning(f"模型预热跳过: {str(e)}")
 
+    def _vad_segments(self, audio_path):
+        """用已加载的 FSMN VAD 模型获得语音段时间戳 [(start_ms, end_ms), ...]。
+
+        失败或拿不到任何段时返回 None，调用方据此回退「整段一次性」逻辑。
+        VAD 调用可能写 stdout（污染 IPC），用 suppress_stdout 包住。
+        """
+        if self.vad_model is None:
+            return None
+        try:
+            with suppress_stdout():
+                vad_res = self.vad_model.generate(input=audio_path, disable_pbar=True)
+        except Exception as e:
+            logger.warning(f"VAD 分段失败，回退整段: {str(e)}")
+            return None
+
+        # FunASR VAD 输出形如 [{'key': ..., 'value': [[start_ms, end_ms], ...]}]
+        try:
+            if not isinstance(vad_res, list) or not vad_res:
+                return None
+            first = vad_res[0]
+            segs = first.get("value") if isinstance(first, dict) else first
+            if not segs:
+                return None
+            out = []
+            for s in segs:
+                if isinstance(s, (list, tuple)) and len(s) >= 2:
+                    start_ms = int(s[0])
+                    end_ms = int(s[1])
+                    if end_ms > start_ms >= 0:
+                        out.append((start_ms, end_ms))
+            return out or None
+        except Exception as e:
+            logger.warning(f"解析 VAD 时间戳失败，回退整段: {str(e)}")
+            return None
+
+    @staticmethod
+    def _merge_segments(segments, max_span_ms):
+        """把相邻短段合并成约 ≤ max_span_ms 的块，减少 ASR 调用次数。
+
+        segments 已按时间升序；返回合并后的 [(start_ms, end_ms), ...]（不可变新列表）。
+        """
+        merged = []
+        for start_ms, end_ms in segments:
+            if merged and (end_ms - merged[-1][0]) <= max_span_ms:
+                prev_start, _ = merged[-1]
+                merged[-1] = (prev_start, end_ms)
+            else:
+                merged.append((start_ms, end_ms))
+        return merged
+
+    def _transcribe_long_audio(self, audio_path, default_options, engine, duration):
+        """长音频 VAD 分段转写：按语音段切片逐段识别后顺序拼接。
+
+        成功返回结果 dict；任何环节失败返回 None，由调用方回退整段一次性逻辑。
+        """
+        import gc
+
+        # 读音频（一次性读入），soundfile 在两条引擎路径下均为可用依赖。
+        try:
+            import soundfile as sf
+            import numpy as np
+        except Exception as e:
+            logger.warning(f"长音频分段所需依赖缺失，回退整段: {str(e)}")
+            return None
+
+        segments = self._vad_segments(audio_path)
+        if not segments:
+            logger.info("VAD 未返回有效语音段，回退整段一次性转写")
+            return None
+
+        merge_max_ms = int(SEGMENT_MERGE_MAX_S * 1000)
+        merged = self._merge_segments(segments, merge_max_ms)
+        logger.info(
+            f"[分段] VAD 原始段数={len(segments)}，合并后={len(merged)}（目标块≤{SEGMENT_MERGE_MAX_S}s）"
+        )
+
+        try:
+            audio, sr = sf.read(audio_path, dtype="float32", always_2d=False)
+        except Exception as e:
+            logger.warning(f"读取音频失败，回退整段: {str(e)}")
+            return None
+
+        # 多声道取单声道（取首通道），与 16kHz 模型一致。
+        if getattr(audio, "ndim", 1) > 1:
+            audio = audio[:, 0]
+        if sr <= 0:
+            logger.warning("音频采样率无效，回退整段")
+            return None
+
+        tmp_dir = tempfile.gettempdir()
+        _seg_t0 = time.time()
+        texts = []
+        seg_paths = []
+        try:
+            for idx, (start_ms, end_ms) in enumerate(merged):
+                start_idx = max(0, int(start_ms * sr / 1000))
+                end_idx = min(len(audio), int(end_ms * sr / 1000))
+                if end_idx <= start_idx:
+                    continue
+                chunk = audio[start_idx:end_idx]
+                seg_path = os.path.join(tmp_dir, f"wordtaker_seg_{os.getpid()}_{idx}.wav")
+                with suppress_stdout():
+                    sf.write(seg_path, chunk, sr)
+                seg_paths.append(seg_path)
+
+                seg_text = self._transcribe_segment_text(seg_path, engine, default_options)
+                if seg_text:
+                    texts.append(seg_text)
+
+                # 释放该段大数组，控制峰值
+                del chunk
+            # 全部段处理完后释放整段音频
+            del audio
+            gc.collect()
+        except Exception as e:
+            logger.warning(f"分段转写过程异常，回退整段: {str(e)}")
+            self._cleanup_seg_files(seg_paths)
+            return None
+        finally:
+            self._cleanup_seg_files(seg_paths)
+
+        logger.info(f"[计时] 分段识别总耗时: {time.time() - _seg_t0:.2f}秒（{len(merged)}段）")
+
+        raw_text = "".join(texts)
+
+        if engine == "sensevoice":
+            # SenseVoice 自带标点/ITN，直接拼接
+            self.transcription_count += 1
+            logger.info(f"转录完成(SenseVoice分段)，文本长度: {len(raw_text)}字")
+            return {
+                "success": True,
+                "text": raw_text,
+                "raw_text": raw_text,
+                "confidence": 0.0,
+                "duration": duration,
+                "language": "zh-CN",
+                "model_type": "sensevoice-onnx-segmented",
+            }
+
+        # Paraformer 路径：拼接后统一补标点
+        final_text = raw_text
+        if default_options.get("use_punc") and self.punc_model and raw_text.strip():
+            try:
+                _punc_t0 = time.time()
+                with suppress_stdout():
+                    punc_result = self.punc_model.generate(input=raw_text)
+                logger.info(f"[计时] 标点恢复耗时: {time.time() - _punc_t0:.2f}秒")
+                if isinstance(punc_result, list) and len(punc_result) > 0:
+                    if isinstance(punc_result[0], dict) and "text" in punc_result[0]:
+                        final_text = punc_result[0]["text"]
+                    else:
+                        final_text = str(punc_result[0])
+                logger.info("FunASR标点恢复完成(分段)")
+            except Exception as e:
+                logger.warning(f"FunASR标点恢复失败，使用原始文本: {str(e)}")
+
+        self.transcription_count += 1
+        if self.transcription_count % 10 == 0:
+            self._cleanup_memory()
+            logger.info(f"已完成 {self.transcription_count} 次转录，执行内存清理")
+        logger.info(f"转录完成(Paraformer分段)，文本长度: {len(final_text)}字")
+        return {
+            "success": True,
+            "text": final_text,
+            "raw_text": raw_text,
+            "confidence": 0.0,
+            "duration": duration,
+            "language": "zh-CN",
+            "model_type": "pytorch-segmented",
+        }
+
+    def _transcribe_segment_text(self, seg_path, engine, default_options):
+        """对单个音频段跑选定引擎，返回该段纯文本（不补标点；Paraformer 标点最后统一做）。"""
+        if engine == "sensevoice" and self.sensevoice_model is not None:
+            with suppress_stdout():
+                sv_res = self.sensevoice_model([seg_path], language=[0], textnorm=[14])
+            return self._decode_sensevoice(sv_res[0]) if sv_res else ""
+
+        # Paraformer
+        with suppress_stdout():
+            asr_result = self.asr_model.generate(
+                input=seg_path,
+                batch_size_s=default_options["batch_size_s"],
+                hotword=default_options["hotword"],
+                cache={},
+                disable_pbar=True,
+            )
+        if isinstance(asr_result, list) and len(asr_result) > 0:
+            if isinstance(asr_result[0], dict) and "text" in asr_result[0]:
+                return asr_result[0]["text"]
+            return str(asr_result[0])
+        return str(asr_result)
+
+    @staticmethod
+    def _cleanup_seg_files(seg_paths):
+        """删除分段临时 wav 文件，忽略单个删除失败。"""
+        for p in seg_paths:
+            try:
+                if os.path.exists(p):
+                    os.remove(p)
+            except Exception:
+                pass
+
     def transcribe_audio(self, audio_path, options=None):
         """转录音频文件"""
         if not self.initialized:
@@ -426,6 +638,30 @@ class FunASRServer:
             # 避免调用方显式传 engine=paraformer 时落到 self.asr_model.generate() 而静默失败。
             if self.onnx_only:
                 engine = "sensevoice"
+
+            # —— 长音频 VAD 分段路径（WS5）——
+            # 仅当时长 > 阈值且 VAD 模型可用时启用，把整段一次性推理拆成多段，降低内存峰值。
+            # 任何环节失败 _transcribe_long_audio 返回 None，自动回退下面的原「整段一次性」逻辑。
+            _engine_available = (
+                (engine == "sensevoice" and self.sensevoice_model is not None)
+                or (engine != "sensevoice" and self.asr_model is not None)
+            )
+            duration = self._get_audio_duration(audio_path)
+            if (
+                duration > LONG_AUDIO_THRESHOLD_S
+                and self.vad_model is not None
+                and _engine_available
+            ):
+                logger.info(
+                    f"[分段] 音频时长 {duration:.1f}s > {LONG_AUDIO_THRESHOLD_S}s，启用 VAD 分段转写"
+                )
+                seg_result = self._transcribe_long_audio(
+                    audio_path, default_options, engine, duration
+                )
+                if seg_result is not None:
+                    return seg_result
+                logger.info("[分段] 分段流程未产出，回退整段一次性转写")
+
             if engine == "sensevoice" and self.sensevoice_model is not None:
                 _sv_t0 = time.time()
                 sv_res = self.sensevoice_model(
@@ -433,7 +669,7 @@ class FunASRServer:
                 )
                 logger.info(f"[计时] SenseVoice识别耗时: {time.time() - _sv_t0:.2f}秒")
                 raw_text = self._decode_sensevoice(sv_res[0]) if sv_res else ""
-                duration = self._get_audio_duration(audio_path)
+                # duration 已在前面计算（避免重复调用导致 total_audio_duration 重复累加）
                 self.transcription_count += 1
                 logger.info(f"转录完成(SenseVoice)，文本长度: {len(raw_text)}字")
                 return {
@@ -495,7 +731,7 @@ class FunASRServer:
                 except Exception as e:
                     logger.warning(f"FunASR标点恢复失败，使用原始文本: {str(e)}")
 
-            duration = self._get_audio_duration(audio_path)
+            # duration 已在前面计算（避免重复调用导致 total_audio_duration 重复累加）
             self.transcription_count += 1
 
             result = {

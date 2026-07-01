@@ -49,6 +49,8 @@ export function RecorderPill({
   hotkeyLabel,
   translateState = "idle",
   pillSkin = "music",
+  showPolishBubble = false,
+  polishCharCount = 0,
   disabled,
   onToggle,
   onOpenSettings,
@@ -172,7 +174,15 @@ export function RecorderPill({
 
   // 小黑猫皮肤：仅渲染透明小黑猫（无胶囊/徽章/星标/按钮）
   if (pillSkin === "catfx") {
-    return <CatSkinFx micState={micState} audioLevel={audioLevel} isBusy={isBusy} />;
+    return (
+      <CatSkinFx
+        micState={micState}
+        audioLevel={audioLevel}
+        isBusy={isBusy}
+        showPolishBubble={showPolishBubble}
+        polishCharCount={polishCharCount}
+      />
+    );
   }
   if (pillSkin === "cat") {
     return <CatSkin micState={micState} audioLevel={audioLevel} isBusy={isBusy} />;
@@ -197,7 +207,18 @@ export function RecorderPill({
         </button>
 
         {/* 中：翻译时显示进度条，否则显示声波 */}
-        {isTranslateActive ? (
+        {showPolishBubble ? (
+          // 长润色：实时显示已生成字数（复用翻译进度条样式）
+          <div className="pill-translate">
+            <span className="pill-translate-label">已生成 {polishCharCount} 字</span>
+            <div className="pill-progress" aria-hidden="true">
+              <div
+                className="pill-progress-fill"
+                style={{ width: Math.min(95, polishCharCount * 1.2) + "%" }}
+              />
+            </div>
+          </div>
+        ) : isTranslateActive ? (
           <div className="pill-translate">
             <span className="pill-translate-label">转换为英文…</span>
             <div className="pill-progress" aria-hidden="true">

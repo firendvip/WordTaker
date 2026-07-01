@@ -537,7 +537,9 @@ class WindowManager {
     return this.historyWindow;
   }
 
-  async createSettingsWindow() {
+  // initialTab：可选的初始分类标识（如 "permissions"），经 URL query 传给 settings.jsx。
+  // 仅在首次创建窗口时生效；窗口已存在则直接复用（聚焦），不改其当前分类。
+  async createSettingsWindow(initialTab = null) {
     if (this.settingsWindow) {
       this.settingsWindow.focus();
       return this.settingsWindow;
@@ -558,12 +560,20 @@ class WindowManager {
     });
 
     const isDev = process.env.NODE_ENV === "development";
+    // 仅允许已知的安全分类标识透传，避免把任意字符串注入 URL。
+    const safeTab =
+      typeof initialTab === "string" && /^[a-z]+$/.test(initialTab) ? initialTab : null;
 
     if (isDev) {
-      await this.settingsWindow.loadURL("http://localhost:5173?page=settings");
+      const devUrl = safeTab
+        ? `http://localhost:5173?page=settings&tab=${safeTab}`
+        : "http://localhost:5173?page=settings";
+      await this.settingsWindow.loadURL(devUrl);
     } else {
+      const loadOptions = safeTab ? { query: { tab: safeTab } } : undefined;
       await this.settingsWindow.loadFile(
-        path.join(__dirname, "..", "dist", "settings.html")
+        path.join(__dirname, "..", "dist", "settings.html"),
+        loadOptions
       );
     }
 
@@ -621,13 +631,15 @@ class WindowManager {
     }
   }
 
-  showSettingsWindow() {
+  // initialTab：仅在窗口尚未创建时透传给 settings.jsx 作为初始分类（如首启自动弹"权限"页）。
+  // 窗口已存在则只是 show/focus，不改其当前分类。
+  showSettingsWindow(initialTab = null) {
     if (this.settingsWindow) {
       this.settingsWindow.show();
       this.settingsWindow.focus();
       this.settingsWindow.setAlwaysOnTop(true);
     } else {
-      this.createSettingsWindow()
+      this.createSettingsWindow(initialTab)
         .then(() => {
           this.settingsWindow.show();
           this.settingsWindow.focus();

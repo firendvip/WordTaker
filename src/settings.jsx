@@ -56,8 +56,19 @@ const SettingsPage = () => {
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState(null);
 
-  // 左侧分类导航：当前选中的分类
-  const [activeCategory, setActiveCategory] = useState("permissions");
+  // 左侧分类导航：当前选中的分类。
+  // 初始分类可经 URL query 指定（如首启自动弹「权限」页：settings.html?tab=permissions）；
+  // 缺省/非法值一律回退到 "permissions"（与原默认行为一致）。
+  const [activeCategory, setActiveCategory] = useState(() => {
+    const VALID_TABS = ["permissions", "shortcuts", "sound", "skin", "role", "wordtoword", "general", "about"];
+    try {
+      const tab = new URLSearchParams(window.location.search).get("tab");
+      if (tab && VALID_TABS.includes(tab)) return tab;
+    } catch (e) {
+      // 解析失败回退默认
+    }
+    return "permissions";
+  });
 
   // 应用版本号（运行时从 app.getVersion() 获取，不硬编码）
   const [appVersion, setAppVersion] = useState("");

@@ -157,7 +157,9 @@ class DatabaseManager {
       // 托盘图标样式：'smile'（中笑镂空单色模板，默认）| 'color'（彩色猫头）
       tray_icon_style: 'smile',
       // 词转词规则：JSON 字符串数组 [{from,to}, ...]，AI 处理时识别到 from（含读音/拼写相近）自动替换为 to
-      wtw_rules_json: '[]'
+      wtw_rules_json: '[]',
+      // 首启引导：安装后首次启动时自动打开「设置-权限」页一次；首启后置 true，之后不再自动弹
+      onboarding_completed: false
     };
     try {
       const existsStmt = this.db.prepare('SELECT 1 FROM settings WHERE key = ?');
@@ -185,6 +187,25 @@ class DatabaseManager {
       throw new Error('转录文本不能为空');
     }
 
+    // 文本软上限保护：超长音频转写可能产出极大文本，超过上限会拖慢/卡死写入。
+    // 任一字段超过 ~10MB 字符则记 warning 并截断后再入库；正常长度不受影响。
+    const MAX_TEXT_CHARS = 10 * 1024 * 1024;
+    const capText = (value, field) => {
+      if (typeof value === 'string' && value.length > MAX_TEXT_CHARS) {
+        if (this.logger && this.logger.warn) {
+          this.logger.warn(
+            `转录文本字段 ${field} 超过软上限 ${MAX_TEXT_CHARS} 字符（实际 ${value.length}），已截断后入库`
+          );
+        }
+        return value.slice(0, MAX_TEXT_CHARS);
+      }
+      return value;
+    };
+
+    const safeText = capText(text.trim(), 'text');
+    const safeRawText = capText(data.raw_text || null, 'raw_text');
+    const safeProcessedText = capText(data.processed_text || null, 'processed_text');
+
     const stmt = this.db.prepare(`
       INSERT INTO transcriptions (
         text, raw_text, processed_text, confidence,
@@ -193,9 +214,9 @@ class DatabaseManager {
     `);
 
     return stmt.run(
-      text.trim(),
-      data.raw_text || null,
-      data.processed_text || null,
+      safeText,
+      safeRawText,
+      safeProcessedText,
       data.confidence || 0,
       data.language || 'zh-CN',
       data.duration || 0,

@@ -54,16 +54,25 @@ const FX_HTML = {
 };
 function easeOut(t) { return 1 - (1 - t) * (1 - t); }
 
-export default function CatSkinFx({ micState, audioLevel = 0, isBusy = false, hasError = false }) {
+// 头顶进度气泡：长润色等待时显示「进度条 + 已生成 N 字」
+const BUBBLE_SHOW_DELAY = 1500; // 进入显示前的延迟（ms），避免短润色一闪而过
+const BUBBLE_UP_Y = -26; // 气泡相对锚点的垂直偏移（px，置于头顶上方）
+const BUBBLE_CHAR_DENOM = 120; // 进度估算分母（无法预知总长，温和逼近）
+
+export default function CatSkinFx({ micState, audioLevel = 0, isBusy = false, hasError = false, showPolishBubble = false, polishCharCount = 0 }) {
   const rootRef = useRef(null);
   const recRef = useRef(false);
   const lvlRef = useRef(0);
   const busyRef = useRef(false);
   const errRef = useRef(false);
+  const bubbleRef = useRef(false);   // showPolishBubble（rAF 内读取）
+  const charRef = useRef(0);         // polishCharCount（rAF 内读取）
   useEffect(() => { recRef.current = micState === "recording"; }, [micState]);
   useEffect(() => { lvlRef.current = audioLevel || 0; }, [audioLevel]);
   useEffect(() => { busyRef.current = !!isBusy; }, [isBusy]);
   useEffect(() => { errRef.current = !!hasError; }, [hasError]);
+  useEffect(() => { bubbleRef.current = !!showPolishBubble; }, [showPolishBubble]);
+  useEffect(() => { charRef.current = polishCharCount || 0; }, [polishCharCount]);
 
   useEffect(() => {
     const root = rootRef.current;
@@ -72,6 +81,12 @@ export default function CatSkinFx({ micState, audioLevel = 0, isBusy = false, ha
     const sleepWrap = document.createElement("div"); sleepWrap.className = "cs-sleeper"; sleepWrap.innerHTML = SLEEP_SVG; sleepWrap.style.display = "none";
     const runWrap = document.createElement("div"); runWrap.className = "cs-runner"; const flip = document.createElement("div"); flip.innerHTML = RUN_SVG; runWrap.appendChild(flip); runWrap.style.display = "none";
     const fx = document.createElement("div"); fx.className = "cs-fx"; fx.style.display = "none";
+    // 头顶进度气泡：进度条 + 「已生成 N 字」，跟随小猫 x 与朝向
+    const bubble = document.createElement("div"); bubble.className = "cs-fxbubble"; bubble.style.display = "none";
+    const bubbleBar = document.createElement("div"); bubbleBar.className = "cs-fxbubble-bar";
+    const bubbleFill = document.createElement("div"); bubbleFill.className = "cs-fxbubble-fill"; bubbleBar.appendChild(bubbleFill);
+    const bubbleText = document.createElement("span"); bubbleText.className = "cs-fxbubble-text";
+    bubble.appendChild(bubbleBar); bubble.appendChild(bubbleText);
     // 睡眠 Zzz：三个升序 Z，贴在卧睡精灵头顶（仅 sleep 视图显示）
     const zzz = ZZZ_CLASSES.map((cls, i) => {
       const z = document.createElement("span");
@@ -80,7 +95,7 @@ export default function CatSkinFx({ micState, audioLevel = 0, isBusy = false, ha
       z.style.display = "none";
       return z;
     });
-    root.appendChild(sleepWrap); root.appendChild(runWrap); root.appendChild(fx);
+    root.appendChild(sleepWrap); root.appendChild(runWrap); root.appendChild(fx); root.appendChild(bubble);
     zzz.forEach((z) => root.appendChild(z));
 
     const W = root.clientWidth || 180;
@@ -104,6 +119,8 @@ export default function CatSkinFx({ micState, audioLevel = 0, isBusy = false, ha
     let fxShownType = null, fxShownAt = 0, lastDir = 1, zzzPlaced = false;
     // 音符发射器状态
     let noteCount = 0, lastSpawn = 0;
+    // 头顶气泡状态：bubbleSince=进入显示态的起始时刻（用于 1.5s 延迟），bubbleVisible=当前是否已显示
+    let bubbleSince = 0, bubbleVisible = false, lastBubbleChar = -1;
     function clearNotes() {
       const kids = fx.querySelectorAll(".cs-fxnt");
       for (let i = 0; i < kids.length; i++) kids[i].remove();
@@ -144,6 +161,8 @@ export default function CatSkinFx({ micState, audioLevel = 0, isBusy = false, ha
       fx.style.display = "block";
     }
     function positionFx(dir) { lastDir = dir; fx.style.transform = `translate(${x + dir * FRONT_SIDE_X}px, ${FRONT_UP_Y}px)`; }
+    // 头顶气泡定位：跟随小猫 x（居中于头顶上方）；x 由 fx 坐标系（相对窗口）给出
+    function positionBubble() { bubble.style.transform = `translate(${x}px, ${BUBBLE_UP_Y}px)`; }
     function renderRun(s, dir) { runWrap.style.transform = `translateX(${x - 16}px) scale(${s})`; flip.style.transform = `scaleX(${dir})`; }
     setView("none"); setFx(null);
 
@@ -178,6 +197,28 @@ export default function CatSkinFx({ micState, audioLevel = 0, isBusy = false, ha
       if (fxShownType === "notes") {
         const interval = loudState ? NOTE_SPAWN_LOUD : NOTE_SPAWN_NORMAL;
         if (now - lastSpawn >= interval) spawnNote(now);
+      }
+
+      // 头顶进度气泡：showPolishBubble 时延迟 ~1.5s 出现；转 false 立即隐藏并清除计时
+      const wantBubble = bubbleRef.current;
+      if (wantBubble) {
+        if (bubbleSince === 0) bubbleSince = now;
+        if (!bubbleVisible && now - bubbleSince >= BUBBLE_SHOW_DELAY) {
+          bubbleVisible = true;
+          bubble.style.display = "block";
+        }
+        if (bubbleVisible) {
+          const n = charRef.current | 0;
+          if (n !== lastBubbleChar) {
+            lastBubbleChar = n;
+            bubbleText.textContent = `已生成 ${n} 字`; // 真实值
+            bubbleFill.style.width = Math.min(95, (n / BUBBLE_CHAR_DENOM) * 100).toFixed(1) + "%";
+          }
+          positionBubble();
+        }
+      } else if (bubbleSince !== 0 || bubbleVisible) {
+        bubbleSince = 0; bubbleVisible = false; lastBubbleChar = -1;
+        bubble.style.display = "none";
       }
 
       const want = (busy || (active && voice)) ? "walk" : "rest";

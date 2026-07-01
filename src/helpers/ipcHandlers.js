@@ -1,9 +1,9 @@
 const { ipcMain } = require("electron");
 const AiService = require("./aiService");
 
-// AI 处理硬超时（毫秒）：LLM 中转/请求挂起时，渲染层 await 会被永久阻塞导致卡死，
-// 用 Promise.race 兜底超时，超时一律返回结构化失败（稳定性优先）。
-const IPC_PROCESS_TIMEOUT_MS = 40000;
+// 已停用 IPC 硬超时兜底：长语音转写润色可能耗时较久，硬超时会把长文本的润色请求
+// 提前中断并回退直贴原文（已确诊 BUG）。按用户要求去除该时间兜底，直接 await
+// aiService 结果，仅用 try/catch 处理真实错误。
 
 // 设置键白名单：渲染层只能写入这些键，杜绝写入 __proto__ 等任意键
 const ALLOWED_SETTING_KEYS = new Set([
@@ -27,6 +27,8 @@ const ALLOWED_SETTING_KEYS = new Set([
   "tray_icon_style",
   // 词转词规则 JSON 字符串数组 [{from,to}]，AI 处理时自动替换
   "wtw_rules_json",
+  // 首启引导标志：安装后首启自动弹「权限」页一次后置 true（主进程写入）
+  "onboarding_completed",
 ]);
 // 转录选项白名单：渲染层只能透传这些键到 Python 边界，丢弃未知键（IPCVAL-1）。
 // 与 funasr_server.py 的 default_options 对齐。
@@ -142,31 +144,20 @@ class IPCHandlers {
 
     // AI文本处理
     ipcMain.handle("process-text", async (event, text, mode = 'optimize') => {
-      // IPC 是信任边界：自校验入参，避免 text 为空/超长导致下游抛错或浪费请求
+      // IPC 是信任边界：自校验入参，避免 text 为空导致下游抛错或浪费请求。
+      // 不再做长度上限拦截：任意长度文本都允许送去润色（去除长文本被截断/直贴原文的限制）。
       if (typeof text !== 'string' || !text.trim()) {
         return { success: false, error: '无有效文本' };
-      }
-      const MAX_TEXT_LENGTH = 10000;
-      if (text.length > MAX_TEXT_LENGTH) {
-        return { success: false, error: '文本过长' };
       }
       // 润色模式（copywriting）按当前「角色」解析：normal→normal / gaoeq→gaoeq / vibecoding→copywriting。
       // 其它模式（如 optimize）保持原样透传。
       const effectiveMode = mode === 'copywriting' ? await this.aiService.getPolishMode() : mode;
-      // 硬超时兜底：LLM 请求挂起时不让渲染层 await 永久阻塞（稳定性优先）。
-      let timer = null;
+      // 已去除硬超时兜底：直接 await 润色结果，长文本不再被时间兜底中断。
       try {
-        return await Promise.race([
-          this.aiService.processTextWithAI(text, effectiveMode),
-          new Promise((_, reject) => {
-            timer = setTimeout(() => reject(new Error('处理超时')), IPC_PROCESS_TIMEOUT_MS);
-          }),
-        ]);
+        return await this.aiService.processTextWithAI(text, effectiveMode);
       } catch (error) {
         this.logger.error("process-text 处理失败:", error?.message || error);
-        return { success: false, error: '处理超时' };
-      } finally {
-        if (timer) clearTimeout(timer);
+        return { success: false, error: error?.message || '处理失败' };
       }
     });
 
@@ -183,15 +174,14 @@ class IPCHandlers {
     // 流式润色 + 增量上屏：边收边贴到光标处。返回 { success, text, pastedAny }
     ipcMain.handle("process-text-stream", async (event, text) => {
       if (typeof text !== "string" || !text.trim()) return { success: false, error: "无有效文本", pastedAny: false };
-      if (text.length > 10000) return { success: false, error: "文本过长", pastedAny: false };
-      const streaming = await this.databaseManager.getSetting("llm_streaming_enabled", false);
+      // 不再做长度上限拦截：任意长度文本都允许走流式润色。
+      // 契约 D：relay 启用时润色一律走流式，不再依赖 llm_streaming_enabled 开关。
+      // 仍要求 relay 启用 + relayUrl 非空；缺 relay 时返回明确错误。
       const relayEnabled = await this.databaseManager.getSetting("llm_relay_enabled", false);
       const relayUrl = await this.databaseManager.getSetting("llm_relay_url", "");
-      if (!streaming || !relayEnabled || !relayUrl) {
+      if (!relayEnabled || !relayUrl) {
         // 不是静默 no-op：返回明确的、可被渲染层展示的原因（STREAM-1）。
-        const reason = !streaming
-          ? "未开启流式上屏"
-          : "流式上屏需要配置中转（relay）：请在设置中开启中转并填写中转地址后再使用。";
+        const reason = "流式上屏需要配置中转（relay）：请在设置中开启中转并填写中转地址后再使用。";
         this.logger.warn("流式上屏不可用:", reason);
         return { success: false, error: reason, code: "streaming-unavailable", pastedAny: false };
       }
@@ -208,6 +198,10 @@ class IPCHandlers {
       let pastedAny = false;
       let pasteCount = 0;
       let firstFlushDone = false;
+      // 契约 A：润色进度累计已生成字符数（已收到全部增量的字符长度）。
+      let polishedCharCount = 0;
+      // 进入流式前广播 start
+      try { event.sender.send("polish-progress", { status: "start", charCount: 0 }); } catch (e) { /* 渲染层不可用时忽略 */ }
       const flush = (force) => {
         if (!buffer) return;
         // 达到中途上限后停止逐段粘贴，剩余内容攒到结束时一次性贴出
@@ -221,6 +215,9 @@ class IPCHandlers {
       };
       const onDelta = (d) => {
         buffer += d;
+        // 契约 A：累计已生成字符数 = 已收到全部增量的字符长度。
+        polishedCharCount += [...d].length;
+        try { event.sender.send("polish-progress", { status: "delta", charCount: polishedCharCount, chunk: d }); } catch (e) { /* 渲染层不可用时忽略 */ }
         const len = [...buffer].length;
         if (!firstFlushDone) {
           if (len >= FIRST_FLUSH_CHARS) { flush(); firstFlushDone = true; }
@@ -231,38 +228,31 @@ class IPCHandlers {
 
       // 润色模式按当前「角色」决定：normal→normal / gaoeq→gaoeq / vibecoding→copywriting
       const polishMode = await this.aiService.getPolishMode();
-      // 硬超时兜底：流式请求挂起时，渲染层 await 会被永久阻塞（卡死）。超时即收尾并返回失败，
-      // 让渲染层的 await 立即得到终态（本 handler 的「终态信号」就是返回值的 resolve）。
-      let streamTimer = null;
+      // 已去除硬超时兜底：直接 await 流式润色结果，长文本不再被时间兜底中断。
+      // 真实错误（网络/中转失败等）仍会收尾贴出已攒缓冲并恢复剪贴板。
       let result;
       try {
-        result = await Promise.race([
-          this.aiService.processTextViaRelayStream(text, polishMode, relayUrl, onDelta),
-          new Promise((_, reject) => {
-            streamTimer = setTimeout(() => reject(new Error('处理超时')), IPC_PROCESS_TIMEOUT_MS);
-          }),
-        ]);
+        result = await this.aiService.processTextViaRelayStream(text, polishMode, relayUrl, onDelta);
       } catch (error) {
         this.logger.error("process-text-stream 处理失败:", error?.message || error);
-        // 超时也要收尾：贴出已攒缓冲并恢复剪贴板，避免残留状态。
+        // 出错也要收尾：贴出已攒缓冲并恢复剪贴板，避免残留状态。
         try {
           flush(true);
           await this.clipboardManager.appendChunk("");
         } catch (e) {
-          this.logger.error("流式超时收尾失败:", e?.message || String(e));
+          this.logger.error("流式出错收尾失败:", e?.message || String(e));
         }
-        let keepResultOnTimeout = false;
+        let keepResultOnError = false;
         try {
-          keepResultOnTimeout = await this.databaseManager.getSetting("keep_result_in_clipboard", false);
+          keepResultOnError = await this.databaseManager.getSetting("keep_result_in_clipboard", false);
         } catch (e) {
-          keepResultOnTimeout = false;
+          keepResultOnError = false;
         }
-        if (!keepResultOnTimeout) {
+        if (!keepResultOnError) {
           setTimeout(() => this.clipboardManager.restoreClipboard(original), 500);
         }
-        return { success: false, error: '处理超时', pastedAny };
-      } finally {
-        if (streamTimer) clearTimeout(streamTimer);
+        try { event.sender.send("polish-progress", { status: "done", charCount: polishedCharCount }); } catch (e) { /* 渲染层不可用时忽略 */ }
+        return { success: false, error: error?.message || '处理失败', pastedAny };
       }
       let flushError = null;
       try {
@@ -286,10 +276,35 @@ class IPCHandlers {
         setTimeout(() => this.clipboardManager.restoreClipboard(original), 500);
       }
 
+      // 契约 A：收尾广播 done（最终字符数）。
+      try { event.sender.send("polish-progress", { status: "done", charCount: polishedCharCount }); } catch (e) { /* 渲染层不可用时忽略 */ }
+
       if (flushError) {
         return { success: false, error: flushError, text: result.text || "", pastedAny };
       }
       return { success: !!result.success, text: result.text || "", error: result.error, pastedAny };
+    });
+
+    // 契约 C：内存信息（用 Node os 模块返回空闲/总内存字节数）。
+    ipcMain.handle("get-memory-info", () => {
+      const os = require("os");
+      return { freeBytes: os.freemem(), totalBytes: os.totalmem() };
+    });
+
+    // 系统通知：胶囊窗口透明且仅 88px，无法承载 toast，改由主进程弹系统通知
+    // （用于「录音内存感知自动停止」等需用户可见的提示）。
+    ipcMain.handle("show-notification", (event, payload) => {
+      try {
+        const { Notification } = require("electron");
+        if (!Notification || !Notification.isSupported()) return { success: false };
+        const title = (payload && payload.title) || "弦外小猫";
+        const body = (payload && payload.body) || "";
+        new Notification({ title, body, silent: false }).show();
+        return { success: true };
+      } catch (e) {
+        this.logger.warn && this.logger.warn("show-notification 失败:", e?.message || e);
+        return { success: false };
+      }
     });
 
     // 音频转录相关

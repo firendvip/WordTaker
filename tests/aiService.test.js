@@ -14,7 +14,8 @@ describe("AiService.processTextWithAI", () => {
     });
     const r = await svc.processTextWithAI("你好", "copywriting");
     expect(r.success).toBe(false);
-    expect(r.error).toMatch(/密钥|API/);
+    // 严格只走云端中继：未配置 relay 时直接返回「未配置云端中继」错误（不再走直连 API key 分支）。
+    expect(r.error).toMatch(/中继|relay/i);
   });
 
   it("启用中转时只发送 {text, mode} 并带访问令牌头", async () => {

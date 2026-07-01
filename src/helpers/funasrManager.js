@@ -979,10 +979,12 @@ class FunASRManager {
         return;
       }
 
-      // 设置超时
-      setTimeout(() => {
-        settleReject(new Error('服务器响应超时'));
-      }, timeoutMs);
+      // 设置超时：timeoutMs <= 0 表示不限时（如长语音转写），跳过超时定时器。
+      if (timeoutMs > 0) {
+        setTimeout(() => {
+          settleReject(new Error('服务器响应超时'));
+        }, timeoutMs);
+      }
     });
   }
 
@@ -1337,11 +1339,12 @@ class FunASRManager {
       
       // 使用服务器模式
       this.logger.info && this.logger.info('使用FunASR服务器模式进行转录');
+      // 转写不限时：传 0 跳过响应超时，避免长语音被超时中断（其它命令保持默认超时）。
       const result = await this._sendServerCommand({
         action: 'transcribe',
         audio_path: tempAudioPath,
         options: options
-      });
+      }, 0);
       
       if (!result.success) {
         throw new Error(result.error || '转录失败');

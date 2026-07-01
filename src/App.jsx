@@ -48,6 +48,8 @@ function RecorderApp() {
   const [showSettings, setShowSettings] = useState(false);
   const [translatePhase, setTranslatePhase] = useState('idle'); // idle | translating | done | error
   const [pillSkin, setPillSkin] = useState('music'); // music | voiceink
+  const [polishActive, setPolishActive] = useState(false); // 长润色：是否正在生成
+  const [polishCharCount, setPolishCharCount] = useState(0); // 长润色：累计已生成字符数
 
   // 读取胶囊皮肤初始值（沿用现有 getSetting 模式）
   useEffect(() => {
@@ -294,6 +296,24 @@ function RecorderApp() {
     return () => { if (typeof off === 'function') off(); };
   }, []);
 
+  // 监听长润色吐字进度：实时反映已生成字数，驱动小猫头顶进度气泡
+  useEffect(() => {
+    if (!window.electronAPI?.onPolishProgress) return;
+    const off = window.electronAPI.onPolishProgress((data) => {
+      const status = data && data.status;
+      if (status === 'start') {
+        setPolishActive(true);
+        setPolishCharCount(0);
+      } else if (status === 'delta') {
+        setPolishCharCount(data.charCount || 0);
+      } else if (status === 'done') {
+        setPolishActive(false);
+        setPolishCharCount(0);
+      }
+    });
+    return () => { if (typeof off === 'function') off(); };
+  }, []);
+
   // 把最新的回调写入 ref，供 useRecording 在录音完成时调用（替代 window 全局回调）
   useEffect(() => {
     onTranscriptionCompleteRef.current = handleRecordingComplete;
@@ -514,6 +534,8 @@ function RecorderApp() {
 
   const micState = getMicState();
   const isListening = isRecording || isRecordingProcessing;
+  // 仅在优化阶段且确有吐字进度时显示头顶进度气泡
+  const showPolishBubble = micState === 'optimizing' && polishActive;
 
   // 获取麦克风按钮属性
   const getMicButtonProps = () => {
@@ -587,6 +609,8 @@ function RecorderApp() {
       hotkeyLabel={triggerLabel}
       translateState={translatePhase}
       pillSkin={pillSkin}
+      showPolishBubble={showPolishBubble}
+      polishCharCount={polishCharCount}
       disabled={micProps.disabled}
       onToggle={toggleRecording}
       onOpenSettings={handleOpenSettings}

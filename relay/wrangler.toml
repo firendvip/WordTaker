@@ -9,8 +9,10 @@ compatibility_date = "2024-11-01"
 [vars]
 DEEPSEEK_BASE_URL = "https://api.deepseek.com"
 DEEPSEEK_MODEL = "deepseek-v4-flash"
-MAX_INPUT_CHARS = "4000"
-MAX_TOKENS = "2000"
+# 已停用输入长度上限：worker.js 不再按 MAX_INPUT_CHARS 拦截，任意长度文本都允许润色。
+# MAX_INPUT_CHARS = "4000"
+# 输出上限提高到 32768，容纳超长单次直出润色的完整输出，避免长口述被截断。
+MAX_TOKENS = "32768"
 RATE_LIMIT_PER_MIN = "20"
 
 # ───────────────────────────────────────────────────────────────

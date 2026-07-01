@@ -21,8 +21,10 @@ var ALLOWED_ORIGINS = [
 ];
 var ALLOWED_UPSTREAM_HOSTS = ["api.deepseek.com"];
 var DEFAULT_MODEL = "deepseek-v4-flash";
-var DEFAULT_MAX_INPUT_CHARS = 1000;
-var DEFAULT_MAX_TOKENS = 2000;
+// 已停用输入长度上限：任意长度文本都允许润色（去除长文本被 413 拦截后回退直贴原文的 BUG）。
+// 输出 max_tokens 默认提高到 32768：容纳超长单次直出润色的完整输出，避免长口述被截断；仍可被环境变量 MAX_TOKENS 覆盖。
+// 本事件函数版主请求本就未设上游超时（无 AbortController），WS1「去除上游超时」对它无需额外改动。
+var DEFAULT_MAX_TOKENS = 32768;
 var DEFAULT_TEMPERATURE = 0.7;
 
 var COPYWRITING_PROMPT = [
@@ -118,8 +120,7 @@ exports.main_handler = async function (event, context) {
   }
   var text = typeof payload.text === "string" ? payload.text : "";
   if (!text.trim()) return resp(400, { success: false, error: "Empty text" }, cors);
-  var maxChars = Number(env.MAX_INPUT_CHARS || DEFAULT_MAX_INPUT_CHARS);
-  if (text.length > maxChars) return resp(413, { success: false, error: "Text too long" }, cors);
+  // 已停用输入长度上限：任意长度文本都允许润色（去除长文本被 413 拦截后回退直贴原文的 BUG）。
 
   // 4) 服务端构建带防注入标记的请求体
   var rid = randomId();

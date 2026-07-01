@@ -1,34 +1,27 @@
 // AI 文案处理服务：严格只走云端中继（relay）。
 // 系统提示词只存在于中继的私有环境变量中，客户端不持有、也不构建任何提示词。
 // 中继未配置/不可达时直接返回失败，由上层的「回退粘贴识别原文」逻辑兜底。
-// 含超时、指数退避重试。从 ipcHandlers.js 拆出，便于维护与单测。
+// 从 ipcHandlers.js 拆出，便于维护与单测。
 
-// LLM 请求默认超时（毫秒）：防止 relay/DeepSeek 挂起导致请求永久 pending、卡死后续录音
-const LLM_REQUEST_TIMEOUT_MS = 20000;
-
-// 带超时的 fetch：超时后 abort，触发各调用处已有的 AbortError 处理分支
-async function fetchWithTimeout(url, options = {}, timeoutMs = LLM_REQUEST_TIMEOUT_MS) {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    return await fetch(url, { ...options, signal: controller.signal });
-  } finally {
-    clearTimeout(timer);
-  }
+// 已去除「请求时间超时主动 abort」兜底（按用户要求）：长语音转写润色可能耗时较久，
+// 时间超时 abort 会把长文本润色请求中途中断并回退直贴原文（已确诊 BUG）。
+// 现在不再因时间到而中断请求；仍保留对瞬时错误(429/5xx)与网络异常的重试。
+async function fetchNoTimeout(url, options = {}) {
+  return await fetch(url, options);
 }
 
 const _sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-// 在 fetchWithTimeout 之上加指数退避重试：仅对瞬时错误(429/5xx)与网络异常重试，最多 2 次。
-// 最坏耗时收敛到 ≲40s：2 次 × 20s 单次超时 + 1 次 ≤2s 退避 = 约 42s 上界，实际 AbortError 多在 20s 内触发，远低于此。
+// 在 fetch 之上加指数退避重试：仅对瞬时错误(429/5xx)与网络异常重试，最多 2 次。
+// 不再设置时间超时，长请求会一直等待上游返回。
 const MAX_FETCH_ATTEMPTS = 2;
-async function fetchWithRetry(url, options = {}, timeoutMs = LLM_REQUEST_TIMEOUT_MS) {
+async function fetchWithRetry(url, options = {}) {
   const backoff = [2000];
   let lastErr;
   for (let attempt = 0; attempt < MAX_FETCH_ATTEMPTS; attempt++) {
     const isLast = attempt >= MAX_FETCH_ATTEMPTS - 1;
     try {
-      const res = await fetchWithTimeout(url, options, timeoutMs);
+      const res = await fetchNoTimeout(url, options);
       if ((res.status === 429 || res.status >= 500) && !isLast) {
         await _sleep(backoff[attempt]);
         continue;
@@ -94,10 +87,10 @@ class AiService {
       const relayUrl = await this.databaseManager.getSetting('llm_relay_url', '');
       if (relayEnabled && relayUrl) {
         // 中转支持 OPTIONS→204，最轻量地建连
-        await fetchWithTimeout(relayUrl, { method: 'OPTIONS' }, 5000);
+        await fetchNoTimeout(relayUrl, { method: 'OPTIONS' });
       } else {
         const baseUrl = await this.databaseManager.getSetting('ai_base_url', 'https://api.deepseek.com');
-        await fetchWithTimeout(baseUrl, { method: 'HEAD' }, 5000);
+        await fetchNoTimeout(baseUrl, { method: 'HEAD' });
       }
     } catch (e) {
       // 预热失败无所谓，正常请求会自行建连
@@ -122,8 +115,9 @@ class AiService {
       const body = { text, mode, stream: true };
       if (wordMap.length > 0) body.word_map = wordMap;
 
-      // 流式不重试(重试会重复输出);用带超时的 fetch
-      const response = await fetchWithTimeout(relayUrl, {
+      // 流式不重试(重试会重复输出)。已去除时间超时：长文本流式润色可能持续较久，
+      // 不再因时间到而 abort/cancel 请求，让流自然读到 done 结束。
+      const response = await fetchNoTimeout(relayUrl, {
         method: 'POST',
         headers,
         body: JSON.stringify(body),
@@ -132,38 +126,18 @@ class AiService {
         return { success: false, error: `中转服务错误: ${response.status}` };
       }
 
-      // 流式空闲看门狗：headers 到达后 fetch 的超时已失效，若上游中途停滞，
-      // 读循环会永久挂起。每收到一个分片就重置计时，超时则取消 reader 解挂。
-      const STREAM_IDLE_TIMEOUT_MS = 20000;
-      // 流式总时长硬上限：即便分片持续到达（空闲看门狗不触发），也强制在 40s 封顶，
-      // 避免上游慢速涓流导致整体长时间挂起、卡死后续录音。
-      const STREAM_HARD_CAP_MS = 40000;
+      // 已去除流式空闲看门狗(STREAM_IDLE_TIMEOUT_MS)与硬上限(STREAM_HARD_CAP_MS)：
+      // 这两个超时会因时间到而 cancel reader，导致长文本润色被中途截断（已确诊 BUG）。
+      // 现在只按正常的 done / 空返回判断成败。
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
       let buf = '';
       let full = '';
-      let idleTimer = null;
-      let timedOut = false;
-      let hardCapped = false;
       let sawDone = false; // 是否收到 done 终止标记；未收到即视为流被截断=错误
-      const resetIdle = () => {
-        if (idleTimer) clearTimeout(idleTimer);
-        idleTimer = setTimeout(() => {
-          timedOut = true;
-          try { reader.cancel(); } catch (e) { /* 忽略 */ }
-        }, STREAM_IDLE_TIMEOUT_MS);
-      };
-      const hardCapTimer = setTimeout(() => {
-        hardCapped = true;
-        timedOut = true;
-        try { reader.cancel(); } catch (e) { /* 忽略 */ }
-      }, STREAM_HARD_CAP_MS);
       try {
-        resetIdle();
         for (;;) {
           const { done, value } = await reader.read();
           if (done) break;
-          resetIdle();
           buf += decoder.decode(value, { stream: true });
           let idx;
           while ((idx = buf.indexOf('\n')) >= 0) {
@@ -178,14 +152,9 @@ class AiService {
           }
         }
       } finally {
-        if (idleTimer) clearTimeout(idleTimer);
-        clearTimeout(hardCapTimer);
         try { reader.cancel(); } catch (e) { /* 忽略 */ }
       }
       const out = full.trim();
-      // 超时（空闲或硬上限）一律按错误返回，绝不把部分/空内容当成功
-      if (hardCapped) return { success: false, error: '流式响应超过最长时限' };
-      if (timedOut) return { success: false, error: '流式响应超时' };
       if (!out) return { success: false, error: '流式返回为空' };
       // 流在未收到 done 终止标记的情况下结束=被上游截断，按错误返回防止吞掉不完整结果
       if (!sawDone) return { success: false, error: '流式响应未完成（缺少结束标记）' };

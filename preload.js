@@ -81,6 +81,19 @@ contextBridge.exposeInMainWorld("electronAPI", {
   // 流式润色 + 增量上屏（主进程边收边贴）
   processTextStream: (text) => ipcRenderer.invoke("process-text-stream", text),
 
+  // 润色进度监听（契约 B）：回调直接收到负载对象 { status, charCount, chunk }
+  onPolishProgress: (callback) => {
+    const listener = (_e, data) => callback(data);
+    ipcRenderer.on("polish-progress", listener);
+    return () => ipcRenderer.removeListener("polish-progress", listener);
+  },
+
+  // 内存信息（契约 C）：{ freeBytes, totalBytes }
+  getMemoryInfo: () => ipcRenderer.invoke("get-memory-info"),
+
+  // 系统通知（透明胶囊窗口无法显示 toast，改走系统通知）
+  showNotification: (title, body) => ipcRenderer.invoke("show-notification", { title, body }),
+
   // F2热键管理
   registerF2Hotkey: () => ipcRenderer.invoke("register-f2-hotkey"),
   unregisterF2Hotkey: () => ipcRenderer.invoke("unregister-f2-hotkey"),

@@ -28,10 +28,15 @@ const ALLOWED_ORIGINS = [
 ];
 const ALLOWED_UPSTREAM_HOSTS = ["api.deepseek.com"];
 const DEFAULT_MODEL = "deepseek-v4-flash";
-const DEFAULT_MAX_INPUT_CHARS = 1000;
-const DEFAULT_MAX_TOKENS = 600;
+// 已停用输入长度上限：任意长度文本都允许润色（去除长文本被 413 拦截后回退直贴原文的 BUG）。
+// DEFAULT_MAX_INPUT_CHARS / env.MAX_INPUT_CHARS 不再用于拦截，保留常量仅为兼容旧配置。
+// 输出 max_tokens 默认提高到 32768：容纳超长单次直出润色的完整输出，避免长口述被截断；
+// 仍可被环境变量 MAX_TOKENS 覆盖。
+const DEFAULT_MAX_TOKENS = 32768;
 const DEFAULT_TEMPERATURE = 0.7;
-const UPSTREAM_TIMEOUT_MS = 30000;
+// 已停用主请求上游超时（WS1）：为支持超长口述的「单次直出流式润色」，去掉中转自带的上游超时，
+// 不再因时间到而 abort 上游 DeepSeek 请求。心跳保活（warmOneMode）仍保留独立短超时、仅用于预热。
+const HEARTBEAT_TIMEOUT_MS = 30000;
 
 // 系统提示词不再以明文存在于本仓库 / 安装包中，也不再走环境变量。改为从「与本文件
 // 同目录」的 gitignored 文件 prompts.local.json 读取（随代码部署，不进公开仓库与安装包），
@@ -117,7 +122,7 @@ async function warmOneMode(env, baseUrl, mode, prompts) {
       thinking: { type: "disabled" },
     };
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), UPSTREAM_TIMEOUT_MS);
+    const timer = setTimeout(() => controller.abort(), HEARTBEAT_TIMEOUT_MS);
     let data = null;
     try {
       const upstream = await fetch(`${baseUrl}/chat/completions`, {
@@ -306,10 +311,7 @@ export default {
     }
     const mode = typeof payload?.mode === "string" ? payload.mode : "copywriting";
     const wordMap = sanitizeWordMap(payload?.word_map);
-    const maxChars = Number(env.MAX_INPUT_CHARS || DEFAULT_MAX_INPUT_CHARS);
-    if (text.length > maxChars) {
-      return json({ success: false, error: `Text too long (>${maxChars})` }, 413, cors);
-    }
+    // 已停用输入长度上限：任意长度文本都允许润色（去除长文本被 413 拦截后回退直贴原文的 BUG）。
 
     // 5) 服务端构建带防注入标记的请求体
     const rid = randomId();
@@ -345,8 +347,8 @@ export default {
     };
 
     // 6) 转发到 DeepSeek（在服务端注入真实 key）
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), UPSTREAM_TIMEOUT_MS);
+    // WS1：主请求不再设置上游超时（去掉 AbortController + setTimeout），
+    // 以支持超长口述的「单次直出流式润色」；保留正常 fetch 与错误处理。
     try {
       const upstream = await fetch(`${baseUrl}/chat/completions`, {
         method: "POST",
@@ -355,7 +357,6 @@ export default {
           "Content-Type": "application/json",
         },
         body: JSON.stringify(requestData),
-        signal: controller.signal,
       });
 
       if (!upstream.ok) {
@@ -378,12 +379,8 @@ export default {
       if (usage) resp.usage = usage;
       return json(resp, 200, cors);
     } catch (e) {
-      if (e && e.name === "AbortError") {
-        return json({ success: false, error: "上游超时" }, 504, cors);
-      }
+      // WS1 后主请求不再有超时触发的 AbortError；保留通用错误处理。
       return json({ success: false, error: "Relay request failed" }, 502, cors);
-    } finally {
-      clearTimeout(timer);
     }
   },
 };

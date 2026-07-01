@@ -798,3 +798,9 @@ body {
 .cs-fxzz-m{font-size:10px}
 .cs-fxzz-l{font-size:12px}
 @keyframes csfxZz{0%{transform:translate(0,1px) scale(.85);opacity:0}25%{opacity:1}100%{transform:translate(calc(var(--zdir,-1) * 3px),-5px) scale(1);opacity:0}}
+/* ===== 头顶进度气泡（长润色：进度条 + 已生成 N 字）===== */
+.cs-fxbubble{position:absolute;left:0;bottom:30px;display:flex;flex-direction:column;align-items:center;gap:3px;padding:3px 8px;min-width:64px;max-height:24px;box-sizing:border-box;background:rgba(24,24,28,.88);border:1px solid rgba(255,255,255,.1);border-radius:8px;box-shadow:0 2px 8px rgba(0,0,0,.35);transform:translate(0,-26px);will-change:transform;pointer-events:none;z-index:50}
+.cs-fxbubble::after{content:"";position:absolute;left:50%;bottom:-5px;width:0;height:0;margin-left:-4px;border-left:4px solid transparent;border-right:4px solid transparent;border-top:5px solid rgba(24,24,28,.88)}
+.cs-fxbubble-bar{position:relative;width:100%;height:3px;border-radius:999px;background:rgba(255,255,255,.16);overflow:hidden}
+.cs-fxbubble-fill{position:absolute;left:0;top:0;bottom:0;width:0;border-radius:999px;background:#fff;transition:width 160ms cubic-bezier(.16,1,.3,1)}
+.cs-fxbubble-text{font-size:12px;line-height:1;color:#fff;white-space:nowrap}

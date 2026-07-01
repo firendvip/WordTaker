@@ -49,7 +49,10 @@ function tone({ freq = 660, dur = 0.12, type = "sine", vol = 0.3, when = 0 }) {
 // 锯齿波声源 + 颤音LFO 作为"声带"，经 3 个并联带通"共振峰"滤波器塑形，
 // 三个共振峰中心频率随时间在元音 mi(ee) → a → ow 之间滑动，模拟猫张口/闭口的"喵～"。
 // 音高先升后降，约 0.4s。完全 Web Audio 合成，无音频文件、无版权问题。
-function meow({ vol = 0.3, when = 0, base = 1, dur = 0.4 } = {}) {
+// down=false：默认上扬轮廓（600→760→400，先升后降），用于"唤起"。
+// down=true：下行轮廓（620→480→300，全程下降），整体更低沉，用于"结束"；
+//            与上扬版同为猫叫音色，但听觉上明显是"往下收"，便于分辨开始/结束。
+function meow({ vol = 0.3, when = 0, base = 1, dur = 0.4, down = false } = {}) {
   const ac = ctx();
   if (!ac) return;
   // 整体上移 ~7% 增加奶猫感
@@ -58,11 +61,12 @@ function meow({ vol = 0.3, when = 0, base = 1, dur = 0.4 } = {}) {
   const tMid = t0 + dur * 0.4; // 元音 a 的时刻
   const tEnd = t0 + dur;
 
-  // --- 声源：锯齿波 + 微失谐第二振荡器，音高 600→760→400（先升后降）---
+  // --- 声源：锯齿波 + 微失谐第二振荡器 ---
+  // 上扬版音高 600→760→400（先升后降）；下行版 620→480→300（持续下降）。
   const pSrc = (f) => f * base * kitten;
-  const p0 = pSrc(600);
-  const p1 = pSrc(760);
-  const p2 = pSrc(400);
+  const p0 = pSrc(down ? 620 : 600);
+  const p1 = pSrc(down ? 480 : 760);
+  const p2 = pSrc(down ? 300 : 400);
 
   // 颤音 LFO：~14Hz、深度 ~10Hz，作用到声源 frequency
   const lfo = ac.createOscillator();
@@ -200,11 +204,12 @@ const SCHEMES = {
       if (playMeowSample(v)) return;
       meow({ vol: v, base: 1 });
     },
-    // 结束：同一样本、略降音量（解码失败时回退合成双喵）
+    // 结束：同一只猫，但降调播放（playbackRate 0.82，听感更低沉/下行 = "结束"），
+    // 音量与唤起保持一致（同 v，配合降调增益补偿，响度相当）。
+    // 解码失败时回退到下行轮廓的合成喵（down:true，整体偏低、持续下降）。
     end(v) {
-      if (playMeowSample(v * 0.85)) return;
-      meow({ vol: v * 0.95, base: 0.88, dur: 0.26 });
-      meow({ vol: v * 0.8, base: 0.8, dur: 0.24, when: 0.2 });
+      if (playMeowSample(v, 0, 0.82)) return;
+      meow({ vol: v, base: 0.85, dur: 0.42, down: true });
     },
   },
 };
@@ -264,15 +269,20 @@ export function warmupMeow() {
   loadMeowBuffer();
 }
 
-// 播放真实猫叫样本；返回 true 表示已成功排程，false 表示需回退合成喵
-function playMeowSample(vol, when = 0) {
+// 播放真实猫叫样本；返回 true 表示已成功排程，false 表示需回退合成喵。
+// rate：playbackRate，<1 整体降调（音色仍是同一只猫，但更低沉/下行感）。
+//        降调会降低样本能量与亮度，故对 rate<1 做轻微增益补偿，使响度与原速一致。
+function playMeowSample(vol, when = 0, rate = 1) {
   const ac = ctx();
   if (!ac || !_meowBuf) return false;
   try {
     const src = ac.createBufferSource();
     src.buffer = _meowBuf;
+    src.playbackRate.setValueAtTime(rate, ac.currentTime + when);
     const g = ac.createGain();
-    g.gain.setValueAtTime(clampVol(vol), ac.currentTime + when);
+    // rate<1 时样本听感偏闷偏弱，按 1/sqrt(rate) 适度回补，保证与唤起响度相当
+    const loudnessComp = rate < 1 ? 1 / Math.sqrt(rate) : 1;
+    g.gain.setValueAtTime(clampVol(vol) * loudnessComp, ac.currentTime + when);
     src.connect(g);
     g.connect(ac.destination);
     src.start(ac.currentTime + when);

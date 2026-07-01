@@ -240,6 +240,10 @@ const translateTriggerManager = new TriggerManager(logger);
 
 // 录音状态（由 recorder-state 同步）：转英文键在录音中必须让位。
 let isRecording = false;
+// 会话忙碌：一次录音会话从「开始录音」直到胶囊真正隐藏的整个窗口，
+// 覆盖 recording + processing(转写) + optimizing(润色)。处理阶段 isRecording 已为 false，
+// 但 isBusy 仍为 true，用于阻止处理阶段误触转英文抢占/隐藏胶囊。
+let isBusy = false;
 // 「转英文」重入守卫：一次捕获→翻译→粘贴未完成前，忽略再次触发，避免键盘风暴。
 let isTranslating = false;
 // 应用是否已完成启动初始化（转英文触发器已挂载）。用于防止早期/边缘的 recorder-state(true)
@@ -327,7 +331,7 @@ async function handleTranslateHotkey() {
   };
   const hidePillLater = (ms) => setTimeout(() => { try { windowManager.hideMainWindow(); } catch (_) {} }, ms);
   logger.info('转英文快捷键触发');
-  if (isRecording) return; // 录音中不触发转英文
+  if (isRecording || isBusy) return; // 录音会话中(含处理/润色阶段)不触发转英文
   if (isTranslating) return; // 重入守卫
   if (!ipcHandlers || !ipcHandlers.aiService || !clipboardManager) {
     logger.error('转英文：服务未就绪');
@@ -438,9 +442,9 @@ ipcMain.handle('reload-tray-icon', () => {
 // 隐藏胶囊（粘贴完成 / 取消后由渲染层调用）
 ipcMain.handle('hide-recorder', () => {
   windowManager.hideMainWindow();
-  // 安全网：胶囊隐藏即视为本次录音结束，确保全局 Esc 被释放，
-  // 即使渲染层漏发 recorder-state(false) 也不会让 Esc 被全局长期吞掉。
-  unregisterCancelKey();
+  // 会话正常结束点（pipeline 完成/失败/取消的 finally 中由渲染层调用）：
+  // 统一交给 endSession() 释放 Esc、重挂转英文（幂等，不会与 fireCancel 重复执行）。
+  endSession();
   return { success: true };
 });
 
@@ -472,6 +476,8 @@ function fireCancel() {
   const win = windowManager.mainWindow;
   if (win && !win.isDestroyed()) win.webContents.send('cancel-recording');
   windowManager.hideMainWindow();
+  // Esc 取消即会话结束：幂等收口（与 hide-recorder 两路只生效一次）。
+  endSession();
 }
 function registerCancelKey() {
   try {
@@ -511,11 +517,28 @@ function unregisterCancelKey() {
   try { cancelTriggerManager.stop(); } catch (_) { /* 忽略 */ }
 }
 
+// 会话真正结束（胶囊隐藏）时调用一次：幂等。把会话级清理统一收口在此，
+// 避免 hide-recorder 与 fireCancel 两路重复执行 unregisterCancelKey / setupTranslateTrigger。
+// 含义：处理阶段(转写/润色)期间不会被调用，从而保持转英文停用 + 取消键注册，
+// 杜绝处理阶段误触转英文/取消导致胶囊被抢占或隐藏。
+function endSession() {
+  if (!isBusy) return; // 幂等：已结束则直接返回
+  isBusy = false;
+  unregisterCancelKey();
+  // 会话结束后重新挂回转英文触发器。
+  try {
+    setupTranslateTrigger();
+  } catch (_) { /* 忽略 */ }
+}
+
 // 渲染层在录音开始/结束时通知主进程，用于按需注册/注销 Esc 取消键
 ipcMain.on('recorder-state', (event, recording) => {
   // 记录录音状态：转英文键在录音中让位（见 handleTranslateHotkey）。
   isRecording = !!recording;
   if (recording) {
+    // 会话开始：覆盖 recording + 后续处理/润色阶段，直到胶囊隐藏才结束。
+    // 每次新录音都重置 isBusy=true，确保 isBusy 不会因上次异常而卡死。
+    isBusy = true;
     recordStartedAt = Date.now();
     registerCancelKey();
     // 录音期间转英文键必须让位：停掉转英文触发器，避免裸修饰键被双重监听。
@@ -524,11 +547,9 @@ ipcMain.on('recorder-state', (event, recording) => {
       try { translateTriggerManager.stop(); } catch (_) {}
     }
   } else {
-    unregisterCancelKey();
-    // 录音结束后重新挂回转英文触发器。
-    try {
-      setupTranslateTrigger();
-    } catch (_) { /* 忽略 */ }
+    // 录音停止≠会话结束：此时进入处理(转写/润色)阶段，胶囊仍在渲染层显示。
+    // 只把 isRecording 置 false；不在此 unregisterCancelKey、不在此重挂转英文。
+    // 会话级清理统一交由 endSession()（在 hide-recorder / fireCancel 处调用）。
   }
 });
 
@@ -681,6 +702,20 @@ async function startApp() {
   logger.info('系统托盘设置完成');
 
   // 全局录音/转英文触发键已在 startApp 顶部提前注册（启动即生效），此处不再重复注册。
+
+  // 安装后首次启动：自动打开「设置-权限」页一次，引导用户授予权限。
+  // 仅首启触发（onboarding_completed=false 时）；弹出后立即把标志持久化为 true，确保下次启动不再自动弹。
+  try {
+    const onboardingDone = databaseManager.getSetting('onboarding_completed', false);
+    if (onboardingDone !== true) {
+      logger.info('首次启动：自动打开设置-权限页');
+      windowManager.showSettingsWindow('permissions');
+      // 先持久化标志，避免「弹窗成功但写入失败 → 每次都弹」的回归。
+      databaseManager.setSetting('onboarding_completed', true);
+    }
+  } catch (error) {
+    logger.error('首启引导（自动打开权限页）失败:', error);
+  }
 
   logger.info('应用启动完成');
 }
