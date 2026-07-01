@@ -3,6 +3,16 @@
 All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/); versioning follows [SemVer](https://semver.org/).
 
+## [1.9.1] - 2026-07-01
+
+### Changed
+- 小猫头顶进度气泡改为**仅当 AI 润色处理时长 > 5 秒**才显示（`BUBBLE_SHOW_DELAY` 1.5s→5s），短润色不再闪现。
+- 合成喵声调优为高亮「可爱撒娇」音色：整体升调去低沉，唤起为上扬「喵~↗」、结束在高音区以亮度/时长区分（不再靠降调），两者音量一致。
+- 「转英文」快捷键新增「无」选项，且**新装默认为「无」= 关闭**（关闭态不注册触发器、按键不触发；已安装用户设置不变）。
+
+### Docs
+- `CLAUDE.md` 增补项目规则：需操作浏览器时派子 agent 直接操作 Chrome；只生成 Mac 端安装包、不再出 Windows；每次生成安装包后自动打开产物文件夹。
+
 ## [1.9.0] - 2026-07-01
 
 ### Added

@@ -132,8 +132,9 @@ class DatabaseManager {
       skip_polish_max_chars: 10,
       // 润色「角色」：normal（默认，常规改写）/ vibecoding（走 llm_prompt_template）/ gaoeq（高情商改写）
       llm_active_role: 'normal',
-      // 「转英文」全局触发键：默认单击左 Ctrl（裸修饰键经 uiohook 监听）
-      translate_trigger: { type: 'modifier-tap', key: 'LeftCtrl', taps: 2 },
+      // 「转英文」全局触发键：新装默认「无」（关闭该功能，不注册触发器）。
+      // 老用户已存在的 translate_trigger 值不受影响（seed 仅在键缺失时写入）。
+      translate_trigger: { type: 'none' },
       translate_fallback_select_all: false,
       // 提示音：唤起/结束的合成音方案与音量（none 为无声）
       sound_scheme: 'soft',

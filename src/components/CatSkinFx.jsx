@@ -55,7 +55,7 @@ const FX_HTML = {
 function easeOut(t) { return 1 - (1 - t) * (1 - t); }
 
 // 头顶进度气泡：长润色等待时显示「进度条 + 已生成 N 字」
-const BUBBLE_SHOW_DELAY = 1500; // 进入显示前的延迟（ms），避免短润色一闪而过
+const BUBBLE_SHOW_DELAY = 5000; // 仅当 AI 润色处理时长超过此值（ms）才显示气泡，≤5s 的短润色不出现
 const BUBBLE_UP_Y = -26; // 气泡相对锚点的垂直偏移（px，置于头顶上方）
 const BUBBLE_CHAR_DENOM = 120; // 进度估算分母（无法预知总长，温和逼近）
 

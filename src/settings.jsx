@@ -34,6 +34,8 @@ const SettingsPage = () => {
     pill_skin: "music",
     translate_trigger_key: "LeftCtrl",
     translate_trigger_taps: 2,
+    // 转英文触发器是否关闭（「无」）。新装默认关闭。
+    translate_trigger_off: true,
     translate_fallback_select_all: false,
     keep_result_in_clipboard: false,
     pill_follow_focus: true,
@@ -151,6 +153,11 @@ const SettingsPage = () => {
           pill_skin: allSettings.pill_skin || "music",
           translate_trigger_key: (allSettings.translate_trigger && allSettings.translate_trigger.key) || "LeftCtrl",
           translate_trigger_taps: (allSettings.translate_trigger && allSettings.translate_trigger.taps) || 2,
+          // 关闭态兜底：type:'none' / null / 空 / 非 modifier-tap 一律视为「无」（关闭）
+          translate_trigger_off: !(
+            allSettings.translate_trigger &&
+            allSettings.translate_trigger.type === "modifier-tap"
+          ),
           translate_fallback_select_all: allSettings.translate_fallback_select_all === true,
           keep_result_in_clipboard: allSettings.keep_result_in_clipboard === true,
           // 胶囊跟随焦点：缺省视为开启（默认 true）
@@ -294,12 +301,20 @@ const SettingsPage = () => {
       if (changed.has("keep_result_in_clipboard")) {
         await window.electronAPI.setSetting("keep_result_in_clipboard", next.keep_result_in_clipboard === true);
       }
-      if (changed.has("translate_trigger_key") || changed.has("translate_trigger_taps")) {
-        await window.electronAPI.setSetting("translate_trigger", {
-          type: "modifier-tap",
-          key: next.translate_trigger_key,
-          taps: Number(next.translate_trigger_taps) || 1,
-        });
+      if (
+        changed.has("translate_trigger_key") ||
+        changed.has("translate_trigger_taps") ||
+        changed.has("translate_trigger_off")
+      ) {
+        // 「无」时保存 { type:'none' }（关闭）；否则保存 modifier-tap。
+        const translateTrigger = next.translate_trigger_off
+          ? { type: "none" }
+          : {
+              type: "modifier-tap",
+              key: next.translate_trigger_key,
+              taps: Number(next.translate_trigger_taps) || 1,
+            };
+        await window.electronAPI.setSetting("translate_trigger", translateTrigger);
         if (window.electronAPI.reloadTranslateTrigger) {
           await window.electronAPI.reloadTranslateTrigger();
         }
@@ -398,11 +413,19 @@ const SettingsPage = () => {
     updateAndSave({ recording_trigger_key: key, recording_trigger_taps: taps });
   };
 
-  // 转英文：原子地写 translate_trigger_key + translate_trigger_taps（SET-2）
-  const translateValue = toModifierShortcutValue(settings.translate_trigger_key, settings.translate_trigger_taps);
+  // 转英文：「无」选项 value 用哨兵 "none"；否则为 "<Key>:<taps>"（SET-2）
+  const TRANSLATE_NONE_VALUE = "none";
+  const translateValue = settings.translate_trigger_off
+    ? TRANSLATE_NONE_VALUE
+    : toModifierShortcutValue(settings.translate_trigger_key, settings.translate_trigger_taps);
   const handleTranslateChange = (value) => {
+    if (value === TRANSLATE_NONE_VALUE) {
+      // 选择「无」：关闭功能（保存 { type:'none' } 并热重载）
+      updateAndSave({ translate_trigger_off: true });
+      return;
+    }
     const { key, taps } = parseModifierShortcutValue(value);
-    updateAndSave({ translate_trigger_key: key, translate_trigger_taps: taps });
+    updateAndSave({ translate_trigger_off: false, translate_trigger_key: key, translate_trigger_taps: taps });
   };
 
   // 取消：value 形如 "Escape:1" / "F1:2"，解析出 key + taps 后原子写入（SET-2）
@@ -1025,6 +1048,7 @@ const SettingsPage = () => {
                     onChange={(e) => handleTranslateChange(e.target.value)}
                     className="w-48 flex-shrink-0 px-3 py-2 text-[15px] border border-gray-300 dark:border-neutral-700 rounded-lg focus:ring-1 focus:ring-neutral-400 focus:border-transparent bg-white dark:bg-neutral-800 text-gray-900 dark:text-gray-100"
                   >
+                    <option value={TRANSLATE_NONE_VALUE}>无</option>
                     {modifierShortcutOptions.map((opt) => (
                       <option key={opt.value} value={opt.value}>{opt.label}</option>
                     ))}
@@ -1042,8 +1066,11 @@ const SettingsPage = () => {
                     type="button"
                     role="switch"
                     aria-checked={settings.translate_fallback_select_all}
+                    disabled={settings.translate_trigger_off}
                     onClick={() => updateAndSave('translate_fallback_select_all', !settings.translate_fallback_select_all)}
                     className={`relative inline-flex h-6 w-11 flex-shrink-0 items-center rounded-full transition-colors ${
+                      settings.translate_trigger_off ? 'opacity-40 cursor-not-allowed' : ''
+                    } ${
                       settings.translate_fallback_select_all ? 'bg-blue-600' : 'bg-gray-300 dark:bg-gray-600'
                     }`}
                   >

@@ -45,35 +45,39 @@ function tone({ freq = 660, dur = 0.12, type = "sine", vol = 0.3, when = 0 }) {
   osc.stop(t0 + dur + 0.03);
 }
 
-// 可爱合成"喵"（小奶猫）：源-共振峰(formant)元音合成。
+// 可爱合成"喵"（小奶猫，撒娇版）：源-共振峰(formant)元音合成。
 // 锯齿波声源 + 颤音LFO 作为"声带"，经 3 个并联带通"共振峰"滤波器塑形，
 // 三个共振峰中心频率随时间在元音 mi(ee) → a → ow 之间滑动，模拟猫张口/闭口的"喵～"。
-// 音高先升后降，约 0.4s。完全 Web Audio 合成，无音频文件、无版权问题。
-// down=false：默认上扬轮廓（600→760→400，先升后降），用于"唤起"。
-// down=true：下行轮廓（620→480→300，全程下降），整体更低沉，用于"结束"；
-//            与上扬版同为猫叫音色，但听觉上明显是"往下收"，便于分辨开始/结束。
-function meow({ vol = 0.3, when = 0, base = 1, dur = 0.4, down = false } = {}) {
+// 撒娇版：整体音区更高更亮（较旧版基频上移 ~45%），收尾"上翘"而非下坠，
+// 制造小奶猫「喵~↗」的撒娇尾音；约 0.36s，起音更轻快。
+// down=false：唤起——明亮上扬撒娇（880→1120→980，先扬后微降再上翘）。
+// down=true：结束——同为高亮撒娇音色（840→1040→900→960），
+//            高音区里"轻微下行再上翘"，与唤起有可分辨差异但绝不低沉。
+function meow({ vol = 0.3, when = 0, base = 1, dur = 0.36, down = false } = {}) {
   const ac = ctx();
   if (!ac) return;
-  // 整体上移 ~7% 增加奶猫感
+  // 整体上移 ~7% 增加奶猫感（叠加在已抬高的基频之上）
   const kitten = 1.07;
   const t0 = ac.currentTime + when;
   const tMid = t0 + dur * 0.4; // 元音 a 的时刻
+  const tRise = t0 + dur * 0.82; // 撒娇尾音"上翘"起点
   const tEnd = t0 + dur;
 
   // --- 声源：锯齿波 + 微失谐第二振荡器 ---
-  // 上扬版音高 600→760→400（先升后降）；下行版 620→480→300（持续下降）。
+  // 撒娇上扬版：880→1120→(dur*0.72:940)→尾音上翘 980（较旧版整体 +~47%）。
+  // 结束版：840→1040→(dur*0.72:880)→尾音上翘 960，音区同样高亮，仅轮廓有别。
   const pSrc = (f) => f * base * kitten;
-  const p0 = pSrc(down ? 620 : 600);
-  const p1 = pSrc(down ? 480 : 760);
-  const p2 = pSrc(down ? 300 : 400);
+  const p0 = pSrc(down ? 840 : 880); // 起始（"m"闭口）
+  const p1 = pSrc(down ? 1040 : 1120); // 张口最亮峰
+  const p2 = pSrc(down ? 880 : 940); // 微降（自然回落）
+  const p3 = pSrc(down ? 960 : 980); // 撒娇尾音上翘
 
-  // 颤音 LFO：~14Hz、深度 ~10Hz，作用到声源 frequency
+  // 颤音 LFO：~16Hz、深度 ~14Hz，稍快稍深制造可爱小抖动（不过头）
   const lfo = ac.createOscillator();
   lfo.type = "sine";
-  lfo.frequency.setValueAtTime(14, t0);
+  lfo.frequency.setValueAtTime(16, t0);
   const lfoGain = ac.createGain();
-  lfoGain.gain.setValueAtTime(10 * base * kitten, t0);
+  lfoGain.gain.setValueAtTime(14 * base * kitten, t0);
   lfo.connect(lfoGain);
 
   const oscs = [
@@ -84,8 +88,9 @@ function meow({ vol = 0.3, when = 0, base = 1, dur = 0.4, down = false } = {}) {
     osc.type = "sawtooth";
     osc.detune.setValueAtTime(detune, t0);
     osc.frequency.setValueAtTime(p0, t0);
-    osc.frequency.linearRampToValueAtTime(p1, t0 + dur * 0.3);
-    osc.frequency.linearRampToValueAtTime(p2, tEnd);
+    osc.frequency.linearRampToValueAtTime(p1, t0 + dur * 0.28); // 快速上扬到亮峰
+    osc.frequency.linearRampToValueAtTime(p2, tRise); // 自然微降
+    osc.frequency.linearRampToValueAtTime(p3, tEnd); // 尾音上翘（撒娇）
     lfoGain.connect(osc.frequency);
     const mg = ac.createGain();
     mg.gain.setValueAtTime(mix, t0);
@@ -99,11 +104,12 @@ function meow({ vol = 0.3, when = 0, base = 1, dur = 0.4, down = false } = {}) {
   oscs.forEach(({ mg }) => mg.connect(srcBus));
 
   // --- 三个并联带通"共振峰"，中心频率滑过元音 mi→a→ow ---
-  // F1 最响、F2 中等、F3 最轻
+  // F1 最响、F2 中等、F3 最轻。撒娇版整体上移 ~30%（更年幼声道=更奶更亮），
+  // 且 end（收尾）不落到"闭口暗元音"，保持明亮。
   const FORMANTS = [
-    { Q: 8, gain: 1.0, start: 320, mid: 720, end: 380 }, // F1
-    { Q: 9, gain: 0.5, start: 2300, mid: 1200, end: 800 }, // F2
-    { Q: 10, gain: 0.28, start: 3000, mid: 2600, end: 2400 }, // F3
+    { Q: 8, gain: 1.0, start: 430, mid: 950, end: 620 }, // F1（+~32%，收尾更亮）
+    { Q: 9, gain: 0.5, start: 3000, mid: 1600, end: 1200 }, // F2（+~30%）
+    { Q: 10, gain: 0.28, start: 3900, mid: 3400, end: 3200 }, // F3（+~30%）
   ].map(({ Q, gain, start, mid, end }) => {
     const bp = ac.createBiquadFilter();
     bp.type = "bandpass";
@@ -118,26 +124,28 @@ function meow({ vol = 0.3, when = 0, base = 1, dur = 0.4, down = false } = {}) {
     return { bp, fg };
   });
 
-  // --- 起音"m"辅音：短暂低通收口，~30ms 内打开 ---
+  // --- 起音"m"辅音：短暂低通收口，~22ms 内打开（更轻快，起音更亮）---
   const onset = ac.createBiquadFilter();
   onset.type = "lowpass";
   onset.Q.setValueAtTime(0.7, t0);
-  onset.frequency.setValueAtTime(500 * base * kitten, t0);
-  onset.frequency.linearRampToValueAtTime(6000 * base * kitten, t0 + 0.03);
+  onset.frequency.setValueAtTime(700 * base * kitten, t0);
+  onset.frequency.linearRampToValueAtTime(7000 * base * kitten, t0 + 0.022);
   FORMANTS.forEach(({ fg }) => fg.connect(onset));
 
-  // --- 幅度包络：快起音 ~15ms 到峰值，短保持，~0.42s 平滑衰减到 0 ---
+  // --- 幅度包络：更轻快起音 ~12ms 到峰值，短保持，尾音柔和衰减 ---
+  // 整体略短（~0.36s），收尾更绵长柔和（撒娇拖音感）。
   const g = ac.createGain();
   const peak = vol * 0.9;
+  const tail = Math.max(dur, 0.36) + 0.08; // 柔和拖尾
   g.gain.setValueAtTime(0.0001, t0);
-  g.gain.linearRampToValueAtTime(peak, t0 + 0.015);
-  g.gain.setValueAtTime(peak, t0 + 0.1); // 短保持
-  g.gain.exponentialRampToValueAtTime(0.0001, t0 + Math.max(dur, 0.42) + 0.02);
+  g.gain.linearRampToValueAtTime(peak, t0 + 0.012);
+  g.gain.setValueAtTime(peak, t0 + 0.08); // 短保持
+  g.gain.exponentialRampToValueAtTime(0.0001, t0 + tail);
   onset.connect(g);
   g.connect(ac.destination);
 
   const startAt = t0;
-  const stopAt = t0 + Math.max(dur, 0.42) + 0.06;
+  const stopAt = t0 + tail + 0.06;
   lfo.start(startAt);
   oscs.forEach(({ osc }) => osc.start(startAt));
   lfo.stop(stopAt);
@@ -199,17 +207,19 @@ const SCHEMES = {
     },
   },
   meow: {
-    // 唤起：真实 CC0 猫叫样本（解码失败时回退合成喵）
+    // 唤起：真实 CC0 猫叫样本，轻微升调播放（rate 1.06）使其更亮更奶更撒娇；
+    // 解码失败时回退到合成撒娇喵（明亮上扬「喵~↗」）。音量与结束一致（同 v）。
     wake(v) {
-      if (playMeowSample(v)) return;
-      meow({ vol: v, base: 1 });
+      if (playMeowSample(v, 0, 1.06)) return;
+      meow({ vol: v, base: 1, down: false });
     },
-    // 结束：同一只猫，但降调播放（playbackRate 0.82，听感更低沉/下行 = "结束"），
-    // 音量与唤起保持一致（同 v，配合降调增益补偿，响度相当）。
-    // 解码失败时回退到下行轮廓的合成喵（down:true，整体偏低、持续下降）。
+    // 结束：同一只猫，音区不压低——用 rate 0.99（几乎原速，绝不低沉）+ 更短促，
+    // 与唤起在"亮度/时长"上形成可分辨差异，而非靠"降调低沉"。
+    // 音量与唤起保持一致（同 v）。解码失败时回退到高音区撒娇变体
+    // （down:true = 高亮里"轻微下行再上翘"，与 wake 可分辨且同样不低沉）。
     end(v) {
-      if (playMeowSample(v, 0, 0.82)) return;
-      meow({ vol: v, base: 0.85, dur: 0.42, down: true });
+      if (playMeowSample(v, 0, 0.99)) return;
+      meow({ vol: v, base: 1, dur: 0.3, down: true });
     },
   },
 };

@@ -368,11 +368,29 @@ async function handleTranslateHotkey() {
   }
 }
 
-// 设置「转英文」触发键（默认单击左 Ctrl，裸修饰键经 uiohook 监听）。
+// 判断「转英文」触发器是否为关闭状态：type==='none' 或 falsy/无效值一律视为关闭。
+function isTranslateTriggerDisabled(t) {
+  if (!t || typeof t !== 'object') return true;
+  if (t.type === 'none') return true;
+  // 仅 modifier-tap / accelerator 两种有效类型；其余（含空对象）视为关闭。
+  if (t.type === 'modifier-tap' || t.type === 'accelerator') return false;
+  return true;
+}
+
+// 设置「转英文」触发键（默认关闭；有效值时按 modifier-tap/accelerator 挂载）。
 function setupTranslateTrigger() {
   try {
+    // 关闭态默认：新装默认 { type: 'none' }（见 database.js 播种默认值）。
+    const stored = databaseManager.getSetting('translate_trigger', { type: 'none' });
+
+    // 关闭态（type:'none'/null/空/无效）：不注册触发器，并确保先停掉之前可能注册的。
+    if (isTranslateTriggerDisabled(stored)) {
+      translateTriggerManager.stop();
+      logger.info('转英文触发器已关闭（translate_trigger 为无/无效）');
+      return;
+    }
+
     const fallback = { type: 'modifier-tap', key: 'LeftCtrl', taps: 2 };
-    const stored = databaseManager.getSetting('translate_trigger', fallback);
     // 复用录音触发键的校验：非法字段一律回退默认
     const trigger = validateRecordingTrigger(stored, fallback);
     if (trigger !== stored) {
