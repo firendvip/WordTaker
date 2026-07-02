@@ -534,8 +534,10 @@ function RecorderApp() {
 
   const micState = getMicState();
   const isListening = isRecording || isRecordingProcessing;
-  // 仅在优化阶段且确有吐字进度时显示头顶进度气泡
-  const showPolishBubble = micState === 'optimizing' && polishActive;
+  // 进入润色阶段即准备显示头顶进度气泡（开启/关闭流式均适用）。
+  // 关闭流式=整体粘贴时也能显示"生成中…"的不确定提示（无字数）；
+  // 开启流式时 onPolishProgress 会更新 polishCharCount，气泡显示"已生成 N 字"。
+  const showPolishBubble = micState === 'optimizing';
 
   // 获取麦克风按钮属性
   const getMicButtonProps = () => {

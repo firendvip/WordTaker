@@ -211,8 +211,17 @@ export default function CatSkinFx({ micState, audioLevel = 0, isBusy = false, ha
           const n = charRef.current | 0;
           if (n !== lastBubbleChar) {
             lastBubbleChar = n;
-            bubbleText.textContent = `已生成 ${n} 字`; // 真实值
-            bubbleFill.style.width = Math.min(95, (n / BUBBLE_CHAR_DENOM) * 100).toFixed(1) + "%";
+            if (n > 0) {
+              // 有字数（开启流式）：显示真实进度「已生成 N 字」
+              bubbleText.textContent = `已生成 ${n} 字`;
+              bubbleFill.style.width = Math.min(95, (n / BUBBLE_CHAR_DENOM) * 100).toFixed(1) + "%";
+              bubble.classList.remove("cs-fxbubble-indet");
+            } else {
+              // 无字数（关闭流式=整体粘贴）：不确定态「生成中…」，进度条走温和的不确定动画
+              bubbleText.textContent = "生成中…";
+              bubbleFill.style.width = "40%";
+              bubble.classList.add("cs-fxbubble-indet");
+            }
           }
           positionBubble();
         }

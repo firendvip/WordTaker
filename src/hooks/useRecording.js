@@ -441,11 +441,13 @@ export const useRecording = ({ onTranscriptionCompleteRef, onAIOptimizationCompl
               }
 
               if (copywriting) {
-                // —— 流式优先：只要主进程支持流式且处于文案/润色路径就走流式，
-                //    边生成边贴(粘贴在主进程完成)；不再读 llm_streaming_enabled 开关 ——
+                // —— 流式上屏由设置开关控制（默认关闭）：
+                //    仅当 llm_streaming_enabled 为 true 时才走流式(processTextStream，边生成边贴)；
+                //    关闭时走下方非流式主路径(processText)，拿到整段结果后一次性粘贴。——
+                const streamingEnabled = getS('llm_streaming_enabled', false) === true;
                 let streamed = false;
                 try {
-                  if (window.electronAPI.processTextStream) {
+                  if (streamingEnabled && window.electronAPI.processTextStream) {
                     const _sT0 = Date.now();
                     const sres = await window.electronAPI.processTextStream(raw_text);
                     if (sres && (sres.success || sres.pastedAny)) {

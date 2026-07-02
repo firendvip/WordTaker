@@ -208,13 +208,15 @@ export function RecorderPill({
 
         {/* 中：翻译时显示进度条，否则显示声波 */}
         {showPolishBubble ? (
-          // 长润色：实时显示已生成字数（复用翻译进度条样式）
+          // 长润色：有字数（开启流式）显示「已生成 N 字」；无字数（关闭流式=整体粘贴）显示不确定态「生成中…」
           <div className="pill-translate">
-            <span className="pill-translate-label">已生成 {polishCharCount} 字</span>
+            <span className="pill-translate-label">
+              {polishCharCount > 0 ? `已生成 ${polishCharCount} 字` : "生成中…"}
+            </span>
             <div className="pill-progress" aria-hidden="true">
               <div
-                className="pill-progress-fill"
-                style={{ width: Math.min(95, polishCharCount * 1.2) + "%" }}
+                className={"pill-progress-fill" + (polishCharCount > 0 ? "" : " pill-progress-indet")}
+                style={polishCharCount > 0 ? { width: Math.min(95, polishCharCount * 1.2) + "%" } : undefined}
               />
             </div>
           </div>

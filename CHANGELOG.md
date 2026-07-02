@@ -3,6 +3,16 @@
 All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/); versioning follows [SemVer](https://semver.org/).
 
+## [1.9.2] - 2026-07-02
+
+### Fixed
+- 修复：无论「流式上屏」开关是否开启都强制流式的问题。流式上屏改回**受「设置 → 其他」里的开关控制，默认关闭**；关闭时按整段润色结果一次性粘贴，仅开启时才边生成边逐段贴出。
+
+### Changed
+- 「流式上屏」开关说明文案改为：「开启后边生成边逐段贴出，首字更快；但整体时间稍长。建议字数较多的情况下使用。」
+- 关闭流式时的长润色等待（>5s）：小猫头顶显示不确定的「生成中…」提示（开启流式时仍显示「已生成 N 字」实时进度）。
+- `CLAUDE.md` 浏览器操作规则更新为：默认派子 agent 操作 Chrome、可并行多个、各自汇报、主 assistant 汇总转达。
+
 ## [1.9.1] - 2026-07-01
 
 ### Changed

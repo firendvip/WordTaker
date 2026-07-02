@@ -1410,7 +1410,7 @@ const SettingsPage = () => {
                   <div className="min-w-0">
                     <label className={`${rowLabelClass} chinese-title`}>流式上屏</label>
                     <p className="mt-0.5 text-[13px] text-gray-500 dark:text-neutral-400">
-                      开启后边生成边逐段贴出，首字更快；但语速较快或长文本时可能丢字，建议保持关闭。
+                      开启后边生成边逐段贴出，首字更快；但整体时间稍长。建议字数较多的情况下使用。
                     </p>
                   </div>
                   <button

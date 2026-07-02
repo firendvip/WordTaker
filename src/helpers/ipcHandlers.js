@@ -175,7 +175,14 @@ class IPCHandlers {
     ipcMain.handle("process-text-stream", async (event, text) => {
       if (typeof text !== "string" || !text.trim()) return { success: false, error: "无有效文本", pastedAny: false };
       // 不再做长度上限拦截：任意长度文本都允许走流式润色。
-      // 契约 D：relay 启用时润色一律走流式，不再依赖 llm_streaming_enabled 开关。
+      // 流式上屏受设置开关控制（防御性）：llm_streaming_enabled 为 false 时返回明确的
+      // streaming-unavailable。正常情况下渲染层关闭开关时也不会调用本 handler。
+      const streamingEnabled = await this.databaseManager.getSetting("llm_streaming_enabled", false);
+      if (!streamingEnabled) {
+        const reason = "流式上屏未开启：请在设置中开启「流式上屏」后再使用。";
+        this.logger.warn("流式上屏不可用:", reason);
+        return { success: false, error: reason, code: "streaming-unavailable", pastedAny: false };
+      }
       // 仍要求 relay 启用 + relayUrl 非空；缺 relay 时返回明确错误。
       const relayEnabled = await this.databaseManager.getSetting("llm_relay_enabled", false);
       const relayUrl = await this.databaseManager.getSetting("llm_relay_url", "");

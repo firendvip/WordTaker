@@ -299,6 +299,17 @@ body {
   width: 0;
   transition: width 140ms cubic-bezier(0.16, 1, 0.3, 1);
 }
+/* 不确定态（关闭流式=整体粘贴，无字数）：来回滑动的不确定进度动画 */
+.pill-progress-fill.pill-progress-indet {
+  width: 40%;
+  transition: none;
+  animation: pill-progress-indet 1.3s ease-in-out infinite;
+}
+@keyframes pill-progress-indet {
+  0% { transform: translateX(-60%); }
+  50% { transform: translateX(140%); }
+  100% { transform: translateX(-60%); }
+}
 
 /* 中文文本优化 - 基于WCAG 2.1标准 */
 .chinese-text {
@@ -804,3 +815,6 @@ body {
 .cs-fxbubble-bar{position:relative;width:100%;height:3px;border-radius:999px;background:rgba(255,255,255,.16);overflow:hidden}
 .cs-fxbubble-fill{position:absolute;left:0;top:0;bottom:0;width:0;border-radius:999px;background:#fff;transition:width 160ms cubic-bezier(.16,1,.3,1)}
 .cs-fxbubble-text{font-size:12px;line-height:1;color:#fff;white-space:nowrap}
+/* 不确定态（关闭流式=整体粘贴，无字数）：进度条走温和的来回不确定动画 */
+.cs-fxbubble-indet .cs-fxbubble-fill{width:40%!important;transition:none;animation:cs-fxbubble-indet 1.3s ease-in-out infinite}
+@keyframes cs-fxbubble-indet{0%{transform:translateX(-60%)}50%{transform:translateX(140%)}100%{transform:translateX(-60%)}}
