@@ -75,10 +75,60 @@ const CANCEL_KEY_OPTIONS = CANCEL_KEYS.flatMap((k) =>
   }))
 );
 
+// ===== 唤醒键预设（每平台 3 个；第一项为平台现有默认，老用户零感知） =====
+// modifier-tap 走 uiohook（保留原生机制），accelerator 走 globalShortcut。
+const WAKE_PRESETS_MAC = [
+  { id: "tap-loption", trigger: { type: "modifier-tap", key: "LeftOption", taps: 1 } },
+  { id: "ctrl-opt-space", trigger: { type: "accelerator", accelerator: "Control+Alt+Space" } },
+  { id: "opt-space", trigger: { type: "accelerator", accelerator: "Alt+Space" } },
+];
+const WAKE_PRESETS_WIN = [
+  { id: "tap-lalt", trigger: { type: "modifier-tap", key: "LeftAlt", taps: 2 } },
+  { id: "ctrl-alt-space", trigger: { type: "accelerator", accelerator: "Control+Alt+Space" } },
+  { id: "ctrl-shift-space", trigger: { type: "accelerator", accelerator: "Control+Shift+Space" } },
+];
+
+function getWakePresets(isMac) {
+  return isMac ? WAKE_PRESETS_MAC : WAKE_PRESETS_WIN;
+}
+
+// Electron accelerator → 人类可读（mac 用符号 ⌃⌥⇧⌘，其他平台用 Ctrl+Alt+…）
+const ACCEL_TOKEN_LABELS = {
+  mac: { control: "⌃", ctrl: "⌃", alt: "⌥", option: "⌥", shift: "⇧", command: "⌘", cmd: "⌘", commandorcontrol: "⌘", cmdorctrl: "⌘", super: "⌘", meta: "⌘" },
+  other: { control: "Ctrl", ctrl: "Ctrl", alt: "Alt", option: "Alt", shift: "Shift", command: "Win", cmd: "Win", commandorcontrol: "Ctrl", cmdorctrl: "Ctrl", super: "Win", meta: "Win" },
+};
+
+function formatAcceleratorLabel(accelerator, isMac) {
+  const table = isMac ? ACCEL_TOKEN_LABELS.mac : ACCEL_TOKEN_LABELS.other;
+  const parts = String(accelerator || "").split("+").map((s) => s.trim()).filter(Boolean);
+  const mapped = parts.map((p) => table[p.toLowerCase()] || p);
+  return isMac ? mapped.join(" ") : mapped.join("+");
+}
+
+// 触发对象 → 人类可读文案（modifier-tap 复用下拉项文案；accelerator 走符号格式化）
+function describeWakeTrigger(trigger, isMac) {
+  if (!trigger || typeof trigger !== "object") return "";
+  if (trigger.type === "accelerator") return formatAcceleratorLabel(trigger.accelerator, isMac);
+  const mod = MODIFIER_KEYS.find((m) => m.key === trigger.key);
+  const keyLabel = mod ? (isMac ? mod.mac : mod.other) : trigger.key;
+  return `${TAP_LABELS[Number(trigger.taps) === 2 ? 2 : 1]}${keyLabel}`;
+}
+
+function wakeTriggersEqual(a, b) {
+  if (!a || !b || a.type !== b.type) return false;
+  if (a.type === "modifier-tap") return a.key === b.key && Number(a.taps) === Number(b.taps);
+  if (a.type === "accelerator") return String(a.accelerator).toLowerCase() === String(b.accelerator).toLowerCase();
+  return false;
+}
+
 export {
   MODIFIER_KEYS,
   buildModifierShortcutOptions,
   parseModifierShortcutValue,
   toModifierShortcutValue,
   CANCEL_KEY_OPTIONS,
+  getWakePresets,
+  formatAcceleratorLabel,
+  describeWakeTrigger,
+  wakeTriggersEqual,
 };

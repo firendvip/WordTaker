@@ -9,7 +9,13 @@ const { runCommand, TIMEOUTS } = require("../utils/process");
 // 简单的全局缓存，避免频繁检查
 let globalModelCheckCache = null;
 let globalModelCheckTime = 0;
+let globalModelCheckTtl = 2000; // 本次缓存有效期（成功=GLOBAL_CACHE_TIME；失败=指数退避）
 const GLOBAL_CACHE_TIME = 2000; // 减少到2秒缓存，确保及时更新
+// 模型检查失败的指数退避（防刷屏）：3 秒轮询下失败结果也缓存，
+// 避免每次轮询都触发一次全盘递归搜索 + error 日志。
+let modelCheckFailStreak = 0;
+const MODEL_CHECK_FAIL_BACKOFF_BASE_MS = 5000;
+const MODEL_CHECK_FAIL_BACKOFF_MAX_MS = 60000;
 const INIT_WAIT_TIMEOUT_MS = 60000; // 等待初始化最长 60s，超时则拒绝，避免无限等待卡死
 
 class FunASRManager {
@@ -50,6 +56,20 @@ class FunASRManager {
     };
   }
 
+
+  // Windows（x64/arm64）统一走纯 SenseVoice ONNX 路径。
+  // 与 buildPythonEnvironment 里 WORDTAKER_ONNX_ONLY=1 的判定保持同源：
+  // 该模式下包内没有 funasr/torch，安装与模型检查都必须按 ONNX 分叉。macOS 行为不变。
+  isOnnxOnlyMode() {
+    return process.platform === 'win32';
+  }
+
+  // SenseVoice ONNX 模型目录：与 funasr_server.py 同级的 models/sensevoice/
+  // （开发态 = 仓库根/models/sensevoice；打包态 = app.asar.unpacked/models/sensevoice，
+  //  与 funasr_server.py 的 _load_sensevoice 取路逻辑完全一致）。
+  getSenseVoiceModelDir() {
+    return path.join(path.dirname(this.getFunASRServerPath()), 'models', 'sensevoice');
+  }
 
   getFunASRServerPath() {
     // 获取FunASR服务器脚本路径
@@ -306,11 +326,48 @@ class FunASRManager {
     
     // 使用全局缓存避免频繁检查，但如果服务器状态可能已变化则强制检查
     if (globalModelCheckCache &&
-        (now - globalModelCheckTime) < GLOBAL_CACHE_TIME &&
+        (now - globalModelCheckTime) < globalModelCheckTtl &&
         !this.serverReady) { // 如果服务器已就绪，允许重新检查
       return globalModelCheckCache;
     }
-    
+
+    // Windows 纯 ONNX 模式：只检查随安装包内置的 SenseVoice 模型，
+    // 不碰 modelscope 缓存（那是 mac 的 torch 模型路径，Windows 上必然不存在，
+    // 否则会每 3 秒触发一次全盘递归搜索刷屏）。
+    if (this.isOnnxOnlyMode()) {
+      const dir = this.getSenseVoiceModelDir();
+      const modelFile = ['model_quant.onnx', 'model.onnx']
+        .map((n) => path.join(dir, n))
+        .find((p) => fs.existsSync(p)) || null;
+      const tokensOk = fs.existsSync(path.join(dir, 'tokens.json'));
+      const ok = Boolean(modelFile) && tokensOk;
+      this.modelsDownloaded = ok;
+      const result = {
+        success: true,
+        models_downloaded: ok,
+        missing_models: ok ? [] : ['sensevoice'],
+        details: {
+          sensevoice: {
+            exists: ok,
+            path: modelFile || path.join(dir, 'model_quant.onnx'),
+            complete: ok
+          }
+        }
+      };
+      if (!ok) {
+        // 内置模型缺失属于打包问题，低频告警（结果会被缓存，避免轮询刷屏）
+        this.logger.warn && this.logger.warn('SenseVoice ONNX 模型缺失（应随安装包内置）', {
+          dir,
+          modelFound: Boolean(modelFile),
+          tokensFound: tokensOk
+        });
+      }
+      globalModelCheckCache = result;
+      globalModelCheckTime = now;
+      globalModelCheckTtl = ok ? GLOBAL_CACHE_TIME : MODEL_CHECK_FAIL_BACKOFF_MAX_MS;
+      return result;
+    }
+
     try {
       const cachePath = this.getModelCachePath();
       this.logger.info && this.logger.info('检查模型缓存路径:', cachePath);
@@ -328,9 +385,11 @@ class FunASRManager {
         // 更新全局缓存
         globalModelCheckCache = result;
         globalModelCheckTime = now;
+        globalModelCheckTtl = GLOBAL_CACHE_TIME;
+        modelCheckFailStreak = 0;
         return result;
       }
-      
+
       const results = {};
       const missingModels = [];
       
@@ -386,10 +445,23 @@ class FunASRManager {
       // 更新全局缓存
       globalModelCheckCache = result;
       globalModelCheckTime = now;
+      globalModelCheckTtl = GLOBAL_CACHE_TIME;
+      modelCheckFailStreak = 0;
       return result;
-      
+
     } catch (error) {
-      this.logger.error && this.logger.error('检查模型文件失败:', error);
+      modelCheckFailStreak += 1;
+      const backoffMs = Math.min(
+        MODEL_CHECK_FAIL_BACKOFF_BASE_MS * Math.pow(2, modelCheckFailStreak - 1),
+        MODEL_CHECK_FAIL_BACKOFF_MAX_MS
+      );
+      // Error 对象直接传 logger 会序列化成 {}，显式展开 message/stack
+      this.logger.error && this.logger.error('检查模型文件失败:', {
+        message: error.message,
+        stack: error.stack,
+        failStreak: modelCheckFailStreak,
+        nextRetryInMs: backoffMs
+      });
       this.modelsDownloaded = false;
       const result = {
         success: false,
@@ -398,8 +470,11 @@ class FunASRManager {
         missing_models: ["asr", "vad", "punc"],
         details: {}
       };
-      
-      // 错误情况下不缓存，允许重试
+
+      // 失败结果也短期缓存（指数退避），避免 3 秒轮询每次都递归全盘搜索 + 刷屏
+      globalModelCheckCache = result;
+      globalModelCheckTime = now;
+      globalModelCheckTtl = backoffMs;
       return result;
     }
   }
@@ -428,6 +503,17 @@ class FunASRManager {
      * 获取模型下载进度
      */
     try {
+      // 纯 ONNX 模式（Windows）：模型随安装包内置，无下载过程，按存在与否报 100/0
+      if (this.isOnnxOnlyMode()) {
+        const status = await this.checkModelFiles();
+        const p = status.models_downloaded ? 100 : 0;
+        return {
+          success: true,
+          overall_progress: p,
+          models: { sensevoice: { progress: p, downloaded: p, total: 100 } }
+        };
+      }
+
       const cachePath = this.getModelCachePath();
       
       if (!fs.existsSync(cachePath)) {
@@ -664,6 +750,8 @@ class FunASRManager {
      */
     globalModelCheckCache = null;
     globalModelCheckTime = 0;
+    globalModelCheckTtl = GLOBAL_CACHE_TIME;
+    modelCheckFailStreak = 0;
   }
 
   async initializeAtStartup() {
@@ -733,19 +821,29 @@ class FunASRManager {
 
       // getModelCachePath() 可能抛出（未找到模型目录）。在 executor 之外解析，
       // 避免 Promise 构造函数内同步抛出产生未处理的 promise rejection。
-      let cachePath;
-      try {
-        cachePath = this.getModelCachePath();
-      } catch (cacheError) {
-        this.logger.error && this.logger.error('解析模型缓存路径失败', cacheError);
-        this.serverStartError = { reason: 'models-missing', message: cacheError.message };
-        return; // 解析为 resolved（无 reject），失败原因经 checkStatus 暴露
+      // 纯 ONNX 模式（Windows）不依赖 damo/modelscope 缓存：SenseVoice 模型随包内置，
+      // funasr_server.py 在 WORDTAKER_ONNX_ONLY=1 下会跳过 damo 仓库检查，无需 --damo-root。
+      let cachePath = null;
+      if (!this.isOnnxOnlyMode()) {
+        try {
+          cachePath = this.getModelCachePath();
+        } catch (cacheError) {
+          this.logger.error && this.logger.error('解析模型缓存路径失败', cacheError);
+          this.serverStartError = { reason: 'models-missing', message: cacheError.message };
+          return; // 解析为 resolved（无 reject），失败原因经 checkStatus 暴露
+        }
+      } else {
+        this.logger.info && this.logger.info('纯 ONNX 模式：跳过 damo 模型目录解析', {
+          senseVoiceModelDir: this.getSenseVoiceModelDir()
+        });
       }
+
+      const spawnArgs = cachePath ? [serverPath, "--damo-root", cachePath] : [serverPath];
 
       return new Promise((resolve) => {
         this.logger.info && this.logger.info('启动FunASR Python进程', {
           command: pythonCmd,
-          args: [serverPath, "--damo-root", cachePath],
+          args: spawnArgs,
           env: pythonEnv
         });
 
@@ -759,7 +857,7 @@ class FunASRManager {
 
         this.serverProcess = spawn(
           pythonCmd,
-          [serverPath, "--damo-root", cachePath],   // <== 这里加上参数
+          spawnArgs,   // mac: [server, --damo-root, cachePath]；win ONNX: [server]
           {
             stdio: ["pipe", "pipe", "pipe"],
             windowsHide: true,
@@ -1168,13 +1266,20 @@ class FunASRManager {
     try {
       const pythonCmd = await this.findPythonExecutable();
 
+      // ONNX 模式（Windows）：包内没有 funasr（纯 SenseVoice ONNX 路径），
+      // 改为检查引擎的真实依赖 numpy/onnxruntime/soundfile，通过即视为"已安装"，
+      // 否则会永远 import funasr 失败 → 永远跳过 funasr_server.py 启动。
+      const importCheck = this.isOnnxOnlyMode()
+        ? 'import numpy, onnxruntime, soundfile; print("OK")'
+        : 'import funasr; print("OK")';
+
       const result = await new Promise((resolve) => {
         // 确保使用正确的Python环境
         const pythonEnv = this.buildPythonEnvironment();
-        
+
         const checkProcess = spawn(pythonCmd, [
           "-c",
-          'import funasr; print("OK")',
+          importCheck,
         ], {
           env: pythonEnv
         });
@@ -1197,7 +1302,9 @@ class FunASRManager {
             this.logger.error && this.logger.error('FunASR检查失败', {
               code,
               output,
-              errorOutput
+              errorOutput,
+              onnxOnly: this.isOnnxOnlyMode(),
+              importCheck
             });
             resolve({ installed: false, working: false, error: errorOutput || output });
           }

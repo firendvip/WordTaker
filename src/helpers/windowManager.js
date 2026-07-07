@@ -91,12 +91,38 @@ class WindowManager {
   _wireRendererDiagnostics(win, name) {
     try {
       const wc = win.webContents;
+      // 自动恢复：渲染进程崩溃/页面加载失败时自动 reload（每窗口生命周期最多 2 次，
+      // 防止崩溃-重载死循环；超限后只留日志，窗口保持现状等人工处理）。
+      const MAX_AUTO_RELOADS = 2;
+      let autoReloadCount = 0;
+      const tryAutoReload = (why) => {
+        if (autoReloadCount >= MAX_AUTO_RELOADS) {
+          this._logError(`[${name}] ${why}，已达自动重载上限(${MAX_AUTO_RELOADS})，不再重载`, null);
+          return;
+        }
+        autoReloadCount += 1;
+        const attempt = autoReloadCount;
+        // 稍等片刻再 reload：给崩溃后的 webContents 一点恢复时间，也避免同步事件里重入
+        setTimeout(() => {
+          try {
+            if (!win.isDestroyed() && !wc.isDestroyed()) {
+              this._logError(`[${name}] ${why} → 自动重载渲染层（第 ${attempt}/${MAX_AUTO_RELOADS} 次）`, null);
+              wc.reload();
+            }
+          } catch (e) {
+            this._logError(`[${name}] 自动重载失败`, e);
+          }
+        }, 800);
+      };
       wc.on("render-process-gone", (_e, details) => {
         this._logError(`[${name}] 渲染进程消失: ${JSON.stringify(details)}`, null);
+        tryAutoReload("渲染进程消失");
       });
       wc.on("did-fail-load", (_e, code, desc, url, isMainFrame) => {
         if (isMainFrame) {
           this._logError(`[${name}] 页面加载失败 code=${code} desc=${desc} url=${url}`, null);
+          // -3 = ERR_ABORTED（导航被正常中断，如快速二次加载），不算真失败，不重载
+          if (code !== -3) tryAutoReload(`页面加载失败(code=${code})`);
         }
       });
       wc.on("preload-error", (_e, preloadPath, error) => {

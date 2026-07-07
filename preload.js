@@ -74,6 +74,8 @@ contextBridge.exposeInMainWorld("electronAPI", {
   getCurrentHotkey: () => ipcRenderer.invoke("get-current-hotkey"),
   // 重载录音触发键（自定义快捷键保存后调用）
   reloadRecordingTrigger: () => ipcRenderer.invoke("reload-recording-trigger"),
+  // 校验并应用唤醒快捷键（主进程做冲突检测；失败保持原设置）
+  applyRecordingTrigger: (trigger) => ipcRenderer.invoke("apply-recording-trigger", trigger),
   // 重载「转英文」触发键（自定义快捷键保存后调用）
   reloadTranslateTrigger: () => ipcRenderer.invoke("reload-translate-trigger"),
   // 隐藏胶囊（粘贴/取消后调用）

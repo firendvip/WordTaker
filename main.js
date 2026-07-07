@@ -94,6 +94,20 @@ try {
   earlyLog("crashReporter 启动失败", String(e && e.stack ? e.stack : e));
 }
 
+// Windows 渲染加固：禁用 GPU 硬件加速（必须在 app ready 之前调用，故放在模块加载早期）。
+// 根因：部分 Windows 机器 DWM/显卡驱动对"透明+frameless"窗口的 GPU 合成不稳定
+// （electron#2170 类 wontfix），合成失效时窗口以默认白底整块呈现 → 用户看到"白条"。
+// 关闭硬件加速后透明窗口走软件合成，绕开驱动兼容性；本应用 UI 极轻，无性能影响。
+// 仅 win32 生效，macOS 保持硬件加速不变。
+if (process.platform === "win32") {
+  try {
+    app.disableHardwareAcceleration();
+    earlyLog("win32：已禁用 GPU 硬件加速（透明胶囊白条防护）");
+  } catch (e) {
+    earlyLog("disableHardwareAcceleration 调用失败", String(e && e.stack ? e.stack : e));
+  }
+}
+
 // 导入日志管理器
 const LogManager = require("./src/helpers/logManager");
 
@@ -259,8 +273,10 @@ function validateRecordingTrigger(t, fallback) {
   if (!t || typeof t !== 'object') return fallback;
   if (t.type === 'modifier-tap') {
     if (!TriggerManager.VALID_KEYS.has(t.key)) return fallback;
-    if (t.taps !== 1 && t.taps !== 2) return fallback;
-    return { type: 'modifier-tap', key: t.key, taps: t.taps };
+    // taps 宽容为数值化后判定（历史数据可能存成字符串 "1"/"2"），避免合法值被误判非法
+    const taps = Number(t.taps);
+    if (taps !== 1 && taps !== 2) return fallback;
+    return { type: 'modifier-tap', key: t.key, taps };
   }
   if (t.type === 'accelerator') {
     if (typeof t.accelerator !== 'string' || !t.accelerator) return fallback;
@@ -273,6 +289,8 @@ function validateRecordingTrigger(t, fallback) {
 // 只有主触发注册失败才会用到——正常路径（mac uiohook / win uiohook / 自定义组合键成功）行为不变。
 const FALLBACK_RECORDING_ACCELERATORS = ['Control+Alt+Space', 'Control+Shift+Space', 'Alt+Shift+Space'];
 let recordingFallbackAccel = null; // 当前生效的兜底组合键（重载触发键时先注销，避免残留）
+let recordingCurrentAccel = null;  // 当前生效的用户组合键（重载时先注销，避免旧键残留继续触发）
+let recordingFire = null;          // 最近一次 setupRecordingTrigger 构造的触发回调（看门狗降级复用）
 
 // 快捷键异常的用户可见提示：系统通知（Win/mac 均支持）。失败只落日志，绝不抛出。
 function notifyHotkeyIssue(title, body) {
@@ -280,6 +298,18 @@ function notifyHotkeyIssue(title, body) {
     new Notification({ title, body, silent: false }).show();
   } catch (e) {
     logger.warn('快捷键提示通知发送失败:', e?.message || e);
+  }
+}
+
+// 降级可见性：把当前生效的录音键写进托盘 tooltip（悬停即见，比一次性通知更难被错过）。
+// 托盘尚未创建（启动早期降级）时此处为 no-op，startApp 里创建托盘后会补一次。
+function updateTrayHotkeyTooltip(text) {
+  try {
+    if (trayManager && trayManager.tray && !trayManager.tray.isDestroyed()) {
+      trayManager.tray.setToolTip(`弦外小猫 · ${text}`);
+    }
+  } catch (e) {
+    logger.warn('更新托盘 tooltip 失败:', e?.message || e);
   }
 }
 
@@ -291,7 +321,8 @@ function registerFallbackRecordingHotkey(fire, reason) {
     try {
       if (hotkeyManager.registerHotkey(accel, fire)) {
         recordingFallbackAccel = accel;
-        logger.warn(`录音触发键已降级为兜底组合键 ${accel}`, { reason });
+        logger.warn(`录音触发键已降级为兜底组合键 ${accel}（当前生效键=${accel}）`, { reason });
+        updateTrayHotkeyTooltip(`录音快捷键已临时改为 ${accel}`);
         notifyHotkeyIssue(
           '弦外小猫：快捷键已自动切换',
           `原快捷键不可用（${reason}），已临时改用 ${accel} 唤起录音。可到「设置 → 快捷键」改回喜欢的键。`
@@ -303,6 +334,7 @@ function registerFallbackRecordingHotkey(fire, reason) {
     }
   }
   logger.error('所有兜底快捷键均注册失败，录音快捷键当前不可用', { reason });
+  updateTrayHotkeyTooltip('录音快捷键不可用，请到「设置 → 快捷键」更换');
   notifyHotkeyIssue(
     '弦外小猫：快捷键不可用',
     `快捷键注册失败（${reason}），请到「设置 → 快捷键」更换其它按键。`
@@ -316,10 +348,16 @@ function setupRecordingTrigger() {
     const platformDefault = process.platform === 'win32'
       ? { type: 'modifier-tap', key: 'LeftAlt', taps: 2 }
       : { type: 'modifier-tap', key: 'LeftOption', taps: 1 };
-    const stored = databaseManager.getSetting('recording_trigger', platformDefault);
-    const trigger = validateRecordingTrigger(stored, platformDefault);
-    if (trigger !== stored) {
-      logger.warn('recording_trigger 非法或缺失，已回退默认', { stored });
+    const stored = databaseManager.getSetting('recording_trigger', null);
+    // 修复误判：validateRecordingTrigger 校验通过时返回的是"重建的新对象"，
+    // 旧代码用 `trigger !== stored`（对象恒不等）判定非法 → 合法存值也被警告。
+    // 现改为：校验用 null 哨兵，返回 null 才是真非法/缺失。
+    let trigger = validateRecordingTrigger(stored, null);
+    if (!trigger) {
+      if (stored != null) {
+        logger.warn('recording_trigger 非法，已回退默认', { stored });
+      }
+      trigger = platformDefault;
     }
 
     const fire = () => {
@@ -337,18 +375,24 @@ function setupRecordingTrigger() {
         logger.info('录音触发 → 已发送 hotkey-triggered', trigger);
       }
     };
+    recordingFire = fire; // 供 uiohook 看门狗降级时复用（不重复构造触发逻辑）
 
-    // 先清掉旧的触发（便于设置变更后重载）；上次的兜底组合键也一并注销，避免残留双触发。
+    // 先清掉旧的触发（便于设置变更后重载）；上次的兜底组合键/用户组合键也一并注销，避免残留双触发。
     triggerManager.stop();
     if (recordingFallbackAccel) {
       try { hotkeyManager.unregisterHotkey(recordingFallbackAccel); } catch (_) { /* 忽略 */ }
       recordingFallbackAccel = null;
+    }
+    if (recordingCurrentAccel) {
+      try { hotkeyManager.unregisterHotkey(recordingCurrentAccel); } catch (_) { /* 忽略 */ }
+      recordingCurrentAccel = null;
     }
 
     if (trigger.type === 'accelerator' && trigger.accelerator) {
       // 普通组合键走 Electron globalShortcut；被其他应用占用时降级到兜底键并通知，绝不静默失效。
       const ok = hotkeyManager.registerHotkey(trigger.accelerator, fire);
       if (ok) {
+        recordingCurrentAccel = trigger.accelerator;
         logger.info('录音触发使用组合键', trigger.accelerator);
       } else {
         logger.error('[trigger] 组合键注册失败（可能被其他应用占用）:', trigger.accelerator);
@@ -367,10 +411,161 @@ function setupRecordingTrigger() {
   }
 }
 
+// ============================================================================
+// uiohook 事件流看门狗（仅 win32）——治「已启动却零触发」的静默失聪
+// 证据链：v1.18.0 Win11 真机日志有 "triggerManager 已启动" 但 13 分钟无一条
+// "triggerManager 触发"。uIOhook.start() 成功只代表钩子线程起来了；Windows 的
+// WH_KEYBOARD_LL 钩子可能随后被系统静默摘除（回调超时/登录期负载/会话异常），
+// 原生层与 JS 层的 running 标志都不会翻转，没有任何错误可捕获。
+// 检测法：powerMonitor.getSystemIdleTime()（走 GetLastInputInfo，完全独立于 uiohook）
+// 表明用户正在输入（idle ≤ 5s），而 uiohook 已 ≥ 60s 收不到任何事件（含鼠标移动）
+// → 判定钩子失聪。第一次先原地重启钩子；下一轮复查仍失聪 → 降级到兜底组合键
+// （globalShortcut，独立机制，不受 LL 钩子影响）+ 系统通知 + 托盘 tooltip。
+// 误报防护：正常时 uiohook 连鼠标移动都收得到，「用户活跃但 60 秒零事件」在钩子
+// 存活时几乎不可能；即便极端误报，重启钩子也无害，降级还会先复查一轮。
+// ============================================================================
+let uiohookWatchdogTimer = null;
+let uiohookRestartAttempted = false;
+const UIOHOOK_WATCHDOG_INTERVAL_MS = 30000; // 检查周期
+const UIOHOOK_DEAD_SILENCE_MS = 60000;      // 判定失聪的静默阈值
+const UIOHOOK_ACTIVE_IDLE_SEC = 5;          // "用户正在活动"的系统空闲上限
+
+function startUiohookWatchdog() {
+  if (process.platform !== 'win32') return; // mac 权限缺失在 start() 即抛错，另有降级路径
+  if (uiohookWatchdogTimer) return;
+  const { powerMonitor } = require('electron');
+  uiohookWatchdogTimer = setInterval(() => {
+    try {
+      // 录音触发未走 uiohook（组合键模式/已降级）→ 无需监护
+      if (!triggerManager.started) return;
+      const silenceMs = Date.now() - TriggerManager.hookLastInputAt();
+      if (silenceMs < UIOHOOK_DEAD_SILENCE_MS) {
+        uiohookRestartAttempted = false; // 事件流健康/已恢复，允许未来再次自救
+        return;
+      }
+      if (powerMonitor.getSystemIdleTime() > UIOHOOK_ACTIVE_IDLE_SEC) return; // 用户没在动，静默正常
+      // 用户明明在输入，钩子却长时间零事件 → 失聪
+      if (!uiohookRestartAttempted) {
+        uiohookRestartAttempted = true;
+        logger.error(`uiohook 事件流疑似中断（用户活跃但 ${Math.round(silenceMs / 1000)}s 无钩子事件），尝试重启钩子`);
+        TriggerManager.tryRestartHook(logger);
+        return; // 下一轮复查重启效果
+      }
+      // 重启无效：停止监护，降级到 globalShortcut 兜底键（可见通知 + 托盘提示）
+      logger.error('uiohook 重启后事件流仍中断，录音键降级到兜底组合键');
+      clearInterval(uiohookWatchdogTimer);
+      uiohookWatchdogTimer = null;
+      triggerManager.stop();
+      if (typeof recordingFire === 'function') {
+        registerFallbackRecordingHotkey(recordingFire, '系统级按键监听失效（事件流中断）');
+      }
+    } catch (e) {
+      logger.warn('uiohook 看门狗检查异常（忽略本轮）:', e?.message || e);
+    }
+  }, UIOHOOK_WATCHDOG_INTERVAL_MS);
+  logger.info('uiohook 事件流看门狗已启动（win32）');
+}
+
 // 设置变更后重载触发键（自定义快捷键时调用）
 ipcMain.handle('reload-recording-trigger', () => {
   setupRecordingTrigger();
   return { success: true };
+});
+
+// ===== 唤醒键自定义：主进程侧校验 + 冲突检测 + 应用（渲染层只发候选键） =====
+// Electron accelerator 的纯修饰符 token（无效组合 = 只有修饰键 / 空）
+const ACCEL_MODIFIER_TOKENS = new Set([
+  'command', 'cmd', 'control', 'ctrl', 'commandorcontrol', 'cmdorctrl',
+  'alt', 'option', 'altgr', 'shift', 'super', 'meta',
+]);
+
+function acceleratorHasBaseKey(accel) {
+  const parts = String(accel).split('+').map((s) => s.trim()).filter(Boolean);
+  if (parts.length === 0) return false;
+  return parts.some((p) => !ACCEL_MODIFIER_TOKENS.has(p.toLowerCase()));
+}
+
+function recordingTriggersEqual(a, b) {
+  if (!a || !b || a.type !== b.type) return false;
+  if (a.type === 'modifier-tap') return a.key === b.key && Number(a.taps) === Number(b.taps);
+  if (a.type === 'accelerator') return String(a.accelerator).toLowerCase() === String(b.accelerator).toLowerCase();
+  return false;
+}
+
+// 应用内冲突：与「转英文」触发键 / 「取消」键重复则拒绝。返回冲突描述或 null。
+function findWakeTriggerInternalConflict(trigger) {
+  try {
+    const tt = databaseManager.getSetting('translate_trigger', null);
+    if (tt && recordingTriggersEqual(trigger, tt)) return '该快捷键已被「转英文」功能使用';
+    const cancelKey = databaseManager.getSetting('cancel_key', 'Escape');
+    const cancelTaps = Number(databaseManager.getSetting('cancel_taps', 1)) === 2 ? 2 : 1;
+    if (trigger.type === 'modifier-tap' && trigger.key === cancelKey && Number(trigger.taps) === cancelTaps) {
+      return '该快捷键已被「取消」功能使用';
+    }
+    if (trigger.type === 'accelerator' && String(trigger.accelerator).toLowerCase() === String(cancelKey).toLowerCase()) {
+      return '该按键已被「取消」功能使用';
+    }
+  } catch (e) {
+    logger.warn('唤醒键应用内冲突检测异常（忽略，继续）:', e?.message || e);
+  }
+  return null;
+}
+
+// 校验并应用唤醒快捷键：无效组合/应用内冲突/被其它软件占用 → 拒绝并保持原设置生效。
+ipcMain.handle('apply-recording-trigger', (event, candidate) => {
+  try {
+    const trigger = validateRecordingTrigger(candidate, null);
+    if (!trigger) return { success: false, error: '无效的快捷键组合' };
+    if (trigger.type === 'accelerator' && !acceleratorHasBaseKey(trigger.accelerator)) {
+      return { success: false, error: '快捷键不能只有修饰键，请加上一个普通按键' };
+    }
+
+    const prevStored = databaseManager.getSetting('recording_trigger', null);
+    // 与当前设置相同 → 无需变更（也避免试注册撞上自己已注册的键）
+    if (recordingTriggersEqual(trigger, validateRecordingTrigger(prevStored, null))) {
+      return { success: true, trigger, unchanged: true };
+    }
+
+    const conflict = findWakeTriggerInternalConflict(trigger);
+    if (conflict) return { success: false, error: conflict };
+
+    // 系统级冲突：组合键先试注册（成功立即释放）。失败 = 被其它软件占用 → 拒绝，原键保持生效。
+    // 例外：该键恰是当前生效的兜底键/用户键（本应用自己持有），放行交给 setupRecordingTrigger 正常接管。
+    if (trigger.type === 'accelerator'
+        && trigger.accelerator !== recordingFallbackAccel
+        && trigger.accelerator !== recordingCurrentAccel) {
+      let probeOk = false;
+      try {
+        probeOk = globalShortcut.register(trigger.accelerator, () => {});
+      } finally {
+        if (probeOk) {
+          try { globalShortcut.unregister(trigger.accelerator); } catch (_) { /* 忽略 */ }
+        }
+      }
+      if (!probeOk) {
+        logger.warn('唤醒键试注册失败（被占用），保持原设置', { accelerator: trigger.accelerator });
+        return { success: false, error: `快捷键 ${trigger.accelerator} 已被系统或其他软件占用，请换一个` };
+      }
+    }
+
+    // 持久化并重载；重载后验证是否真正生效，失败则回滚到旧设置（旧键继续生效）。
+    databaseManager.setSetting('recording_trigger', trigger);
+    setupRecordingTrigger();
+    const applied = trigger.type === 'accelerator'
+      ? hotkeyManager.isHotkeyRegistered(trigger.accelerator)
+      : triggerManager.started;
+    if (!applied) {
+      if (prevStored != null) databaseManager.setSetting('recording_trigger', prevStored);
+      setupRecordingTrigger();
+      logger.error('唤醒键应用失败，已回滚原设置', { trigger });
+      return { success: false, error: '快捷键注册失败（可能缺少辅助功能权限或被占用），已保持原设置' };
+    }
+    logger.info('唤醒键已更新并生效', trigger);
+    return { success: true, trigger };
+  } catch (error) {
+    logger.error('apply-recording-trigger 异常:', error);
+    return { success: false, error: '快捷键设置失败：' + (error?.message || String(error)) };
+  }
 });
 
 // 「转英文」热键处理：捕获选中文本 → 翻译为地道英文 → 粘贴回去。
@@ -444,10 +639,12 @@ function setupTranslateTrigger() {
     }
 
     const fallback = { type: 'modifier-tap', key: 'LeftCtrl', taps: 2 };
-    // 复用录音触发键的校验：非法字段一律回退默认
-    const trigger = validateRecordingTrigger(stored, fallback);
-    if (trigger !== stored) {
-      logger.warn('translate_trigger 非法或缺失，已回退默认', { stored });
+    // 复用录音触发键的校验：非法字段一律回退默认。
+    // 同 recording_trigger 的误判修复：用 null 哨兵判定，而非对象身份比较（恒不等）。
+    let trigger = validateRecordingTrigger(stored, null);
+    if (!trigger) {
+      logger.warn('translate_trigger 非法，已回退默认', { stored });
+      trigger = fallback;
     }
 
     // 先清掉旧的触发（便于设置变更后重载）
@@ -795,6 +992,13 @@ async function startApp() {
     logger.error('提前注册全局触发键失败（稍后窗口就绪后行为不变）:', error);
   }
 
+  // win32：启动 uiohook 事件流看门狗（检测"已启动却零触发"的钩子静默失聪并自救/降级）
+  try {
+    startUiohookWatchdog();
+  } catch (error) {
+    logger.error('启动 uiohook 看门狗失败（不影响其余功能）:', error);
+  }
+
   // 打包版麦克风修复：放行渲染层 getUserMedia 的权限请求，并主动触发系统麦克风授权框。
   setupMediaPermissionHandlers();
   // 不 await：授权框弹出/用户点选不阻塞后续启动流程。
@@ -901,6 +1105,10 @@ async function startApp() {
     trayManager.setDatabaseManager(databaseManager);
   }
   await trayManager.createTray();
+  // 若启动早期已发生快捷键降级（当时托盘还不存在），此刻补写托盘 tooltip，保证降级可见
+  if (recordingFallbackAccel) {
+    updateTrayHotkeyTooltip(`录音快捷键已临时改为 ${recordingFallbackAccel}`);
+  }
   // 注入提醒回调：aiService 需要提醒时让托盘闪烁+点击弹通知（额度降级/阶梯提醒）
   if (ipcHandlers && ipcHandlers.aiService && typeof ipcHandlers.aiService.setNotifier === 'function') {
     ipcHandlers.aiService.setNotifier((payload) => trayManager.startAttention(payload));

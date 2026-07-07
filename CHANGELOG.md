@@ -3,6 +3,20 @@
 All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/); versioning follows [SemVer](https://semver.org/).
 
+## [1.19.0] - 2026-07-08
+
+### Added
+- 唤醒快捷键可自定义（设置→快捷键）：3 个平台预设 + 自定义组合键录入；冲突/被系统占用会提示并拒绝，保持原键继续生效
+
+### Changed
+- Windows 禁用硬件加速（根治胶囊白条/隐形问题），渲染进程崩溃自动重载（上限 2 次）
+
+### Fixed
+- Windows 按快捷键完全无反应：键盘钩子被系统静默摘除后不可恢复——新增看门狗自动检测 + 重启钩子 + 兜底键降级（托盘/通知可见），唤醒键不再静默失效
+- Windows 纯 ONNX 模式下语音服务被错误跳过（仍按 funasr 判定安装状态）——两架构（x64/arm64）语音识别自此真正可用
+- Windows 模型检查每 3 秒递归全盘搜索刷屏：ONNX 模式感知 + 指数退避 + 错误日志补全；CI 增加模型进包断言
+- 快捷键配置合法值被误判非法的警告
+
 ## [1.18.0] - 2026-07-07
 
 ### Added

@@ -216,6 +216,21 @@ jobs:
           # 关闭代码签名自动发现（CI 无证书）。
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
 
+      # 断言 SenseVoice ONNX 模型确实被打进安装包（resources\app.asar.unpacked\models\sensevoice\）。
+      # 运行时 funasr_server.py 从「与自身同级的 models/sensevoice/」读取模型，
+      # funasrManager 的模型检查也指向同一路径——两头对齐；缺失应在 CI 失败而非上线后发现。
+      - name: Assert SenseVoice model packed
+        shell: pwsh
+        run: |
+          $arch = "${{ matrix.arch }}"
+          if ($arch -eq "arm64") { $unpackDir = "dist\win-arm64-unpacked" } else { $unpackDir = "dist\win-unpacked" }
+          $modelDir = Join-Path $unpackDir "resources\app.asar.unpacked\models\sensevoice"
+          foreach ($n in @("model_quant.onnx", "tokens.json")) {
+            $f = Join-Path $modelDir $n
+            if (-not (Test-Path $f)) { Write-Error "FAIL: 安装包缺少 SenseVoice 模型文件: $f"; exit 1 }
+            Write-Host ("OK: {0} ({1} MB)" -f $f, [math]::Round((Get-Item $f).Length/1MB, 1))
+          }
+
       # 断言打包进 asar.unpacked 的原生模块/可执行文件确为 Windows PE 且机器类型匹配目标架构。
       #   x64   -> 0x8664(IMAGE_FILE_MACHINE_AMD64)
       #   arm64 -> 0xAA64(IMAGE_FILE_MACHINE_ARM64)

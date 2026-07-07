@@ -83,9 +83,17 @@ class TriggerManager {
     try {
       uIOhook.on("keydown", this._boundKeydown);
       uIOhook.on("keyup", this._boundKeyup);
+      // 事件流健康度：挂一个全局 input 监听记录"最后一次收到任何 uiohook 事件"的时间。
+      // 用途：Windows 上 LL 钩子可能在 start() 成功后被系统静默摘除（无任何错误、
+      // running 标志不翻转），主进程看门狗用该时间戳 + powerMonitor 空闲时间判定钩子失聪。
+      if (!TriggerManager._healthListenerAttached) {
+        uIOhook.on("input", TriggerManager._onAnyInput);
+        TriggerManager._healthListenerAttached = true;
+      }
       if (!TriggerManager._hookRunning) {
         uIOhook.start();
         TriggerManager._hookRunning = true;
+        TriggerManager._lastInputAt = Date.now();
       }
       this.started = true;
       this._log("info", "triggerManager 已启动", {
@@ -95,6 +103,8 @@ class TriggerManager {
       });
       return true;
     } catch (error) {
+      // start 抛错时把已挂的监听清掉，避免"未启动却挂着监听"的悬挂状态
+      this.stop();
       this._log("error", "triggerManager 启动失败（可能缺少辅助功能权限）", error);
       return false;
     }
@@ -190,6 +200,41 @@ class TriggerManager {
 }
 
 TriggerManager._hookRunning = false;
+// ===== 钩子事件流健康度（供主进程看门狗使用）=====
+TriggerManager._healthListenerAttached = false;
+TriggerManager._lastInputAt = 0;
+TriggerManager._onAnyInput = function () {
+  TriggerManager._lastInputAt = Date.now();
+};
+// 最后一次收到任何 uiohook 事件的时间戳（0 = 钩子从未启动）
+TriggerManager.hookLastInputAt = function () {
+  return TriggerManager._lastInputAt;
+};
+// 尝试重启底层钩子（钩子失聪时的第一级自救）。实例监听挂在 uIOhook 单例
+// EventEmitter 上，重启后自动继续生效，无需各 TriggerManager 重新 start。
+// 注意：若原生层认为钩子仍在运行（线程死但标志未翻转），stop 会抛错、start 会静默
+// 无操作——此时返回 true 但事件流可能仍死，由看门狗下一轮复查后走降级。
+TriggerManager.tryRestartHook = function (logger) {
+  const log = (level, ...args) => {
+    try { if (logger && logger[level]) logger[level](...args); } catch (_) { /* 忽略 */ }
+  };
+  try {
+    uIOhook.stop();
+  } catch (e) {
+    log("warn", "uIOhook.stop() 失败（钩子线程可能已死）", e?.message || e);
+  }
+  TriggerManager._hookRunning = false;
+  try {
+    uIOhook.start();
+    TriggerManager._hookRunning = true;
+    TriggerManager._lastInputAt = Date.now();
+    log("warn", "uIOhook 已重启（事件流恢复情况由看门狗复查）");
+    return true;
+  } catch (e) {
+    log("error", "uIOhook 重启失败", e?.message || e);
+    return false;
+  }
+};
 // 合法触发键名集合（供主进程校验 recording_trigger）
 TriggerManager.VALID_KEYS = new Set(Object.keys(KEYCODE_BY_NAME));
 

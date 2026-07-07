@@ -12,6 +12,9 @@ import {
   parseModifierShortcutValue,
   toModifierShortcutValue,
   CANCEL_KEY_OPTIONS,
+  getWakePresets,
+  describeWakeTrigger,
+  wakeTriggersEqual,
 } from "./utils/shortcutOptions";
 
 const SettingsPage = () => {
@@ -25,6 +28,9 @@ const SettingsPage = () => {
     llm_fallback_paste_raw: false,
     recording_trigger_key: "LeftOption",
     recording_trigger_taps: 1,
+    // 唤醒键类型：modifier-tap（裸修饰键单/双击）或 accelerator（自定义组合键）
+    recording_trigger_type: "modifier-tap",
+    recording_trigger_accelerator: "",
     cancel_key: "Escape",
     cancel_taps: 1,
     sound_scheme: "soft",
@@ -297,6 +303,10 @@ const SettingsPage = () => {
             || (isMac ? "LeftOption" : "LeftAlt"),
           recording_trigger_taps: (allSettings.recording_trigger && allSettings.recording_trigger.taps)
             || (isMac ? 1 : 2),
+          recording_trigger_type: (allSettings.recording_trigger && allSettings.recording_trigger.type === "accelerator")
+            ? "accelerator" : "modifier-tap",
+          recording_trigger_accelerator: (allSettings.recording_trigger && allSettings.recording_trigger.type === "accelerator")
+            ? (allSettings.recording_trigger.accelerator || "") : "",
           cancel_key: allSettings.cancel_key || "Escape",
           cancel_taps: Number(allSettings.cancel_taps) === 2 ? 2 : 1,
           sound_scheme: allSettings.sound_scheme || "soft",
@@ -368,14 +378,17 @@ const SettingsPage = () => {
         await window.electronAPI.setSetting('llm_prompt_template', settings.llm_prompt_template);
         await window.electronAPI.setSetting('llm_fallback_paste_raw', settings.llm_fallback_paste_raw);
 
-        // 录音触发键（裸修饰键 + 单/双击），保存后立即重载使其生效
-        await window.electronAPI.setSetting('recording_trigger', {
-          type: 'modifier-tap',
-          key: settings.recording_trigger_key,
-          taps: Number(settings.recording_trigger_taps) || 1
-        });
-        if (window.electronAPI.reloadRecordingTrigger) {
-          await window.electronAPI.reloadRecordingTrigger();
+        // 录音触发键（裸修饰键 + 单/双击），保存后立即重载使其生效。
+        // 自定义组合键（accelerator）由 applyRecordingTrigger 独立管理，这里不覆写。
+        if (settings.recording_trigger_type !== 'accelerator') {
+          await window.electronAPI.setSetting('recording_trigger', {
+            type: 'modifier-tap',
+            key: settings.recording_trigger_key,
+            taps: Number(settings.recording_trigger_taps) || 1
+          });
+          if (window.electronAPI.reloadRecordingTrigger) {
+            await window.electronAPI.reloadRecordingTrigger();
+          }
         }
 
         // 取消键 + 提示音 + 识别引擎
@@ -530,11 +543,14 @@ const SettingsPage = () => {
   const saveRecordingTrigger = async () => {
     try {
       if (!window.electronAPI) return;
-      await window.electronAPI.setSetting('recording_trigger', {
-        type: 'modifier-tap',
-        key: settings.recording_trigger_key,
-        taps: Number(settings.recording_trigger_taps) || 1
-      });
+      // 自定义组合键（accelerator）由 applyRecordingTrigger 独立管理，这里不覆写。
+      if (settings.recording_trigger_type !== 'accelerator') {
+        await window.electronAPI.setSetting('recording_trigger', {
+          type: 'modifier-tap',
+          key: settings.recording_trigger_key,
+          taps: Number(settings.recording_trigger_taps) || 1
+        });
+      }
       await window.electronAPI.setSetting('cancel_key', settings.cancel_key || 'Escape');
       if (window.electronAPI.reloadRecordingTrigger) {
         await window.electronAPI.reloadRecordingTrigger();
@@ -562,15 +578,93 @@ const SettingsPage = () => {
   // 统一的"单击/双击 × 修饰键"下拉项（唤醒/取消共用）
   const modifierShortcutOptions = buildModifierShortcutOptions(isMac);
 
-  // 当前各快捷键的下拉 value（"<Key>:<taps>"）
-  const wakeValue = toModifierShortcutValue(settings.recording_trigger_key, settings.recording_trigger_taps);
+  // 当前各快捷键的下拉 value（"<Key>:<taps>"）；自定义组合键生效时下拉显示哨兵项
+  const WAKE_CUSTOM_VALUE = "__custom__";
+  const wakeValue = settings.recording_trigger_type === "accelerator"
+    ? WAKE_CUSTOM_VALUE
+    : toModifierShortcutValue(settings.recording_trigger_key, settings.recording_trigger_taps);
   // 取消键：value = "<Key>:<taps>"（如 "Escape:1"、"F1:2"）
   const cancelValue = `${settings.cancel_key}:${Number(settings.cancel_taps) === 2 ? 2 : 1}`;
 
-  // 唤醒：原子地写 recording_trigger_key + recording_trigger_taps（一次更新+一次持久化，SET-2）
+  // ===== 唤醒键：预设 + 自定义录入（校验在主进程，失败保持原设置） =====
+  const [capturingWake, setCapturingWake] = useState(false);
+  const wakePresets = getWakePresets(isMac);
+  // 当前生效的唤醒触发对象（由本地 state 还原）
+  const currentWakeTrigger = settings.recording_trigger_type === "accelerator" && settings.recording_trigger_accelerator
+    ? { type: "accelerator", accelerator: settings.recording_trigger_accelerator }
+    : { type: "modifier-tap", key: settings.recording_trigger_key, taps: Number(settings.recording_trigger_taps) || 1 };
+
+  // 统一入口：把候选触发发给主进程校验并应用；成功才更新本地 state，失败提示且原键保持生效。
+  const applyWakeTrigger = async (trigger) => {
+    try {
+      if (!window.electronAPI || !window.electronAPI.applyRecordingTrigger) {
+        toast.error("当前版本不支持自定义唤醒键");
+        return;
+      }
+      const res = await window.electronAPI.applyRecordingTrigger(trigger);
+      if (res && res.success) {
+        setSettings((prev) => ({
+          ...prev,
+          recording_trigger_type: trigger.type,
+          recording_trigger_accelerator: trigger.type === "accelerator" ? trigger.accelerator : "",
+          recording_trigger_key: trigger.type === "modifier-tap" ? trigger.key : prev.recording_trigger_key,
+          recording_trigger_taps: trigger.type === "modifier-tap" ? trigger.taps : prev.recording_trigger_taps,
+        }));
+        toast.success(`唤醒快捷键已生效：${describeWakeTrigger(trigger, isMac)}`);
+      } else {
+        toast.error((res && res.error) || "快捷键设置失败，已保持原设置");
+      }
+    } catch (error) {
+      console.error("应用唤醒快捷键失败:", error);
+      toast.error("快捷键设置失败，已保持原设置");
+    }
+  };
+
+  // 唤醒（下拉里的修饰键选项）：同样经主进程校验后生效
   const handleWakeChange = (value) => {
+    if (value === WAKE_CUSTOM_VALUE) return;
     const { key, taps } = parseModifierShortcutValue(value);
-    updateAndSave({ recording_trigger_key: key, recording_trigger_taps: taps });
+    applyWakeTrigger({ type: "modifier-tap", key, taps });
+  };
+
+  // KeyboardEvent → Electron accelerator 基础键（非修饰键部分）；无法识别返回 null
+  const wakeBaseKeyFromEvent = (e) => {
+    const code = e.code || "";
+    if (code === "Space") return "Space";
+    if (/^Key[A-Z]$/.test(code)) return code.slice(3);
+    if (/^Digit[0-9]$/.test(code)) return code.slice(5);
+    if (/^F([1-9]|1[0-9]|2[0-4])$/.test(code)) return code;
+    if (/^Arrow(Up|Down|Left|Right)$/.test(code)) return code.slice(5);
+    const named = { Enter: "Enter", Tab: "Tab", Home: "Home", End: "End", PageUp: "PageUp", PageDown: "PageDown", Delete: "Delete" };
+    if (named[code]) return named[code];
+    if (e.key && e.key.length === 1 && e.key !== " ") return e.key.toUpperCase();
+    return null;
+  };
+
+  // 录入框：按下组合键即提交（Esc 取消 / Backspace 清除退出）；纯修饰键继续等待
+  const handleWakeCaptureKeyDown = (e) => {
+    if (!capturingWake) return;
+    e.preventDefault();
+    e.stopPropagation();
+    if (e.key === "Escape" || e.key === "Backspace") {
+      setCapturingWake(false);
+      return;
+    }
+    if (["Control", "Alt", "Shift", "Meta"].includes(e.key)) return; // 只按了修饰键：等待基础键
+    const base = wakeBaseKeyFromEvent(e);
+    if (!base) return;
+    const mods = [];
+    if (e.ctrlKey) mods.push("Control");
+    if (e.altKey) mods.push("Alt");
+    if (e.shiftKey) mods.push("Shift");
+    if (e.metaKey) mods.push(isMac ? "Command" : "Super");
+    const isFKey = /^F([1-9]|1[0-9]|2[0-4])$/.test(base);
+    if (mods.length === 0 && !isFKey) {
+      toast.error(isMac ? "请加上修饰键（⌃/⌥/⇧/⌘）或使用 F 功能键" : "请加上修饰键（Ctrl/Alt/Shift）或使用 F 功能键");
+      return;
+    }
+    setCapturingWake(false);
+    applyWakeTrigger({ type: "accelerator", accelerator: [...mods, base].join("+") });
   };
 
   // 转英文：「无」选项 value 用哨兵 "none"；否则为 "<Key>:<taps>"（SET-2）
@@ -1170,18 +1264,61 @@ const SettingsPage = () => {
           {activeCategory === "shortcuts" && (
             <div className="bg-white dark:bg-neutral-900 rounded-2xl shadow-sm border border-gray-100 dark:border-neutral-800">
               <div className="px-6">
-                {/* 唤醒 */}
-                <div className="flex items-center justify-between gap-4 py-4 border-b border-gray-100 dark:border-neutral-800">
-                  <label className={`${rowLabelClass} chinese-title`}>唤醒/结束</label>
-                  <select
-                    value={wakeValue}
-                    onChange={(e) => handleWakeChange(e.target.value)}
-                    className="w-48 px-3 py-2 text-[15px] border border-gray-300 dark:border-neutral-700 rounded-lg focus:ring-1 focus:ring-neutral-400 focus:border-transparent bg-white dark:bg-neutral-800 text-gray-900 dark:text-gray-100"
-                  >
-                    {modifierShortcutOptions.map((opt) => (
-                      <option key={opt.value} value={opt.value}>{opt.label}</option>
-                    ))}
-                  </select>
+                {/* 唤醒：预设快捷按钮 + 自定义录入 + 修饰键下拉 */}
+                <div className="py-4 border-b border-gray-100 dark:border-neutral-800">
+                  <div className="flex items-center justify-between gap-4">
+                    <label className={`${rowLabelClass} chinese-title`}>唤醒/结束</label>
+                    <span className="flex-shrink-0 px-2.5 py-1 text-[13px] font-medium rounded-md bg-neutral-100 dark:bg-neutral-800 text-gray-700 dark:text-gray-200">
+                      当前：{describeWakeTrigger(currentWakeTrigger, isMac)}
+                    </span>
+                  </div>
+                  <div className="mt-3 flex flex-wrap items-center gap-2">
+                    {wakePresets.map((p) => {
+                      const active = wakeTriggersEqual(currentWakeTrigger, p.trigger);
+                      return (
+                        <button
+                          key={p.id}
+                          type="button"
+                          onClick={() => applyWakeTrigger(p.trigger)}
+                          className={`px-3 py-1.5 text-[13px] rounded-lg border transition-colors ${
+                            active
+                              ? "border-neutral-900 dark:border-white bg-neutral-900 text-white dark:bg-white dark:text-neutral-900"
+                              : "border-gray-300 dark:border-neutral-700 text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-neutral-800"
+                          }`}
+                        >
+                          {describeWakeTrigger(p.trigger, isMac)}
+                        </button>
+                      );
+                    })}
+                    <button
+                      type="button"
+                      onClick={() => setCapturingWake(true)}
+                      onKeyDown={handleWakeCaptureKeyDown}
+                      onBlur={() => setCapturingWake(false)}
+                      className={`px-3 py-1.5 text-[13px] rounded-lg border border-dashed transition-colors focus:outline-none ${
+                        capturingWake
+                          ? "border-blue-500 text-blue-600 dark:text-blue-400"
+                          : "border-gray-300 dark:border-neutral-700 text-gray-500 dark:text-neutral-400 hover:bg-gray-50 dark:hover:bg-neutral-800"
+                      }`}
+                    >
+                      {capturingWake ? "请按下组合键…（Esc 取消）" : "自定义…"}
+                    </button>
+                  </div>
+                  <div className="mt-3 flex items-center justify-between gap-4">
+                    <span className="text-[13px] text-gray-500 dark:text-neutral-400">更多单击/双击修饰键</span>
+                    <select
+                      value={wakeValue}
+                      onChange={(e) => handleWakeChange(e.target.value)}
+                      className="w-48 px-3 py-2 text-[15px] border border-gray-300 dark:border-neutral-700 rounded-lg focus:ring-1 focus:ring-neutral-400 focus:border-transparent bg-white dark:bg-neutral-800 text-gray-900 dark:text-gray-100"
+                    >
+                      {settings.recording_trigger_type === "accelerator" && (
+                        <option value={WAKE_CUSTOM_VALUE} disabled>自定义组合键</option>
+                      )}
+                      {modifierShortcutOptions.map((opt) => (
+                        <option key={opt.value} value={opt.value}>{opt.label}</option>
+                      ))}
+                    </select>
+                  </div>
                 </div>
 
                 {/* 取消键（仅 Esc / F 键的单/双击） */}

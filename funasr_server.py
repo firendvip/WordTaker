@@ -817,6 +817,27 @@ class FunASRServer:
 
     def check_status(self):
         """检查FunASR状态"""
+        if self.onnx_only:
+            # 纯 ONNX 模式：包内没有 funasr，按引擎真实依赖 onnxruntime 判定安装状态
+            try:
+                import onnxruntime  # noqa: F401
+
+                return {
+                    "success": True,
+                    "installed": True,
+                    "initialized": self.initialized,
+                    "version": "sensevoice-onnx",
+                    "models": {
+                        "sensevoice": self.sensevoice_model is not None,
+                    },
+                }
+            except ImportError:
+                return {
+                    "success": False,
+                    "installed": False,
+                    "initialized": False,
+                    "error": "onnxruntime 未安装（纯 ONNX 模式）",
+                }
         try:
             import funasr
 
