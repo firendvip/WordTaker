@@ -58,6 +58,27 @@
   </head>
   <body>
     <div id="root"></div>
+    <script>
+      // 最早期错误上报（Windows 白屏排查）：module 脚本求值阶段抛错时 React 还没挂载，
+      // main.jsx 里的错误处理来不及注册。这段普通内联脚本先于 module 执行，
+      // 把任何未捕获错误/未处理 rejection 经 preload 的 log 通道报回主进程日志。
+      (function () {
+        function report(kind, message) {
+          try {
+            if (window.electronAPI && window.electronAPI.log) {
+              window.electronAPI.log('error', '[renderer-early] ' + kind + ': ' + message);
+            }
+          } catch (e) { /* 上报失败静默 */ }
+        }
+        window.addEventListener('error', function (ev) {
+          report('error', (ev.error && ev.error.stack) || ev.message || 'unknown');
+        });
+        window.addEventListener('unhandledrejection', function (ev) {
+          var r = ev.reason;
+          report('unhandledrejection', (r && r.stack) || String(r));
+        });
+      })();
+    </script>
     <script type="module" src="/main.jsx"></script>
   </body>
 </html>

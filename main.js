@@ -1,4 +1,4 @@
-const { app, globalShortcut, BrowserWindow, ipcMain, dialog, shell, crashReporter, systemPreferences, session, Notification } = require("electron");
+const { app, globalShortcut, BrowserWindow, ipcMain, dialog, shell, crashReporter, systemPreferences, session, Notification, Menu } = require("electron");
 const path = require("path");
 const os = require("os");
 const fs = require("fs");
@@ -269,6 +269,47 @@ function validateRecordingTrigger(t, fallback) {
   return fallback;
 }
 
+// 录音触发注册失败时的兜底组合键候选（逐个尝试，取第一个能注册成功的）。
+// 只有主触发注册失败才会用到——正常路径（mac uiohook / win uiohook / 自定义组合键成功）行为不变。
+const FALLBACK_RECORDING_ACCELERATORS = ['Control+Alt+Space', 'Control+Shift+Space', 'Alt+Shift+Space'];
+let recordingFallbackAccel = null; // 当前生效的兜底组合键（重载触发键时先注销，避免残留）
+
+// 快捷键异常的用户可见提示：系统通知（Win/mac 均支持）。失败只落日志，绝不抛出。
+function notifyHotkeyIssue(title, body) {
+  try {
+    new Notification({ title, body, silent: false }).show();
+  } catch (e) {
+    logger.warn('快捷键提示通知发送失败:', e?.message || e);
+  }
+}
+
+// 主触发（uiohook 裸修饰键 / 自定义组合键）注册失败时的降级：
+// 依次尝试兜底组合键，成功 → 系统通知告知新键位；全部失败 → 系统通知引导去设置改键。
+// 绝不静默失效。
+function registerFallbackRecordingHotkey(fire, reason) {
+  for (const accel of FALLBACK_RECORDING_ACCELERATORS) {
+    try {
+      if (hotkeyManager.registerHotkey(accel, fire)) {
+        recordingFallbackAccel = accel;
+        logger.warn(`录音触发键已降级为兜底组合键 ${accel}`, { reason });
+        notifyHotkeyIssue(
+          '弦外小猫：快捷键已自动切换',
+          `原快捷键不可用（${reason}），已临时改用 ${accel} 唤起录音。可到「设置 → 快捷键」改回喜欢的键。`
+        );
+        return true;
+      }
+    } catch (e) {
+      logger.warn('注册兜底快捷键失败', { accel, error: e?.message || e });
+    }
+  }
+  logger.error('所有兜底快捷键均注册失败，录音快捷键当前不可用', { reason });
+  notifyHotkeyIssue(
+    '弦外小猫：快捷键不可用',
+    `快捷键注册失败（${reason}），请到「设置 → 快捷键」更换其它按键。`
+  );
+  return false;
+}
+
 // 设置录音触发（默认：mac 单击左 Option / Windows 双击左 Alt；裸修饰键经 uiohook 监听）
 function setupRecordingTrigger() {
   try {
@@ -297,18 +338,28 @@ function setupRecordingTrigger() {
       }
     };
 
-    // 先清掉旧的触发（便于设置变更后重载）
+    // 先清掉旧的触发（便于设置变更后重载）；上次的兜底组合键也一并注销，避免残留双触发。
     triggerManager.stop();
+    if (recordingFallbackAccel) {
+      try { hotkeyManager.unregisterHotkey(recordingFallbackAccel); } catch (_) { /* 忽略 */ }
+      recordingFallbackAccel = null;
+    }
 
     if (trigger.type === 'accelerator' && trigger.accelerator) {
-      // 普通组合键走 Electron globalShortcut
-      hotkeyManager.registerHotkey(trigger.accelerator, fire);
-      logger.info('录音触发使用组合键', trigger.accelerator);
+      // 普通组合键走 Electron globalShortcut；被其他应用占用时降级到兜底键并通知，绝不静默失效。
+      const ok = hotkeyManager.registerHotkey(trigger.accelerator, fire);
+      if (ok) {
+        logger.info('录音触发使用组合键', trigger.accelerator);
+      } else {
+        logger.error('[trigger] 组合键注册失败（可能被其他应用占用）:', trigger.accelerator);
+        registerFallbackRecordingHotkey(fire, `组合键 ${trigger.accelerator} 被占用`);
+      }
     } else {
-      // 裸修饰键走 uiohook
+      // 裸修饰键走 uiohook；uiohook 启动失败（权限/钩子异常）时降级到组合键并通知。
       const ok = triggerManager.start(trigger, fire);
       if (!ok) {
-        logger.error('[trigger] uiohook 启动失败，全局快捷键将不可用');
+        logger.error('[trigger] uiohook 启动失败，尝试降级到兜底组合键');
+        registerFallbackRecordingHotkey(fire, '系统级按键监听启动失败');
       }
     }
   } catch (error) {
@@ -443,6 +494,29 @@ ipcMain.handle('reload-pill-skin', () => {
     return { success: true, skin };
   } catch (e) {
     return { success: false, error: String(e && e.message || e) };
+  }
+});
+
+// 开机启动：读取设置并应用到系统登录项（老用户库里无该键时按 true 处理）。
+// 仅打包版真正调用 setLoginItemSettings——dev 模式会把 Electron 开发二进制注册成登录项，绝不允许；dev 下只存值不注册。
+function applyLaunchAtLogin() {
+  const enabled = databaseManager.getSetting('launch_at_login', true) !== false;
+  if (!app.isPackaged) {
+    logger.info('开发模式：跳过登录项注册（仅保存设置）', { enabled });
+    return enabled;
+  }
+  app.setLoginItemSettings({ openAtLogin: enabled });
+  logger.info('已应用开机启动设置', { enabled });
+  return enabled;
+}
+
+// 设置里切换「开机启动」后立即应用（渲染层 setSetting 持久化后调用）
+ipcMain.handle('reload-launch-at-login', () => {
+  try {
+    const enabled = applyLaunchAtLogin();
+    return { success: true, enabled };
+  } catch (e) {
+    return { success: false, error: String((e && e.message) || e) };
   }
 });
 
@@ -684,8 +758,26 @@ async function startApp() {
     appVersion: app.getVersion()
   });
 
+  // Windows/Linux 完全去掉应用菜单栏（REQ-2）：设置/历史/控制面板窗口不再出现 File/Edit/View。
+  // Windows 上 Ctrl+C/V 等编辑快捷键由 Chromium/系统原生处理，不依赖菜单，置空无副作用；
+  // macOS 绝不能动应用菜单（Cmd+C/V 依赖它），故仅非 darwin 生效。
+  if (process.platform !== "darwin") {
+    try {
+      Menu.setApplicationMenu(null);
+    } catch (e) {
+      logger.error("移除应用菜单失败:", e);
+    }
+  }
+
   // 清理上次异常退出残留的临时音频
   cleanupOrphanTempAudio();
+
+  // 应用「开机启动」设置（默认开；打包版才真正注册登录项）
+  try {
+    applyLaunchAtLogin();
+  } catch (error) {
+    logger.error('应用开机启动设置失败:', error);
+  }
 
   // ⚡ 唤醒键即时生效：在任何重活（开发模式等待 Vite、FunASR 启动、窗口/托盘创建）之前
   // 就先注册全局热键并 uIOhook.start()。原生钩子需要约 0.5–2s 预热，越早启动越早接管，

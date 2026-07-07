@@ -1,4 +1,4 @@
-const { BrowserWindow } = require("electron");
+const { BrowserWindow, app } = require("electron");
 const path = require("path");
 const { execFile } = require("child_process");
 
@@ -85,15 +85,42 @@ class WindowManager {
     }
   }
 
-  // Windows 可见窗口（设置/历史/控制面板）的窗口与任务栏图标：仅 win32 返回彩色 .ico 路径。
-  // 解析方式与托盘一致：开发期取项目内 assets/，打包后取 process.resourcesPath/assets。
+  // 渲染进程崩溃/加载失败可见性（Windows 白屏排查关键）：给窗口挂上
+  // render-process-gone / did-fail-load / unresponsive / preload-error 日志。
+  // 以后再出现"白窗/白条"，app.log 里能直接看到是渲染进程崩了还是页面没加载成功。绝不抛出。
+  _wireRendererDiagnostics(win, name) {
+    try {
+      const wc = win.webContents;
+      wc.on("render-process-gone", (_e, details) => {
+        this._logError(`[${name}] 渲染进程消失: ${JSON.stringify(details)}`, null);
+      });
+      wc.on("did-fail-load", (_e, code, desc, url, isMainFrame) => {
+        if (isMainFrame) {
+          this._logError(`[${name}] 页面加载失败 code=${code} desc=${desc} url=${url}`, null);
+        }
+      });
+      wc.on("preload-error", (_e, preloadPath, error) => {
+        this._logError(`[${name}] preload 出错: ${preloadPath}`, error);
+      });
+      win.on("unresponsive", () => {
+        this._logError(`[${name}] 窗口无响应（Windows 上会变成带标题栏的白色幽灵窗口）`, null);
+      });
+    } catch (e) {
+      // 诊断挂载失败不影响窗口创建
+    }
+  }
+
+  // Windows 可见窗口（设置/历史/控制面板）的专属 BrowserWindow 选项，仅 win32 返回，mac 恒为空对象：
+  //  - icon：标题栏/任务栏彩色多尺寸 .ico。用 app.isPackaged 判别路径（兼容 npm start 无 NODE_ENV）：
+  //    未打包取项目内 assets/icon.ico；打包后取 process.resourcesPath/assets/icon.ico
+  //    （由 package.json build.win.extraResources 复制到 asar 之外，Windows 加载 .ico 最稳）。
+  //  - autoHideMenuBar：隐藏菜单栏兜底（主进程启动时已全局 Menu.setApplicationMenu(null)，REQ-2）。
   _winIconOption() {
     if (process.platform !== "win32") return {};
-    const isDev = process.env.NODE_ENV === "development";
-    const iconPath = isDev
-      ? path.join(__dirname, "..", "..", "assets", "icon.ico")
-      : path.join(process.resourcesPath, "assets", "icon.ico");
-    return { icon: iconPath };
+    const iconPath = app.isPackaged
+      ? path.join(process.resourcesPath, "assets", "icon.ico")
+      : path.join(__dirname, "..", "..", "assets", "icon.ico");
+    return { icon: iconPath, autoHideMenuBar: true };
   }
 
   async createMainWindow() {
@@ -113,11 +140,15 @@ class WindowManager {
     }
 
     // 紧凑"胶囊"录音条：frameless + 透明 + 置顶 + 不抢焦点（避免抢走目标输入框的焦点导致粘贴失败）
+    // backgroundColor 显式设全透明（#00000000）：BrowserWindow 默认背景是 #FFF，
+    // Windows 上透明合成偶发失效（DWM/GPU 回退，electron#2170 wontfix）时会把默认白底
+    // 涂满整窗 → 表现为"白色横条"。显式全透明底可消除该白底回退，mac 行为不变。
     this.mainWindow = new BrowserWindow({
       width: PILL_WIDTH_PX,
       height: pillHeightForSkin(initialSkin),
       frame: false,
       transparent: true,
+      backgroundColor: "#00000000",
       alwaysOnTop: true,
       resizable: false,
       skipTaskbar: true,
@@ -133,6 +164,8 @@ class WindowManager {
         preload: path.join(__dirname, "..", "..", "preload.js"),
       },
     });
+
+    this._wireRendererDiagnostics(this.mainWindow, "pill");
 
     // 浮于其他窗口之上：用 "floating"（标准悬浮工具窗层级）。
     // 之前用 "screen-saver"(层级 1000，高于菜单栏) + visibleOnFullScreen，在 macOS 上
@@ -501,6 +534,8 @@ class WindowManager {
       },
     });
 
+    this._wireRendererDiagnostics(this.controlPanelWindow, "controlPanel");
+
     const isDev = process.env.NODE_ENV === "development";
 
     if (isDev) {
@@ -538,6 +573,8 @@ class WindowManager {
         preload: path.join(__dirname, "..", "..", "preload.js"),
       },
     });
+
+    this._wireRendererDiagnostics(this.historyWindow, "history");
 
     const isDev = process.env.NODE_ENV === "development";
 
@@ -577,6 +614,8 @@ class WindowManager {
         preload: path.join(__dirname, "..", "..", "preload.js"),
       },
     });
+
+    this._wireRendererDiagnostics(this.settingsWindow, "settings");
 
     const isDev = process.env.NODE_ENV === "development";
     // 仅允许已知的安全分类标识透传，避免把任意字符串注入 URL。

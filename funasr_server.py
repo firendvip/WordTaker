@@ -93,9 +93,10 @@ class FunASRServer:
         self.damo_root = damo_root or os.environ.get("DAMO_ROOT")
 
         # 纯 ONNX 模式：只加载 SenseVoice ONNX，跳过 torch/funasr 的
-        # Paraformer/VAD/punc。用于 Windows-ARM64（torch 无 win-arm64 轮子，
-        # 在 ARM 机上加载会崩溃 0xc0000017）。由环境变量 WORDTAKER_ONNX_ONLY 开启，
-        # x64 默认不设置该变量、行为完全不变。
+        # Paraformer/VAD/punc。用于所有 Windows 打包（x64/ARM64 均为纯 ONNX
+        # 依赖集，无 torch；ARM64 上 import torch 会崩溃 0xc0000017）。
+        # 由环境变量 WORDTAKER_ONNX_ONLY 开启（funasrManager 在 win32 统一置 1），
+        # macOS 不设置该变量、行为完全不变。
         self.onnx_only = os.environ.get("WORDTAKER_ONNX_ONLY", "").strip().lower() in (
             "1", "true", "yes", "on"
         )

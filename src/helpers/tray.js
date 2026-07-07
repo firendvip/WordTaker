@@ -79,10 +79,9 @@ class TrayManager {
     }
 
     if (process.platform === "win32" && iconPath && require("fs").existsSync(iconPath)) {
-      // Windows 托盘：彩色 .ico，缩放到 16px 并关闭模板图（否则会被渲染成单色）
-      const trayIcon = nativeImage.createFromPath(iconPath).resize({ width: 16, height: 16 });
-      trayIcon.setTemplateImage(false);
-      return trayIcon;
+      // Windows 托盘：直接返回多尺寸 .ico 路径（Tray 构造与 setImage 均接受路径字符串），
+      // 系统按 DPI 自动选用 16/20/24/32 等条目，比手动 resize 成单一 16px 在高分屏上更清晰。
+      return iconPath;
     }
 
     if (iconPath && require("fs").existsSync(iconPath)) {
@@ -189,7 +188,9 @@ class TrayManager {
   }
 
   getTrayIconPath() {
-    const isDev = process.env.NODE_ENV === "development";
+    // 用 app.isPackaged 判别（兼容 npm start 无 NODE_ENV）：未打包取项目 assets/，
+    // 打包后取 process.resourcesPath/assets（win 下由 build.win.extraResources 复制 icon.ico）。
+    const isDev = !app.isPackaged;
     // macOS 菜单栏用单色模板图标（仅波形条、透明底）；Windows 用彩色 .ico；其它平台用 PNG 应用图标
     const iconFile = process.platform === "darwin"
       ? "trayTemplate.png"

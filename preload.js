@@ -133,6 +133,8 @@ contextBridge.exposeInMainWorld("electronAPI", {
   reloadPillSkin: () => ipcRenderer.invoke('reload-pill-skin'),
   // 托盘图标样式：切换中笑/彩色后刷新菜单栏托盘
   reloadTrayIcon: () => ipcRenderer.invoke('reload-tray-icon'),
+  // 开机启动：切换后立即应用系统登录项
+  reloadLaunchAtLogin: () => ipcRenderer.invoke('reload-launch-at-login'),
   // 监听胶囊皮肤变更事件（主进程广播 { skin }）
   onPillSkinChanged: (callback) => {
     ipcRenderer.on('pill-skin-changed', callback);

@@ -3,6 +3,24 @@
 All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/); versioning follows [SemVer](https://semver.org/).
 
+## [1.18.0] - 2026-07-07
+
+### Added
+- Windows：快捷键注册失败时自动降级到兜底快捷键并弹系统通知，绝不静默失效
+- Windows：高清多尺寸图标（16–256 ico + SVG 矢量源），应用于窗口标题栏与托盘；托盘右键菜单含「退出」
+
+### Changed
+- Windows x64 切换纯 SenseVoice ONNX 识别引擎（移除 torch/funasr 依赖），安装包约 611M→350M，安装显著提速
+- Windows：所有窗口去除菜单栏
+
+### Fixed
+- 修复 Windows 按快捷键唤醒时录音胶囊显示为白色横条的问题（透明失效回退白底）——窗口显式设置全透明底色；并新增渲染进程崩溃/加载失败日志与早期错误上报
+
+## [1.17.0] - 2026-07-07
+
+### Added
+- 设置→系统 新增「开机启动」开关，默认开启；登录电脑后自动打开弦外小猫
+
 ## [1.16.2] - 2026-07-07
 
 ### Changed

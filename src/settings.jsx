@@ -39,6 +39,8 @@ const SettingsPage = () => {
     translate_trigger_off: true,
     translate_fallback_select_all: false,
     keep_result_in_clipboard: false,
+    // 开机启动：默认开启
+    launch_at_login: true,
     pill_follow_focus: true,
     tray_icon_style: "smile",
     wtw_rules_json: "[]"
@@ -312,6 +314,8 @@ const SettingsPage = () => {
           ),
           translate_fallback_select_all: allSettings.translate_fallback_select_all === true,
           keep_result_in_clipboard: allSettings.keep_result_in_clipboard === true,
+          // 开机启动：缺省视为开启（老用户无该键按 true 处理）
+          launch_at_login: allSettings.launch_at_login !== false,
           // 胶囊跟随焦点：缺省视为开启（默认 true）
           pill_follow_focus: allSettings.pill_follow_focus !== false,
           // 托盘图标样式：缺省为中笑（'smile'）
@@ -452,6 +456,10 @@ const SettingsPage = () => {
       }
       if (changed.has("keep_result_in_clipboard")) {
         await window.electronAPI.setSetting("keep_result_in_clipboard", next.keep_result_in_clipboard === true);
+      }
+      if (changed.has("launch_at_login")) {
+        await window.electronAPI.setSetting("launch_at_login", next.launch_at_login === true);
+        if (window.electronAPI.reloadLaunchAtLogin) await window.electronAPI.reloadLaunchAtLogin();
       }
       if (
         changed.has("translate_trigger_key") ||
@@ -1709,6 +1717,29 @@ const SettingsPage = () => {
                     <span
                       className={`inline-block h-5 w-5 transform rounded-full bg-white transition-transform ${
                         settings.keep_result_in_clipboard ? 'translate-x-5' : 'translate-x-0.5'
+                      }`}
+                    />
+                  </button>
+                </div>
+                <div className="flex items-center justify-between gap-4 py-4 border-t border-gray-100 dark:border-neutral-800">
+                  <div className="min-w-0">
+                    <label className={`${rowLabelClass} chinese-title`}>开机启动</label>
+                    <p className="mt-0.5 text-[13px] text-gray-500 dark:text-neutral-400">
+                      登录电脑后自动打开弦外小猫
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    role="switch"
+                    aria-checked={settings.launch_at_login}
+                    onClick={() => updateAndSave('launch_at_login', !settings.launch_at_login)}
+                    className={`relative inline-flex h-6 w-11 flex-shrink-0 items-center rounded-full transition-colors ${
+                      settings.launch_at_login ? 'bg-blue-600' : 'bg-gray-300 dark:bg-gray-600'
+                    }`}
+                  >
+                    <span
+                      className={`inline-block h-5 w-5 transform rounded-full bg-white transition-transform ${
+                        settings.launch_at_login ? 'translate-x-5' : 'translate-x-0.5'
                       }`}
                     />
                   </button>

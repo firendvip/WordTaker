@@ -3,9 +3,10 @@ name: Build Windows
 # 在 windows-latest runner 上产出真正的 Windows .exe（本地 Mac 无 Wine 无法产出）。
 # 手动触发为主；推 tag 时也会跑，便于做发布构建。注意：--publish never，不向 GitHub 发布。
 #
-# 矩阵：arch ∈ {x64, arm64}。
-#   - x64：历史路径（embedded x86_64 CPython + torch/funasr + SenseVoice ONNX），行为不变。
-#   - arm64：纯 SenseVoice ONNX 路径（aarch64 CPython + onnxruntime + funasr_onnx，NO torch），
+# 矩阵：arch ∈ {x64, arm64}。两个架构均为纯 SenseVoice ONNX 路径（NO torch/funasr）：
+#   - x64：embedded x86_64 CPython + numpy/onnxruntime/soundfile（win_amd64 轮子），
+#          自纯 ONNX 切换起装机包大幅瘦身（原 torch 路径 ~611M）。
+#   - arm64：aarch64 CPython + 同一依赖清单（win_arm64 轮子），
 #            修复 Windows-on-ARM 上 torch 缺 win-arm64 轮子导致的 0xc0000017 启动崩溃。
 on:
   workflow_dispatch:
@@ -76,22 +77,39 @@ jobs:
       - name: Rebuild native modules for Electron
         run: npx --yes @electron/rebuild -f -w better-sqlite3 -w uiohook-napi --arch ${{ matrix.arch }}
 
-      # 下载并准备目标架构的嵌入式 CPython 并装好依赖。
-      #   - x64：x86_64-pc-windows-msvc-shared install_only + torch/funasr/onnx 全量依赖。
-      #   - arm64：aarch64-pc-windows-msvc install_only（astral-sh，tag 20260623）+
-      #     纯 ONNX 依赖（numpy + onnxruntime + funasr_onnx，NO torch）。
+      # 下载并准备目标架构的嵌入式 CPython 并装好依赖（两架构统一纯 ONNX 依赖集：
+      # numpy + onnxruntime + soundfile，NO torch/funasr）。
+      #   - x64：x86_64-pc-windows-msvc-shared install_only，用嵌入式 pip 原生装 win_amd64 轮子。
+      #   - arm64：aarch64-pc-windows-msvc install_only（astral-sh，tag 20260623），
+      #     宿主机 pip 跨平台拉 win_arm64 轮子（不执行 aarch64 解释器）。
       - name: Prepare embedded Python
         run: node scripts/prepare-embedded-python.js --platform=win32 --arch=${{ matrix.arch }}
 
       # 校验嵌入式 Python。
-      #   - x64：嵌入式解释器与 runner 同架构，可直接执行，跑完整 test:python
-      #     （numpy/torch/librosa/funasr 等导入校验）。
+      #   - x64：嵌入式解释器与 runner 同架构，可直接执行 → 真实 import 校验纯 ONNX 依赖
+      #     （numpy/onnxruntime/soundfile），并断言 torch/funasr 未被误装（瘦身回归红线）。
       #   - arm64：嵌入式是 aarch64 解释器，无法在 x64 runner 上执行（exec format error），
-      #     故只做"文件存在性 + site-packages 关键包目录存在"的静态校验（python.exe、
-      #     onnxruntime、funasr_onnx、numpy 三个包目录）。真正的运行期导入由用户在 ARM 机上验证。
-      - name: Verify embedded Python (x64)
+      #     故只做"文件存在性 + site-packages 关键包目录存在"的静态校验。
+      #     真正的运行期导入由用户在 ARM 机上验证。
+      - name: Verify embedded Python (x64 onnx)
         if: matrix.arch == 'x64'
-        run: pnpm run test:python
+        shell: pwsh
+        run: |
+          $py = "python\python.exe"
+          if (-not (Test-Path $py)) { Write-Error "FAIL: 嵌入式 python.exe 不存在: $py"; exit 1 }
+          $env:PYTHONHOME = (Resolve-Path "python").Path
+          $env:PYTHONPATH = (Resolve-Path "python\Lib\site-packages").Path
+          $env:PYTHONIOENCODING = "utf-8"
+          & $py -c "import numpy, onnxruntime, soundfile; print('onnx deps OK:', 'numpy', numpy.__version__, '| onnxruntime', onnxruntime.__version__)"
+          if ($LASTEXITCODE -ne 0) { Write-Error "FAIL: 纯 ONNX 依赖 import 校验失败"; exit 1 }
+          # 瘦身红线：torch/funasr 不应再被打进 x64 包。
+          foreach ($bad in @("torch", "funasr")) {
+            if (Test-Path (Join-Path "python\Lib\site-packages" $bad)) {
+              Write-Error "FAIL: x64 纯 ONNX 包内不应存在 $bad（会导致装机包回胖）"
+              exit 1
+            }
+          }
+          Write-Host "x64 纯 ONNX 嵌入式 Python 校验通过（无 torch/funasr）。"
 
       - name: Verify embedded Python (arm64 static)
         if: matrix.arch == 'arm64'
@@ -124,17 +142,13 @@ jobs:
           Write-Host "arm64 嵌入式 Python 静态校验通过（运行期导入需在 ARM 机验证）。"
 
       # 下载并准备 SenseVoice ONNX 模型到 models/sensevoice/（仓库 .gitignore 了 models/）。
-      # 用刚装好 funasr_onnx/onnxruntime 的嵌入式 Python 拉取/导出 iic/SenseVoiceSmall 的量化 onnx。
-      # arm64 嵌入式 Python 是 aarch64 解释器，无法在 x64 runner 上原地执行——故 arm64 作业改用
-      # runner 自带的 host Python（已装 onnxruntime/funasr_onnx/modelscope 见下）跑下载脚本，
-      # 产物 model_quant.onnx/tokens.json 与架构无关（纯模型文件），可安全打进 arm64 包。
-      # host runner 是 x64：在 host(x64) Python 上装与 x64 嵌入式构建「完全相同」的导出依赖集，
-      # 用于把 iic/SenseVoiceSmall 导出/量化为 model_quant.onnx（产物与架构无关，可打进 arm64 包）。
-      # 关键：torch 必须钉 2.0.1（与 x64 嵌入式一致）——新版 torch 的 onnx 导出器需要 onnxscript 等
-      # 额外依赖，会引入无谓的依赖链；2.0.1 的导出路径自洽、已在 x64 作业验证可用。
-      # 用 CPU 轮子(--index-url .../whl/cpu)。这些只装在 host，不进 arm64 包。
-      - name: Install host tooling for model download (arm64)
-        if: matrix.arch == 'arm64'
+      # 两个架构的嵌入式 Python 都是纯 ONNX 最小依赖集（无 funasr_onnx/modelscope/torch），
+      # 无法用嵌入式解释器拉取/导出模型——统一改用 runner 的 host(x64) Python 跑下载脚本。
+      # 产物 model_quant.onnx/tokens.json 与架构无关（纯模型文件），可安全打进 x64/arm64 包。
+      # 关键：torch 必须钉 2.0.1——新版 torch 的 onnx 导出器需要 onnxscript 等额外依赖，
+      # 会引入无谓的依赖链；2.0.1 的导出路径自洽、已在历史 x64 作业验证可用。
+      # 用 CPU 轮子(--index-url .../whl/cpu)。这些只装在 host，绝不进安装包。
+      - name: Install host tooling for model download
         run: |
           python -m pip install --upgrade pip
           python -m pip install "numpy<2" onnxruntime modelscope jieba kaldi-native-fbank
@@ -144,16 +158,9 @@ jobs:
       - name: Download SenseVoice ONNX model
         shell: pwsh
         run: |
-          # x64 用刚构建好的嵌入式 python.exe；arm64 用 runner 的 host python（嵌入式是 aarch64 无法执行）。
-          $arch = "${{ matrix.arch }}"
-          if ($arch -eq "arm64") {
-            $py = "python"
-          } else {
-            $py = "python\python.exe"
-            if (-not (Test-Path $py)) { Write-Error "embedded python.exe not found at $py"; exit 1 }
-            $env:PYTHONHOME = (Resolve-Path "python").Path
-            $env:PYTHONPATH = (Resolve-Path "python\Lib\site-packages").Path
-          }
+          # 两个架构统一用 runner 的 host python（嵌入式均为纯 ONNX 最小依赖集，
+          # 无 funasr_onnx/modelscope，且 arm64 嵌入式是 aarch64 无法在 x64 runner 执行）。
+          $py = "python"
           $env:PYTHONIOENCODING = "utf-8"
           # PowerShell 无 bash heredoc，写临时 .py 再执行。
           $script = @'

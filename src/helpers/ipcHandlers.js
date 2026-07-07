@@ -27,6 +27,8 @@ const ALLOWED_SETTING_KEYS = new Set([
   "pill_follow_focus",
   // 托盘图标样式（'smile' 中笑模板，默认 | 'color' 彩色猫头）
   "tray_icon_style",
+  // 开机启动（布尔；主进程侧强制 boolean）
+  "launch_at_login",
   // 词转词规则 JSON 字符串数组 [{from,to}]，AI 处理时自动替换
   "wtw_rules_json",
   // 首启引导标志：安装后首启自动弹「权限」页一次后置 true（主进程写入）
@@ -491,6 +493,8 @@ class IPCHandlers {
         this.logger.warn("set-setting 拒绝未知设置键:", key);
         return { success: false, error: "invalid setting key" };
       }
+      // 开机启动只允许布尔值（IPC 入参主进程侧校验）
+      if (key === "launch_at_login") value = value === true;
       return this.databaseManager.setSetting(key, value);
     });
 

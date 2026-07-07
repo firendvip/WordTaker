@@ -189,6 +189,8 @@ class DatabaseManager {
       pill_follow_focus: true,
       // 托盘图标样式：'smile'（中笑镂空单色模板，默认）| 'color'（彩色猫头）
       tray_icon_style: 'smile',
+      // 开机启动：登录电脑后自动打开（默认开；仅打包版真正注册登录项）
+      launch_at_login: true,
       // 词转词规则：JSON 字符串数组 [{from,to}, ...]，AI 处理时识别到 from（含读音/拼写相近）自动替换为 to
       wtw_rules_json: '[]',
       // 首启引导：安装后首次启动时自动打开「设置-权限」页一次；首启后置 true，之后不再自动弹

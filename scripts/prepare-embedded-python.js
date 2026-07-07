@@ -36,8 +36,15 @@ class EmbeddedPythonBuilder {
     if (archArg) this.targetArch = archArg.split('=')[1];
     this.isArm64 = this.targetArch === 'arm64';
 
-    // Windows-ARM64 走纯 ONNX 依赖集（无 torch/funasr，因 torch 无 win-arm64 轮子）。
-    this.onnxOnly = this.isWindows && this.isArm64;
+    // Windows（x64 与 ARM64）统一走纯 ONNX 依赖集（无 torch/funasr）：
+    //   - ARM64：torch 无 win-arm64 轮子，历史起点；
+    //   - x64：自 1.17 后同步切换（纯 numpy SenseVoice 引擎即可完成识别），装机包大幅瘦身。
+    // darwin/linux 不受影响（mac 仍是完整 torch/funasr 路径）。
+    this.onnxOnly = this.isWindows;
+
+    // 交叉准备场景：在 x64 跑机上准备 aarch64 嵌入式 Python，无法执行目标解释器，
+    // pip 安装与校验都必须走宿主机跨平台方式。win-x64 目标可在 x64 跑机直接执行，不算交叉。
+    this.crossPrep = this.isWindows && this.isArm64;
   }
 
   // 嵌入式 Python 可执行文件路径（跨平台）。
@@ -331,42 +338,29 @@ class EmbeddedPythonBuilder {
       fs.mkdirSync(sitePackagesPath, { recursive: true });
     }
 
-    // 纯 ONNX 模式（Windows-ARM64 交叉准备）：嵌入式 python.exe 是 aarch64 二进制，
-    // 在 x64 跑机上无法执行。改用宿主机 pip 以跨平台方式拉取 win_arm64 轮子并解包，
-    // 全程不执行目标解释器。
+    // 纯 ONNX 模式（所有 Windows）：只装纯 numpy SenseVoice 引擎所需的最小依赖集。
     if (this.onnxOnly) {
-      // 纯 numpy SenseVoice 引擎（sensevoice_onnx_engine.py）只需这三个依赖；
-      // 不装 funasr_onnx（其依赖 kaldi-native-fbank/torch，无 win-arm64 轮子）。
-      //   - numpy>=2.3.0：win_arm64 轮子自 2.3.0 起提供（旧的 <2 在 ARM 上无轮子）
-      //   - onnxruntime>=1.24.2：win-arm64 轮子自 1.24.2 起提供
-      //   - soundfile：读音频（替代 librosa，自带 libsndfile，有 win_arm64 轮子）
-      const dependencies = [
-        { spec: 'numpy>=2.3.0' },
-        { spec: 'onnxruntime>=1.24.2' },
-        { spec: 'soundfile>=0.12.1' },
-      ];
-      const hostPython = this.resolveHostPython();
-      await this.installDependenciesOnnxCross(hostPython, sitePackagesPath, dependencies);
-      // 文件系统校验（不执行 aarch64 解释器）
+      const dependencies = this.onnxDependencies();
+      if (this.crossPrep) {
+        // Windows-ARM64 交叉准备：嵌入式 python.exe 是 aarch64 二进制，在 x64 跑机上
+        // 无法执行。改用宿主机 pip 以跨平台方式拉取 win_arm64 轮子并解包，
+        // 全程不执行目标解释器。
+        const hostPython = this.resolveHostPython();
+        await this.installDependenciesOnnxCross(hostPython, sitePackagesPath, dependencies);
+        // 文件系统校验（不执行 aarch64 解释器）
+        await this.verifyDependencies(pythonPath);
+        return;
+      }
+      // Windows-x64：嵌入式解释器与跑机同架构，直接用其自带 pip 原生安装（win_amd64 轮子）。
+      await this.installDependenciesNative(pythonPath, sitePackagesPath, dependencies);
       await this.verifyDependencies(pythonPath);
       return;
     }
 
-    // 确保pip是最新的
-    console.log('⬆️ 升级pip...');
-    try {
-      execSync(`"${pythonPath}" -m pip install --upgrade pip`, {
-        stdio: 'inherit',
-        env: this.pythonEnv()
-      });
-    } catch (error) {
-      console.warn('⚠️ pip升级失败，继续安装依赖...');
-    }
-
     // 定义依赖列表 - 确保numpy等核心依赖被正确安装。
     // 每项: { spec: 包约束, extraArgs?: 额外 pip 参数 }。
-    // 说明：纯 ONNX 模式（this.onnxOnly）在上面已 early-return，不会走到这里，
-    // 故此处只是 x64 的全量依赖（torch + funasr + funasr_onnx + librosa）。
+    // 说明：纯 ONNX 模式（this.onnxOnly，即所有 Windows）在上面已 early-return，
+    // 故此处只是 macOS/Linux 的全量依赖（torch + funasr + funasr_onnx + librosa）。
     // torch 系用 CPU-only 轮子（--index-url .../whl/cpu），体积更小，ONNX 推理路径不需要 CUDA。
     const CPU_TORCH_INDEX = '--index-url https://download.pytorch.org/whl/cpu';
     const dependencies = [
@@ -379,6 +373,46 @@ class EmbeddedPythonBuilder {
       { spec: 'onnxruntime>=1.16.0' },   // ONNX 运行时（CPU）
       { spec: 'funasr_onnx>=0.4.1' },    // SenseVoice ONNX 封装
     ];
+
+    await this.installDependenciesNative(pythonPath, sitePackagesPath, dependencies);
+
+    // macOS Apple 芯片：额外安装本地大模型润色所需的 llama-cpp-python（Metal 预编译 arm64 轮子）。
+    // 走 abetlen 的 metal wheel 索引，只取二进制轮子、绝不本机编译。
+    if (this.targetPlatform === 'darwin' && this.isArm64) {
+      await this.installLlamaCppMetal(pythonPath);
+    }
+
+    // 验证关键依赖
+    await this.verifyDependencies(pythonPath);
+  }
+
+  // 纯 ONNX 依赖集（numpy SenseVoice 引擎 sensevoice_onnx_engine.py 的最小依赖）。
+  // x64 / arm64 共用同一清单，只是各取各的轮子（win_amd64 / win_arm64）：
+  //   - numpy>=2.3.0：win_arm64 轮子自 2.3.0 起提供（x64 同版可用，保持两架构一致）
+  //   - onnxruntime>=1.24.2：win-arm64 轮子自 1.24.2 起提供（x64 同版可用）
+  //   - soundfile：读音频（替代 librosa，自带 libsndfile，两架构均有轮子）
+  // 不装 funasr_onnx（其依赖 kaldi-native-fbank/torch，arm64 无轮子；引擎已不需要）。
+  onnxDependencies() {
+    return [
+      { spec: 'numpy>=2.3.0' },
+      { spec: 'onnxruntime>=1.24.2' },
+      { spec: 'soundfile>=0.12.1' },
+    ];
+  }
+
+  // 用嵌入式解释器自带 pip 原生安装依赖（目标解释器可在本机执行的场景：
+  // macOS/Linux 本机准备、Windows-x64 在 x64 跑机上准备）。
+  async installDependenciesNative(pythonPath, sitePackagesPath, dependencies) {
+    // 确保pip是最新的
+    console.log('⬆️ 升级pip...');
+    try {
+      execSync(`"${pythonPath}" -m pip install --upgrade pip`, {
+        stdio: 'inherit',
+        env: this.pythonEnv()
+      });
+    } catch (error) {
+      console.warn('⚠️ pip升级失败，继续安装依赖...');
+    }
 
     // 逐个安装依赖（包含所有子依赖）
     for (const dep of dependencies) {
@@ -419,15 +453,6 @@ class EmbeddedPythonBuilder {
         }
       }
     }
-
-    // macOS Apple 芯片：额外安装本地大模型润色所需的 llama-cpp-python（Metal 预编译 arm64 轮子）。
-    // 走 abetlen 的 metal wheel 索引，只取二进制轮子、绝不本机编译。
-    if (this.targetPlatform === 'darwin' && this.isArm64) {
-      await this.installLlamaCppMetal(pythonPath);
-    }
-
-    // 验证关键依赖
-    await this.verifyDependencies(pythonPath);
   }
 
   // 安装 llama-cpp-python（macOS arm64 Metal 预编译轮子）。
@@ -495,8 +520,9 @@ class EmbeddedPythonBuilder {
 
     const criticalDeps = this.criticalDeps();
 
-    // 纯 ONNX 模式（Windows-ARM64）：用文件系统检查代替执行 aarch64 解释器 import。
-    if (this.onnxOnly) {
+    // 交叉准备（Windows-ARM64）：用文件系统检查代替执行 aarch64 解释器 import。
+    // （win-x64 纯 ONNX 也走下面的真实 import 校验，因其解释器可在本机执行。）
+    if (this.crossPrep) {
       const sitePackagesPath = this.sitePackagesPath();
       for (const dep of criticalDeps) {
         if (this.depExistsOnDisk(dep, sitePackagesPath)) {
@@ -537,8 +563,8 @@ class EmbeddedPythonBuilder {
         return false;
       }
 
-      // 纯 ONNX 模式（Windows-ARM64）：用文件系统检查代替执行 aarch64 解释器 import。
-      if (this.onnxOnly) {
+      // 交叉准备（Windows-ARM64）：用文件系统检查代替执行 aarch64 解释器 import。
+      if (this.crossPrep) {
         const sitePackagesPath = this.sitePackagesPath();
         for (const dep of this.criticalDeps()) {
           if (this.depExistsOnDisk(dep, sitePackagesPath)) {
@@ -639,9 +665,9 @@ class EmbeddedPythonBuilder {
       return null;
     }
 
-    // 纯 ONNX 模式（Windows-ARM64）：嵌入式 python.exe 是 aarch64 二进制，
+    // 交叉准备（Windows-ARM64）：嵌入式 python.exe 是 aarch64 二进制，
     // 不能在 x64 跑机上执行 --version；直接给出标注信息，不执行解释器。
-    if (this.onnxOnly) {
+    if (this.crossPrep) {
       const sizeInfo = this.getDirectorySize(this.pythonDir);
       return {
         version: `Python ${this.armPythonVersion} (aarch64, cross, not executed)`,
