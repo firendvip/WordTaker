@@ -36,10 +36,101 @@ async function fetchWithRetry(url, options = {}) {
   throw lastErr || new Error("fetch failed");
 }
 
+// 阶梯提醒阈值（云端剩余字数跨过时各提醒一次；充值回升后天然重新武装）。
+const QUOTA_ALERT_THRESHOLDS = [1000, 500, 100];
+// 「上一次记录的剩余」持久化键；默认给一个很大的数，保证首次不误报。
+const QUOTA_ALERT_PREV_KEY = 'quota_alert_prev_remaining';
+const QUOTA_ALERT_PREV_DEFAULT = 1e12;
+// 额度快照最大有效期（超过则重新拉取；充值后 15s 内会自动过期→自动切回云端）。
+const QUOTA_SNAP_MAX_AGE_MS = 15000;
+
 class AiService {
-  constructor({ databaseManager, logger }) {
+  constructor({ databaseManager, logger, llmManager = null }) {
     this.databaseManager = databaseManager;
     this.logger = logger;
+    // 本地 LLM 管理器（可选注入）。polish_engine 为 local-* 时经它推理。
+    this.llmManager = llmManager;
+    // 内存额度快照：{ cloudRemaining, subActive, fetchedAt }。用于逐句降级判断。
+    this._quotaSnap = null;
+    // 提醒回调（main.js 注入，通常指向 trayManager.startAttention）。未注入则安全降级。
+    this._notifier = null;
+  }
+
+  // 注入提醒回调（payload:{title, body}）。main.js 里传 (p)=>trayManager.startAttention(p)。
+  setNotifier(fn) {
+    this._notifier = typeof fn === 'function' ? fn : null;
+  }
+
+  // 统一触发提醒：优先走注入的 notifier；未注入时兜底直接弹系统通知，绝不抛出。
+  _notify(title, body) {
+    try {
+      if (this._notifier) { this._notifier({ title, body }); return; }
+      const { Notification } = require('electron');
+      if (Notification) new Notification({ title: title || '弦外小猫', body: body || '', silent: false }).show();
+    } catch (e) {
+      this.logger.warn && this.logger.warn('提醒触发失败:', e?.message || e);
+    }
+  }
+
+  // 确保额度快照新鲜：无快照或超过 maxAgeMs 就 GET /quota 刷新。任何异常保留旧快照、不抛出。
+  async ensureQuotaFresh(maxAgeMs = QUOTA_SNAP_MAX_AGE_MS) {
+    const now = Date.now();
+    if (this._quotaSnap && (now - this._quotaSnap.fetchedAt) < maxAgeMs) return this._quotaSnap;
+    try {
+      const backendClient = require('./backendClient');
+      const q = await backendClient.getQuota();
+      const remaining = Number.isFinite(Number(q.cloudRemaining)) ? Number(q.cloudRemaining) : null;
+      const subActive = !!(q.subscription && q.subscription.active);
+      this._quotaSnap = { cloudRemaining: remaining, subActive, fetchedAt: now };
+      // 充值回升的「重新武装」：以权威 getQuota 为准，若余额高于当前提醒基准则抬回，
+      // 使后续再次下降到各档时能重新提醒（并发安全：getQuota 才是唯一可信的回升来源）。
+      if (!subActive && remaining != null) {
+        const prevRaw = this.databaseManager.getSetting(QUOTA_ALERT_PREV_KEY, QUOTA_ALERT_PREV_DEFAULT);
+        const prev = Number.isFinite(Number(prevRaw)) ? Number(prevRaw) : QUOTA_ALERT_PREV_DEFAULT;
+        if (remaining > prev) this.databaseManager.setSetting(QUOTA_ALERT_PREV_KEY, remaining);
+      }
+    } catch (e) {
+      this.logger.warn && this.logger.warn('刷新额度快照失败，沿用旧快照:', e?.message || e);
+    }
+    return this._quotaSnap;
+  }
+
+  // 云端润色成功后调用：更新快照，并做「阶梯提醒」（仅未订阅时）。remaining 为最新剩余。
+  _onCloudSuccess(remaining, subActive) {
+    const cur = Number.isFinite(Number(remaining)) ? Number(remaining) : null;
+    this._quotaSnap = { cloudRemaining: cur, subActive: !!subActive, fetchedAt: Date.now() };
+    if (subActive || cur == null) return; // 订阅用户不提醒
+    try {
+      const prevRaw = this.databaseManager.getSetting(QUOTA_ALERT_PREV_KEY, QUOTA_ALERT_PREV_DEFAULT);
+      const prev = Number.isFinite(Number(prevRaw)) ? Number(prevRaw) : QUOTA_ALERT_PREV_DEFAULT;
+      // 并发保护：云端响应可能乱序到达。这里只在余额「下降」（消耗）时处理跨档并下移基准；
+      // 余额回升（充值）一律不在此处理，交由 ensureQuotaFresh 用权威 getQuota 重新武装，
+      // 避免乱序到达的旧响应（较高 cur）把 prev 覆盖高，造成漏报或重复提醒。
+      if (cur >= prev) return;
+      // 找本次跨过的最紧迫（最小）档：prev > T 且 cur <= T
+      let crossed = null;
+      for (const T of QUOTA_ALERT_THRESHOLDS) {
+        if (prev > T && cur <= T) crossed = crossed == null ? T : Math.min(crossed, T);
+      }
+      if (crossed != null) {
+        this._notify('弦外小猫', `云端剩余字数不足 ${crossed} 字（当前 ${cur} 字），可到 设置→账户 充值。`);
+      }
+      this.databaseManager.setSetting(QUOTA_ALERT_PREV_KEY, cur);
+    } catch (e) {
+      this.logger.warn && this.logger.warn('阶梯提醒处理失败:', e?.message || e);
+    }
+  }
+
+  // 当前润色引擎：cloud（云端AI，默认） / local-4b（本地）。
+  // 默认 cloud。任何异常一律回退默认引擎。
+  async getPolishEngine() {
+    try {
+      const engine = await this.databaseManager.getSetting('polish_engine', 'cloud');
+      const valid = ['cloud', 'local-4b'];
+      return valid.includes(engine) ? engine : 'cloud';
+    } catch (e) {
+      return 'cloud';
+    }
   }
 
   // 当前润色「角色」解析为 LLM mode：gaoeq→'gaoeq'，normal→'normal'，其余（含 vibecoding）→'copywriting'。
@@ -166,6 +257,53 @@ class AiService {
     }
   }
 
+  // 流式润色路由（供 process-text-stream 使用），四引擎互不兜底：
+  //   cloud   → 中转流式（需 relay 已配置，调用方已校验）
+  //   local-* → 本地 LLM 流式（onDelta 逐段回调）
+  // 返回 { success, text?, error? }。所选引擎失败直接返回错误，绝不换引擎。
+  // 云端逐句降级决策（仅 engine==='cloud' 时调用）：
+  //  返回 { action: 'cloud' | 'local' | 'passthrough' }
+  //   - cloud      → 正常走云端（已订阅、或余额足够、或快照缺失时保守走云端）
+  //   - local      → 余额不足且本地模型就绪 → 本句临时改用本地
+  //   - passthrough → 余额不足且本地未就绪 → 原文直接上屏（不润色，保证不丢字）
+  //  只在此判断，不改数据库里的 polish_engine 用户设置。
+  async _resolveCloudDegrade(text) {
+    const snap = await this.ensureQuotaFresh();
+    if (!snap) return { action: 'cloud' }; // 拿不到额度信息，保守走云端（云端自身会处理额度错误）
+    if (snap.subActive) return { action: 'cloud' }; // 订阅=不限量，不降级
+    const remaining = snap.cloudRemaining;
+    const needed = (typeof text === 'string' ? text.length : 0);
+    if (remaining == null || remaining >= needed) return { action: 'cloud' };
+    // 余额不足：本地就绪→降级本地；否则→原文直贴
+    const localReady = !!(this.llmManager && typeof this.llmManager.isModelReady === 'function'
+      && this.llmManager.isModelReady('local-4b'));
+    return { action: localReady ? 'local' : 'passthrough' };
+  }
+
+  // 原文直贴（passthrough）返回结构：与润色成功一致，text=原文，engine 标注 'passthrough'。
+  _passthroughResult(text) {
+    return { success: true, text: (typeof text === 'string' ? text : ''), engine: 'passthrough' };
+  }
+
+  async processTextStreamRouted(text, mode, relayUrl, onDelta) {
+    const engine = await this.getPolishEngine();
+    if (engine === 'cloud') {
+      // 逐句降级判断（余额不足→本地/直贴），只影响 cloud 分支
+      const d = await this._resolveCloudDegrade(text);
+      if (d.action === 'local') {
+        this._notify('弦外小猫', '云端字数不足，本句已自动改用本地模型。充值后会自动切回云端。');
+        // 本地流式：processTextViaLocal 支持 onDelta 逐段回调
+        return await this.processTextViaLocal('local-4b', text, mode, onDelta);
+      }
+      if (d.action === 'passthrough') {
+        this._notify('弦外小猫', '云端字数已用尽，本地模型未安装：本句已直接上屏（未润色）。请到 设置→转写与润色→模型 下载本地模型，或去 设置→账户 充值。');
+        return this._passthroughResult(text);
+      }
+      return await this.processTextViaRelayStream(text, mode, relayUrl, onDelta);
+    }
+    return await this.processTextViaLocal(engine, text, mode, onDelta);
+  }
+
   async processTextViaRelay(text, mode, relayUrl) {
     try {
       const token = await this.databaseManager.getSetting('llm_relay_token', '');
@@ -210,16 +348,129 @@ class AiService {
     }
   }
 
-  // 严格只走云端中继：客户端既不持有 DeepSeek key，也不构建任何系统提示词。
-  // 中继未启用/未配置时直接返回失败，由上层「回退粘贴识别原文」逻辑兜底。
+  // 按 polish_engine 路由润色，四引擎「互不兜底」：
+  //   cloud     → 现有云端中继(relay)
+  //   local-*   → 本地 LLM（llmManager）
+  // 所选引擎失败一律返回 { success:false, error }，绝不回退到其它引擎或云端。
   async processTextWithAI(text, mode = 'optimize') {
+    const engine = await this.getPolishEngine();
+    if (engine === 'cloud') {
+      // 逐句降级判断（余额不足→本地/直贴），只影响 cloud 分支
+      const d = await this._resolveCloudDegrade(text);
+      if (d.action === 'local') {
+        this._notify('弦外小猫', '云端字数不足，本句已自动改用本地模型。充值后会自动切回云端。');
+        return await this.processTextViaLocal('local-4b', text, mode);
+      }
+      if (d.action === 'passthrough') {
+        this._notify('弦外小猫', '云端字数已用尽，本地模型未安装：本句已直接上屏（未润色）。请到 设置→转写与润色→模型 下载本地模型，或去 设置→账户 充值。');
+        return this._passthroughResult(text);
+      }
+      return await this.processTextViaCloud(text, mode);
+    }
+    // 本地引擎
+    return await this.processTextViaLocal(engine, text, mode);
+  }
+
+  // 云端路径：一律走收费后端(ai-input-method-server)计费润色。
+  //  - 成功 → 返回润色文本，并把 cloudRemaining/subscription/dailyUsed 带回（供账户面板/提示）。
+  //  - 额度不足/超日上限（INSUFFICIENT_QUOTA / DAILY_CAP_EXCEEDED）→ 结构化失败(reason)，
+  //    上层贴原文 + 通知，不硬跑、不自动转本地。
+  //  - 后端不可达（network/timeout）→ 按 BACKEND_CLOUD_FALLBACK_RELAY 降级回退旧 relay。
+  async processTextViaCloud(text, mode = 'optimize') {
+    let backendClient, backendConfig;
+    try {
+      backendClient = require('./backendClient');
+      backendConfig = require('./backendConfig');
+    } catch (e) {
+      this.logger.error('后端 client 加载失败，回退 relay:', e?.message || e);
+      return await this.processViaRelayFallback(text, mode, '后端模块加载失败');
+    }
+
+    try {
+      // 词转词规则：非空时随请求带上 word_map，让默认云端计费通路也生效（与 relay 一致）
+      const wordMap = await this.getWordMapRules();
+      const out = await backendClient.polish(text, mode, wordMap);
+      if (out && typeof out.text === 'string' && out.text.trim()) {
+        this.logger.info('AI文案处理(后端·云端)完成:', {
+          outputLength: out.text.length,
+          cloudRemaining: out.cloudRemaining,
+        });
+        // 更新额度快照 + 阶梯提醒（未订阅时跨过 1000/500/100 各提醒一次）
+        this._onCloudSuccess(out.cloudRemaining, !!(out.subscription && out.subscription.active));
+        return {
+          success: true,
+          text: out.text.trim(),
+          cloudRemaining: out.cloudRemaining,
+          subscription: out.subscription,
+          dailyUsed: out.dailyUsed,
+          dailyCap: out.dailyCap,
+        };
+      }
+      return { success: false, error: '后端返回数据异常' };
+    } catch (err) {
+      const kind = err && err.kind;
+      const code = err && err.code;
+
+      // 额度不足 / 超日上限：结构化失败，绝不回退 relay、绝不转本地。
+      if (code === 'INSUFFICIENT_QUOTA' || code === 'DAILY_CAP_EXCEEDED') {
+        const reason = code === 'DAILY_CAP_EXCEEDED' ? 'daily_cap_exceeded' : 'insufficient_quota';
+        this.logger.warn('云端额度受限:', { code, message: err.message });
+        return {
+          success: false,
+          error: err.message || '云端额度不足',
+          reason,
+        };
+      }
+
+      // 后端不可达（连接失败/超时）：按开关降级回退旧 relay，保证云端仍可用。
+      if (kind === 'network' || kind === 'timeout') {
+        const fallbackOn = backendConfig.BACKEND_CLOUD_FALLBACK_RELAY !== false;
+        this.logger.warn(`后端不可达(${kind})，${fallbackOn ? '降级回退 relay' : '不回退'}:`, err.message);
+        if (fallbackOn) {
+          return await this.processViaRelayFallback(text, mode, `后端不可达(${kind})`);
+        }
+        return { success: false, error: '云端服务暂不可用' };
+      }
+
+      // 其它后端错误（如 4xx/5xx 非额度类）：直接失败，不回退。
+      this.logger.error('后端润色失败:', { kind, code, message: err?.message });
+      return { success: false, error: err?.message || '云端润色失败' };
+    }
+  }
+
+  // 降级回退：走旧 relay（原云端中继逻辑）。relay 未配置则返回失败。
+  async processViaRelayFallback(text, mode, why) {
     const relayEnabled = await this.databaseManager.getSetting('llm_relay_enabled', false);
     const relayUrl = await this.databaseManager.getSetting('llm_relay_url', '');
     if (!relayEnabled || !relayUrl) {
-      this.logger.warn('AI文案处理不可用：未配置云端中继(relay)');
-      return { success: false, error: '未配置云端中继，无法进行 AI 文案处理' };
+      this.logger.warn(`${why}，且未配置 relay，云端不可用`);
+      return { success: false, error: '云端服务暂不可用' };
     }
     return await this.processTextViaRelay(text, mode, relayUrl);
+  }
+
+  // 本地 LLM 路径：所选本地引擎推理；管理器缺失/模型未就绪/推理失败一律返回错误，
+  // 绝不回退云端或其它本地模型（无兜底）。onDelta 可选（非流式主路径不传）。
+  async processTextViaLocal(engine, text, mode = 'optimize', onDelta = null) {
+    if (!this.llmManager) {
+      this.logger.error('本地 LLM 管理器未初始化');
+      return { success: false, error: '本地 LLM 不可用' };
+    }
+    try {
+      this.logger.info('AI文案处理(本地)请求:', { engine, mode, inputLength: text.length });
+      const result = await this.llmManager.polish(engine, text, mode, onDelta);
+      if (result && result.success && typeof result.text === 'string' && result.text.trim()) {
+        this.logger.info('AI文案处理(本地)完成:', { engine, outputLength: result.text.length });
+        return { success: true, text: result.text.trim() };
+      }
+      const failure = { success: false, error: (result && result.error) || '本地润色失败' };
+      // 透传结构化失败原因（如 input_too_long），供上层给出明确提示。
+      if (result && typeof result.reason === 'string') failure.reason = result.reason;
+      return failure;
+    } catch (error) {
+      this.logger.error('本地润色异常:', error?.message || error);
+      return { success: false, error: error?.message || '本地润色异常' };
+    }
   }
 
   // 检查AI状态

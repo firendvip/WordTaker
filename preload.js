@@ -31,6 +31,17 @@ contextBridge.exposeInMainWorld("electronAPI", {
   processText: (text, mode) => ipcRenderer.invoke("process-text", text, mode),
   checkAIStatus: (testConfig) => ipcRenderer.invoke("check-ai-status", testConfig),
 
+  // 润色引擎（cloud / local-4b，互不兜底）
+  getPolishEngine: () => ipcRenderer.invoke("get-polish-engine"),
+  setPolishEngine: (engine) => ipcRenderer.invoke("set-polish-engine", engine),
+  getLocalModelsStatus: () => ipcRenderer.invoke("get-local-models-status"),
+  downloadLocalModel: (engine) => ipcRenderer.invoke("download-local-model", engine),
+  onLocalModelDownloadProgress: (callback) => {
+    const listener = (_e, data) => callback(data);
+    ipcRenderer.on("local-model-download-progress", listener);
+    return () => ipcRenderer.removeListener("local-model-download-progress", listener);
+  },
+
   // 剪贴板操作
   pasteText: (text) => ipcRenderer.invoke("paste-text", text),
   copyText: (text) => ipcRenderer.invoke("copy-text", text),
@@ -143,6 +154,34 @@ contextBridge.exposeInMainWorld("electronAPI", {
   // 应用信息
   getAppVersion: () => ipcRenderer.invoke("get-app-version"),
   checkForUpdates: () => ipcRenderer.invoke("check-for-updates"),
+
+  // 应用内更新（免签名）：检查新版 / 下载并打开 dmg / 下载进度监听
+  checkForUpdate: () => ipcRenderer.invoke("check-for-update"),
+  downloadUpdate: (url) => ipcRenderer.invoke("download-update", url),
+  onUpdateDownloadProgress: (callback) => {
+    const listener = (_e, data) => callback(data);
+    ipcRenderer.on("update-download-progress", listener);
+    return () => ipcRenderer.removeListener("update-download-progress", listener);
+  },
+
+  // 收费后端：云端额度（剩余字数/订阅/当日用量）
+  getCloudQuota: () => ipcRenderer.invoke("get-cloud-quota"),
+  // CP3 会员/计费：套餐 / 下单 / dev 直付 / 兑换码（改额度操作需登录，头由主进程注入）
+  listPlans: () => ipcRenderer.invoke("list-plans"),
+  createOrder: (planCode, channel) => ipcRenderer.invoke("create-order", planCode, channel),
+  mockPay: (orderId) => ipcRenderer.invoke("mock-pay", orderId),
+  // 用系统默认浏览器打开链接（主进程校验 http/https + 域名白名单：支付宝收银台/look3.cn）
+  openExternal: (url) => ipcRenderer.invoke("open-external", url),
+  redeemCode: (code) => ipcRenderer.invoke("redeem-code", code),
+  // CP2 登录：手机验证码 / 邮箱验证码 / 微信(mock) + 账号态
+  authSmsSend: (phone) => ipcRenderer.invoke("auth-sms-send", phone),
+  authSmsLogin: (phone, code, inviteCode) => ipcRenderer.invoke("auth-sms-login", phone, code, inviteCode),
+  authEmailSend: (email) => ipcRenderer.invoke("auth-email-send", email),
+  authEmailLogin: (email, code, inviteCode) => ipcRenderer.invoke("auth-email-login", email, code, inviteCode),
+  authWechatLogin: (inviteCode) => ipcRenderer.invoke("auth-wechat-login", inviteCode),
+  authMe: () => ipcRenderer.invoke("auth-me"),
+  getAuthState: () => ipcRenderer.invoke("get-auth-state"),
+  authLogout: () => ipcRenderer.invoke("auth-logout"),
 
   // 调试和日志
   log: (level, message, data) => ipcRenderer.invoke("log", level, message, data),

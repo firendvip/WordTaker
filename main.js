@@ -1,4 +1,4 @@
-const { app, globalShortcut, BrowserWindow, ipcMain, dialog, shell, crashReporter } = require("electron");
+const { app, globalShortcut, BrowserWindow, ipcMain, dialog, shell, crashReporter, systemPreferences, session, Notification } = require("electron");
 const path = require("path");
 const os = require("os");
 const fs = require("fs");
@@ -119,7 +119,7 @@ process.on("unhandledRejection", (reason, promise) => {
 // 若某个 .node 架构/ABI 不符或损坏会在此抛错——包在 try/catch 里先把“具体模块+错误”落盘，
 // 再原样 rethrow，避免静默原生崩溃只留一个无信息的退出码。
 let EnvironmentManager, WindowManager, DatabaseManager, ClipboardManager,
-    FunASRManager, TrayManager, HotkeyManager, TriggerManager, IPCHandlers;
+    FunASRManager, LLMManager, TrayManager, HotkeyManager, TriggerManager, IPCHandlers;
 try {
   EnvironmentManager = require("./src/helpers/environment");
   WindowManager = require("./src/helpers/windowManager");
@@ -128,6 +128,7 @@ try {
   earlyLog("database.js 加载成功（better-sqlite3 .node 可加载）");
   ClipboardManager = require("./src/helpers/clipboard");
   FunASRManager = require("./src/helpers/funasrManager");
+  LLMManager = require("./src/helpers/llmManager");
   earlyLog("即将加载 tray/trigger（间接 require uiohook-napi 原生模块）");
   TrayManager = require("./src/helpers/tray");
   HotkeyManager = require("./src/helpers/hotkeyManager");
@@ -229,6 +230,7 @@ const clipboardManager = new ClipboardManager(logger, databaseManager); // 传�
 // 把同一个 databaseManager 实例注入 windowManager（胶囊"跟随焦点"开关需读 pill_follow_focus）
 windowManager.setDatabaseManager(databaseManager);
 const funasrManager = new FunASRManager(logger); // 传递logger实例
+const llmManager = new LLMManager(logger); // 本地大模型润色管理器
 const trayManager = new TrayManager();
 const hotkeyManager = new HotkeyManager();
 const triggerManager = new TriggerManager(logger);
@@ -600,6 +602,7 @@ const ipcHandlers = new IPCHandlers({
   databaseManager,
   clipboardManager,
   funasrManager,
+  llmManager,
   windowManager,
   hotkeyManager,
   logger, // 传递logger实例
@@ -622,6 +625,53 @@ function cleanupOrphanTempAudio() {
     if (removed) logger.info('已清理孤儿临时音频文件', { removed });
   } catch (error) {
     logger.warn('清理孤儿临时音频文件失败:', error?.message || error);
+  }
+}
+
+// ============================================================================
+// macOS 麦克风权限（打包版关键修复）
+// 打包版（hardenedRuntime + 新 bundle id）此前从不主动申请系统麦克风权限，
+// 仅靠渲染层 getUserMedia，导致从未触发系统 TCC 授权框 → 静默无音。
+// 这里在主进程侧：①记录当前麦克风授权状态 ②主动调用 askForMediaAccess 弹系统授权框。
+// 全程 try/catch，绝不因权限流程崩主进程。
+// ============================================================================
+async function ensureMicrophoneAccess() {
+  if (process.platform !== 'darwin') return;
+  try {
+    const status = systemPreferences.getMediaAccessStatus('microphone');
+    logger.info('麦克风权限当前状态', { status });
+    earlyLog('麦克风权限当前状态', { status });
+    // 无论状态如何都尝试申请：未决定(not-determined)会弹系统框；已授权/已拒绝则立即返回。
+    const granted = await systemPreferences.askForMediaAccess('microphone');
+    logger.info('askForMediaAccess(microphone) 结果', { granted });
+    earlyLog('askForMediaAccess(microphone) 结果', { granted });
+  } catch (e) {
+    logger.error('申请麦克风权限失败（不影响启动）:', e);
+    earlyLog('申请麦克风权限失败', String(e && e.stack ? e.stack : e));
+  }
+}
+
+// 为所有窗口的默认 session 放行 media/microphone 权限请求（渲染层 getUserMedia 需要）。
+// 仅放行麦克风/媒体相关权限，其余权限保持默认（拒绝），不放开无关权限。
+function setupMediaPermissionHandlers() {
+  const isMediaPermission = (permission) =>
+    permission === 'media' || permission === 'microphone' || permission === 'audioCapture';
+  try {
+    session.defaultSession.setPermissionRequestHandler((webContents, permission, callback) => {
+      if (isMediaPermission(permission)) {
+        callback(true);
+        return;
+      }
+      // 其余权限保持原有/默认行为：拒绝（不放开无关权限）。
+      callback(false);
+    });
+    session.defaultSession.setPermissionCheckHandler((webContents, permission) => {
+      return isMediaPermission(permission);
+    });
+    logger.info('已为 defaultSession 设置媒体/麦克风权限处理器');
+  } catch (e) {
+    logger.error('设置媒体权限处理器失败（不影响启动）:', e);
+    earlyLog('设置媒体权限处理器失败', String(e && e.stack ? e.stack : e));
   }
 }
 
@@ -653,6 +703,11 @@ async function startApp() {
     logger.error('提前注册全局触发键失败（稍后窗口就绪后行为不变）:', error);
   }
 
+  // 打包版麦克风修复：放行渲染层 getUserMedia 的权限请求，并主动触发系统麦克风授权框。
+  setupMediaPermissionHandlers();
+  // 不 await：授权框弹出/用户点选不阻塞后续启动流程。
+  ensureMicrophoneAccess();
+
   // 注释掉 accessibility 支持 - 可能干扰文本插入
   // try {
   //   app.setAccessibilitySupportEnabled(true);
@@ -681,6 +736,43 @@ async function startApp() {
   funasrManager.initializeAtStartup().catch((err) => {
     logger.warn("FunASR在启动时不可用，这不是关键问题", err);
   });
+
+  // 本地 LLM 预热：若当前润色引擎为本地且模型就绪，后台预加载该引擎（不阻塞启动）。
+  // 失败不影响启动；真正润色时会再按需拉起并暴露错误。
+  (async () => {
+    try {
+      const engine = await databaseManager.getSetting('polish_engine', 'cloud');
+      if (typeof engine === 'string' && engine.startsWith('local-') && llmManager.isModelReady(engine)) {
+        logger.info('后台预热本地 LLM 引擎', { engine });
+        llmManager.ensureEngine(engine).catch((e) => logger.warn('本地 LLM 预热失败', e?.message || e));
+      }
+    } catch (e) {
+      logger.warn('本地 LLM 预热跳过', e?.message || e);
+    }
+  })();
+
+  // 安装后静默下载本地 4B 模型：默认引擎为云端AI，用户可立即使用；4B 在后台自动补齐。
+  // 已就绪 / 正在下载则跳过；失败一律吞掉并 log，绝不崩主进程；断点续传由 llmManager 内部处理。
+  (async () => {
+    try {
+      const engine = 'local-4b';
+      if (llmManager.isModelReady(engine)) return;
+      const status = llmManager.getModelsStatus && llmManager.getModelsStatus()[engine];
+      if (status && status.downloading) return;
+      logger.info('后台静默下载本地 4B 模型…');
+      const r = await llmManager.downloadModel(engine, (progress) => {
+        // 复用现有进度事件，供模型 tab 显示；不主动弹窗打扰。
+        try {
+          const win = windowManager.mainWindow;
+          if (win && !win.isDestroyed()) win.webContents.send('local-model-download-progress', progress);
+        } catch (e) { /* 忽略 */ }
+      });
+      if (r && r.success) logger.info('本地 4B 模型下载完成');
+      else logger.warn('本地 4B 模型后台下载未完成', r && r.error);
+    } catch (e) {
+      logger.warn('本地 4B 模型后台下载异常（已忽略，不影响使用）', e?.message || e);
+    }
+  })();
 
   // 创建主窗口
   try {
@@ -717,6 +809,10 @@ async function startApp() {
     trayManager.setDatabaseManager(databaseManager);
   }
   await trayManager.createTray();
+  // 注入提醒回调：aiService 需要提醒时让托盘闪烁+点击弹通知（额度降级/阶梯提醒）
+  if (ipcHandlers && ipcHandlers.aiService && typeof ipcHandlers.aiService.setNotifier === 'function') {
+    ipcHandlers.aiService.setNotifier((payload) => trayManager.startAttention(payload));
+  }
   logger.info('系统托盘设置完成');
 
   // 全局录音/转英文触发键已在 startApp 顶部提前注册（启动即生效），此处不再重复注册。
@@ -734,6 +830,33 @@ async function startApp() {
   } catch (error) {
     logger.error('首启引导（自动打开权限页）失败:', error);
   }
+
+  // 启动静默检查更新（免签名）：延迟数秒、不阻塞启动、失败静默。
+  // 有新版则发系统通知提示（不强制、不打扰）；关于页可手动「检查更新」并下载安装。
+  setTimeout(() => {
+    (async () => {
+      try {
+        const updater = require('./src/helpers/updater');
+        const res = await updater.checkForUpdate({ logger });
+        if (res && res.hasUpdate) {
+          logger.info('检测到新版本', { latest: res.latest, current: res.current });
+          try {
+            const title = res.mandatory
+              ? `弦外小猫有重要更新 v${res.latest}`
+              : `弦外小猫有新版本 v${res.latest}`;
+            const body = res.mandatory
+              ? '建议尽快更新。可在「设置 → 关于」点击「立即更新」。'
+              : '可在「设置 → 关于」点击「检查更新」查看并升级。';
+            new Notification({ title, body, silent: false }).show();
+          } catch (e) {
+            logger.warn('更新通知发送失败:', e?.message || e);
+          }
+        }
+      } catch (e) {
+        logger.warn('启动静默检查更新失败（已忽略）:', e?.message || e);
+      }
+    })();
+  }, 8000);
 
   logger.info('应用启动完成');
 }
@@ -786,6 +909,12 @@ app.on("will-quit", () => {
   } catch (error) {
     logger.error('关闭 FunASR 失败:', error);
   }
+  // 强杀本地 LLM 子进程，杜绝孤儿
+  try {
+    llmManager.killServerSync();
+  } catch (error) {
+    logger.error('关闭本地 LLM 失败:', error);
+  }
   try {
     cancelTriggerManager.stop();
   } catch (_) { /* 忽略 */ }
@@ -802,6 +931,7 @@ app.on("will-quit", () => {
 // 退出前再兜底杀一次(防止 will-quit 时机错过)
 app.on("before-quit", () => {
   try { funasrManager.killServerSync(); } catch (e) { /* 忽略 */ }
+  try { llmManager.killServerSync(); } catch (e) { /* 忽略 */ }
 });
 
 // 导出管理器供其他模块使用

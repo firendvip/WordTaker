@@ -9,7 +9,7 @@ const makeDB = (settings) => ({
 describe("AiService.processTextWithAI", () => {
   it("未配置中转且无 API key 时返回错误", async () => {
     const svc = new AiService({
-      databaseManager: makeDB({ llm_relay_enabled: false, ai_api_key: "" }),
+      databaseManager: makeDB({ polish_engine: "cloud", llm_relay_enabled: false, ai_api_key: "" }),
       logger,
     });
     const r = await svc.processTextWithAI("你好", "copywriting");
@@ -27,6 +27,7 @@ describe("AiService.processTextWithAI", () => {
 
     const svc = new AiService({
       databaseManager: makeDB({
+        polish_engine: "cloud",
         llm_relay_enabled: true,
         llm_relay_url: "https://relay.test",
         llm_relay_token: "tok",
@@ -52,11 +53,47 @@ describe("AiService.processTextWithAI", () => {
   it("中转返回非 success 时报错", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => ({ ok: true, json: async () => ({ success: false, error: "boom" }) })));
     const svc = new AiService({
-      databaseManager: makeDB({ llm_relay_enabled: true, llm_relay_url: "https://relay.test" }),
+      databaseManager: makeDB({ polish_engine: "cloud", llm_relay_enabled: true, llm_relay_url: "https://relay.test" }),
       logger,
     });
     const r = await svc.processTextWithAI("hi", "copywriting");
     expect(r.success).toBe(false);
+    vi.unstubAllGlobals();
+  });
+
+  it("本地引擎经 llmManager.polish，不走中转（无兜底）", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const llmManager = {
+      polish: vi.fn(async () => ({ success: true, text: "本地润色结果" })),
+    };
+    const svc = new AiService({
+      databaseManager: makeDB({ polish_engine: "local-4b" }),
+      logger,
+      llmManager,
+    });
+    const r = await svc.processTextWithAI("那个我我觉得可以", "copywriting");
+    expect(r).toEqual({ success: true, text: "本地润色结果" });
+    expect(llmManager.polish).toHaveBeenCalledWith("local-4b", "那个我我觉得可以", "copywriting", null);
+    // 无兜底：绝不因本地成功/失败而回退到中转
+    expect(fetchMock).not.toHaveBeenCalled();
+    vi.unstubAllGlobals();
+  });
+
+  it("本地引擎失败时直接返回错误，绝不回退中转", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const llmManager = {
+      polish: vi.fn(async () => ({ success: false, error: "模型未就绪" })),
+    };
+    const svc = new AiService({
+      databaseManager: makeDB({ polish_engine: "local-4b", llm_relay_enabled: true, llm_relay_url: "https://relay.test" }),
+      logger,
+      llmManager,
+    });
+    const r = await svc.processTextWithAI("hi", "copywriting");
+    expect(r.success).toBe(false);
+    expect(fetchMock).not.toHaveBeenCalled();
     vi.unstubAllGlobals();
   });
 });

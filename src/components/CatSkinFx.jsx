@@ -234,11 +234,17 @@ export default function CatSkinFx({ micState, audioLevel = 0, isBusy = false, ha
 
       if (mode === "idle") {
         setView("none"); setFx(null); x = C;
-        if (active) { mode = "enter"; t0 = now; setView("run"); }
+        if (active) {
+          mode = "enter"; t0 = now; setView("run");
+          // 出现改为瞬间：去掉由小跑入放大，仅保留一次轻微 opacity 淡入。
+          runWrap.style.animation = "none"; void runWrap.offsetWidth;
+          runWrap.style.animation = "cs-appear-fade 150ms ease";
+        }
       } else if (mode === "enter") {
-        const te = Math.min(1, (now - t0) / ENTER_MS), k = easeOut(te);
-        x = ENTER_FROM + (C - ENTER_FROM) * k; renderRun(0.32 + 0.68 * k, 1); positionFx(1);
-        if (te >= 1) { wp = 0; if (!active) { mode = "idle"; } else { mode = want === "rest" ? "settle" : "walk"; t0 = now; xRet = x; } }
+        // 瞬间到位、满尺寸（不再 0.32→1.0 放大、不再侧边跑入）。
+        x = C; renderRun(1, 1); positionFx(1); wp = 0;
+        if (!active) { mode = "idle"; }
+        else { mode = want === "rest" ? "settle" : "walk"; t0 = now; xRet = x; }
       } else if (mode === "walk") {
         if (!active || want === "rest") { mode = "settle"; t0 = now; xRet = x; }
         else { wp += (busy || loudState) ? PROC_W : WALK_W; x = C + AMP * Math.sin(wp); const dir = Math.cos(wp) >= 0 ? 1 : -1; renderRun(1, dir); positionFx(dir); }

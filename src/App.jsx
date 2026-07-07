@@ -103,7 +103,6 @@ function RecorderApp() {
 
   // 提示音设置（唤起/结束）
   const soundCfgRef = useRef({ scheme: "soft", volume: 0.3 });
-  const prevRecordingRef = useRef(false);
   useEffect(() => {
     (async () => {
       try {
@@ -243,41 +242,68 @@ function RecorderApp() {
     }
   }, [isRecording]);
 
-  // 唤起/结束提示音：每次播放都从设置读取最新音色/音量，
-  // 保证在设置里改完即时生效，而不是沿用启动时缓存的旧值。
-  useEffect(() => {
-    const prev = prevRecordingRef.current;
-    prevRecordingRef.current = isRecording;
-    const isWake = !prev && isRecording;
-    const isEnd = prev && !isRecording;
-    if (!isWake && !isEnd) return;
+  // 唤起/结束提示音：按键瞬时反馈。
+  // 旧实现挂在 isRecording 状态变化的 effect 上——开始音要等 getUserMedia+MediaRecorder
+  // 启动完（数百毫秒）才响，且播放前还要 await 两次 IPC 读设置。
+  // 现改为事件入口即刻播放：用缓存的音色/音量零等待出声（音频已在启动时
+  // warmupAudio 预解码+resume），播完后台刷新设置缓存——设置改动最多晚一次触发生效。
+  //
+  // 只播一次守卫（修复 1.12.3 音色回归）：旧实现按 isRecording 的真实转换播音，
+  // 触发键"偶发双触发"（见 recordingStartRef 注释）天然被去重；改到事件入口后，
+  // 双触发时 isRecording 还没来得及变化，同一喵会被叠播两次（相隔几十毫秒），
+  // 叠加相位干涉听感就是"喵声破掉/怪怪的"。cueStateRef 复刻旧转换语义：
+  // 同方向的重复触发一律静默，保证每次开始/结束各只响一声。
+  const cueStateRef = useRef(false); // true=已播唤起音、尚未播结束音
+  const playCue = useCallback((isWake) => {
+    if (cueStateRef.current === isWake) return; // 同方向重复（双触发/竞态）→ 不再叠播
+    cueStateRef.current = isWake;
+    const { scheme, volume } = soundCfgRef.current;
+    if (isWake) playWake(scheme, volume);
+    else playEnd(scheme, volume);
+    // 后台刷新，不阻塞播放
     (async () => {
-      let { scheme, volume } = soundCfgRef.current;
       try {
         if (window.electronAPI && window.electronAPI.getSetting) {
-          scheme = await window.electronAPI.getSetting("sound_scheme", scheme);
-          volume = await window.electronAPI.getSetting("sound_volume", volume);
-          soundCfgRef.current = { scheme, volume };
+          const s = await window.electronAPI.getSetting("sound_scheme", scheme);
+          const v = await window.electronAPI.getSetting("sound_volume", volume);
+          soundCfgRef.current = { scheme: s, volume: v };
         }
       } catch (e) {
         // 读取失败则沿用缓存值
       }
-      if (isWake) playWake(scheme, volume);
-      else playEnd(scheme, volume);
     })();
-  }, [isRecording]);
+  }, []);
+
+  // 兜底：录音状态真实转换时补播提示音（与旧 effect 行为一致，经 cueStateRef 去重）。
+  // 覆盖不经按键入口的结束路径——内存保护自动停止、MediaRecorder onerror 等，
+  // 旧实现这些场景会响结束喵，事件入口版此前漏掉了。
+  const prevRecordingRef = useRef(false);
+  useEffect(() => {
+    const prev = prevRecordingRef.current;
+    prevRecordingRef.current = isRecording;
+    if (!prev && isRecording) playCue(true); // 入口已播则被去重为静默
+    else if (prev && !isRecording) playCue(false);
+  }, [isRecording, playCue]);
+
+  // 启动失败（getUserMedia 拒绝等）：唤起音已响但录音没开始，
+  // 复位守卫，保证下一次唤起仍能出声（旧实现由 isRecording 驱动，天然无此问题）。
+  useEffect(() => {
+    if (recordingError && !isRecording) cueStateRef.current = false;
+  }, [recordingError, isRecording]);
 
   // 监听 Esc 取消事件：取消录音并隐藏胶囊
   useEffect(() => {
     if (!window.electronAPI || !window.electronAPI.onCancelRecording) return;
     const off = window.electronAPI.onCancelRecording(() => {
+      // 取消也即刻给声音反馈（沿用结束喵；旧实现由 isRecording 变化的 effect 播）
+      if (isRecording) playCue(false);
       cancelRecording();
       if (window.electronAPI.hideRecorder) window.electronAPI.hideRecorder();
     });
     return () => {
       if (typeof off === "function") off();
     };
-  }, [cancelRecording]);
+  }, [cancelRecording, isRecording, playCue]);
 
   // 监听"转换为英文"状态：驱动胶囊的翻译进度 UI
   useEffect(() => {
@@ -410,15 +436,20 @@ function RecorderApp() {
         toast.info("🤖 引擎加载中，已开始录音，将在就绪后自动转写…");
       }
       recordingStartRef.current = Date.now();
+      // 开始喵先响再启动麦克风（不 await），保证按键瞬时反馈；
+      // 若随后 getUserMedia 失败，声已响但会有现有的错误 toast 提示，可接受。
+      playCue(true);
       startRecording();
     } else if (isRecording) {
       if (Date.now() - recordingStartRef.current < 800) {
         // ignore accidental immediate toggle (double-fire) so the pill doesn't vanish right after waking
         return;
       }
+      // 结束喵同样在事件入口即刻响，再走停止/转写流程
+      playCue(false);
       stopRecording();
     }
-  }, [modelStatus, isRecording, isRecordingProcessing, startRecording, stopRecording]);
+  }, [modelStatus, isRecording, isRecordingProcessing, startRecording, stopRecording, playCue]);
 
   // 使用热键Hook，不再使用F2双击功能
   const { hotkey, syncRecordingState, registerHotkey } = useHotkey();

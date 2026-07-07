@@ -1,6 +1,5 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
 import { useModelStatus } from './useModelStatus';
-import { shouldSkipPolish } from '../utils/skipPolish';
 
 // 频谱声波：把音频频谱拆成 BAND_COUNT 个独立频段，驱动胶囊里每根柱子各自起伏。
 export const BAND_COUNT = 13;
@@ -416,16 +415,14 @@ export const useRecording = ({ onTranscriptionCompleteRef, onAIOptimizationCompl
               // 文案模式：识别后必走 LLM，贴"模型结果"；旧版优化模式作为兼容回退
               let copywriting = getS('copywriting_mode_enabled', true);
               let useAI = getS('enable_ai_optimization', true);
-              // 短句优化：很短且干净的识别结果直接贴原文，省去一次 LLM 往返
-              const maxChars = Number(getS('skip_polish_max_chars', 6)) || 6;
-              if (shouldSkipPolish(raw_text, maxChars)) {
-                copywriting = false;
-                useAI = false;
-                log('info', `短句(≤${maxChars}字且干净)：跳过润色，直接贴原文`);
-              }
+              // 强制全部走 AI 润色：不再对短句静默跳过润色（每条转写都必须经过润色/替换）。
 
               let finalData = { ...transcriptionData };
               let emit;
+              // 润色标识：当前引擎 + 完整润色耗时（含本地首次加载模型的一次性开销）。
+              // 耗时口径 = 从发起润色到拿到结果的完整等待时间。仅在实际走了润色时写入。
+              const polishEngine = getS('polish_engine', 'cloud');
+              let polishDurMs = null;
 
               // 先落库原文（解耦·不阻塞）：识别成功后立即派发入库 IPC（主进程会同步写库），
               // 即使后续 LLM/流式卡住或异常，历史也不会丢。关键是【不 await】——绝不让一次
@@ -446,18 +443,46 @@ export const useRecording = ({ onTranscriptionCompleteRef, onAIOptimizationCompl
                 //    关闭时走下方非流式主路径(processText)，拿到整段结果后一次性粘贴。——
                 const streamingEnabled = getS('llm_streaming_enabled', false) === true;
                 let streamed = false;
+                let streamReason = null; // 结构化失败原因（如 input_too_long），供下方明确提示
                 try {
                   if (streamingEnabled && window.electronAPI.processTextStream) {
                     const _sT0 = Date.now();
-                    const sres = await window.electronAPI.processTextStream(raw_text);
+                    // 流式上屏首字耗时：从润色发起(_sT0)到首个"已上屏"的 polish-progress 事件
+                    // (首段 delta，带 chunk)之间的毫秒差。只记录首次，随后立即取消订阅。
+                    let firstCharMs = null;
+                    let offProgress = null;
+                    if (window.electronAPI.onPolishProgress) {
+                      offProgress = window.electronAPI.onPolishProgress((data) => {
+                        if (firstCharMs != null) return;
+                        const isFirstChunk =
+                          data && data.status === 'delta' &&
+                          (typeof data.chunk === 'string' ? data.chunk.length > 0 : (data.charCount || 0) > 0);
+                        if (isFirstChunk) {
+                          firstCharMs = Date.now() - _sT0;
+                          try { if (typeof offProgress === 'function') offProgress(); } catch (_) {}
+                          offProgress = null;
+                        }
+                      });
+                    }
+                    let sres;
+                    try {
+                      sres = await window.electronAPI.processTextStream(raw_text);
+                    } finally {
+                      try { if (typeof offProgress === 'function') offProgress(); } catch (_) {}
+                    }
                     if (sres && (sres.success || sres.pastedAny)) {
-                      log('info', `[计时] 流式文案: ${Date.now() - _sT0}ms`);
+                      polishDurMs = Date.now() - _sT0;
+                      log('info', `[计时] 流式文案: ${polishDurMs}ms` + (Number.isFinite(firstCharMs) ? `，首字 ${firstCharMs}ms` : ''));
                       const t = sres.text || raw_text;
                       finalData.processed_text = t;
                       finalData.text = t;
+                      // 流式路径：记录首字上屏耗时（仅此路径设置，非流式保持 null）
+                      if (Number.isFinite(firstCharMs)) finalData.polish_first_char_ms = firstCharMs;
                       // 主进程已增量贴出，这里不再重复粘贴
                       emit = { ...transcriptionResult, text: t, processed_text: t, enhanced_by_ai: true, paste: false };
                       streamed = true;
+                    } else if (sres && typeof sres.reason === 'string') {
+                      streamReason = sres.reason; // 流式失败原因，透传给非流式收尾分支的提示
                     }
                   }
                 } catch (err) {
@@ -471,7 +496,26 @@ export const useRecording = ({ onTranscriptionCompleteRef, onAIOptimizationCompl
                 try {
                   const _lT0 = Date.now();
                   result = await window.electronAPI.processText(raw_text, 'copywriting');
-                  log('info', `[计时] DeepSeek文案: ${Date.now() - _lT0}ms`);
+                  // 润色失败先重试一次（额度受限/未配置 key 等结构化失败不重试，重试无意义）
+                  if (!(result && result.success && result.text)) {
+                    const reason = result && result.reason;
+                    const noRetry =
+                      reason === 'insufficient_quota' ||
+                      reason === 'daily_cap_exceeded' ||
+                      reason === 'input_too_long';
+                    const errMsg0 = (result && result.error) || '';
+                    const noKey0 = /API\s*密钥|API\s*Key|api[_\s]?key/i.test(errMsg0);
+                    if (!noRetry && !noKey0) {
+                      log('info', '文案生成失败，自动重试一次');
+                      try {
+                        result = await window.electronAPI.processText(raw_text, 'copywriting');
+                      } catch (err2) {
+                        log('error', '文案生成重试异常:', err2);
+                      }
+                    }
+                  }
+                  polishDurMs = Date.now() - _lT0;
+                  log('info', `[计时] DeepSeek文案: ${polishDurMs}ms`);
                 } catch (err) {
                   log('error', '文案生成调用异常:', err);
                 }
@@ -493,7 +537,27 @@ export const useRecording = ({ onTranscriptionCompleteRef, onAIOptimizationCompl
                   const fallback = getS('llm_fallback_paste_raw', true);
                   const errMsg = (result && result.error) || 'AI 文案生成失败';
                   const noKey = /API\s*密钥|API\s*Key|api[_\s]?key/i.test(errMsg);
+                  // 结构化失败原因：优先取非流式结果，其次取流式路径捕获的原因。
+                  const failReason = (result && result.reason) || streamReason;
+                  const tooLong = failReason === 'input_too_long';
+                  // 云端额度受限：额度不足 / 今日已达上限（后端计费返回）。贴原文 + 明确提示，不自动转本地。
+                  const quotaLimited =
+                    failReason === 'insufficient_quota' || failReason === 'daily_cap_exceeded';
                   log('error', '文案生成失败:', errMsg);
+                  // 所选引擎润色失败（非"未配置 key 的纯听写"）：贴原文 + 系统通知，绝不回退到其它引擎/云端。
+                  if (!noKey) {
+                    try {
+                      let notifyText = '润色失败，已贴出原文';
+                      if (tooLong) {
+                        notifyText = '内容过长，本地模型无法处理，建议改用云端AI';
+                      } else if (failReason === 'daily_cap_exceeded') {
+                        notifyText = '今日云端用量已达上限，请购买套餐、兑换或改用本地模型';
+                      } else if (failReason === 'insufficient_quota') {
+                        notifyText = '云端额度不足，请购买套餐、兑换或改用本地模型';
+                      }
+                      window.electronAPI?.showNotification?.('弦外小猫', notifyText);
+                    } catch (e) { /* 通知失败无妨 */ }
+                  }
                   emit = {
                     ...transcriptionResult,
                     text: raw_text,
@@ -509,7 +573,9 @@ export const useRecording = ({ onTranscriptionCompleteRef, onAIOptimizationCompl
                 // —— 兼容：旧版可选润色 ——
                 let result = null;
                 try {
+                  const _oT0 = Date.now();
                   result = await window.electronAPI.processText(raw_text, 'optimize');
+                  polishDurMs = Date.now() - _oT0;
                 } catch (err) {
                   log('error', 'AI文本优化捕获到错误:', err);
                 }
@@ -541,6 +607,13 @@ export const useRecording = ({ onTranscriptionCompleteRef, onAIOptimizationCompl
                 onAIOptimizationCompleteRef?.current(emit);
               }
 
+              // 走过润色且拿到结果时，记录引擎与完整润色耗时（供历史界面显示「AI优化·<引擎> 时长X.XX秒」）。
+              const polished = !!finalData.processed_text && Number.isFinite(polishDurMs);
+              if (polished) {
+                finalData.polish_engine = polishEngine;
+                finalData.polish_duration_ms = polishDurMs;
+              }
+
               // 出字之后再异步补写润色结果到同一行（原文已在前面落库）。不 await，不阻塞出字。
               // 早先落库失败(行 id 为空)时兜底重新插入完整记录，确保历史不丢。
               if (window.electronAPI) {
@@ -551,6 +624,12 @@ export const useRecording = ({ onTranscriptionCompleteRef, onAIOptimizationCompl
                       return window.electronAPI.updateTranscription(sid, {
                         text: finalData.text,
                         processed_text: finalData.processed_text,
+                        ...(polished
+                          ? { polish_engine: polishEngine, polish_duration_ms: polishDurMs }
+                          : {}),
+                        ...(Number.isFinite(finalData.polish_first_char_ms)
+                          ? { polish_first_char_ms: finalData.polish_first_char_ms }
+                          : {}),
                       });
                     }
                     return window.electronAPI.saveTranscription(finalData);

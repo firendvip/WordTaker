@@ -83,10 +83,16 @@ class DatabaseManager {
         language TEXT DEFAULT 'zh-CN',
         duration REAL,
         file_size INTEGER,
+        polish_engine TEXT,
+        polish_duration_ms INTEGER,
+        polish_first_char_ms INTEGER,
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
         updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
       )
     `);
+
+    // 老库迁移：缺列则补列（幂等，兼容老库不炸）
+    this.migrateAddColumns();
 
     // 创建设置表
     this.db.exec(`
@@ -102,6 +108,29 @@ class DatabaseManager {
       CREATE INDEX IF NOT EXISTS idx_transcriptions_created_at
       ON transcriptions(created_at DESC)
     `);
+  }
+
+  // 老库迁移：读 PRAGMA table_info 判断列是否存在，缺失则 ALTER TABLE ADD COLUMN。
+  // 幂等（已存在跳过），对老库安全，绝不覆盖数据。
+  migrateAddColumns() {
+    try {
+      const cols = this.db.prepare("PRAGMA table_info(transcriptions)").all();
+      const names = new Set(cols.map((c) => c.name));
+      const wanted = [
+        { name: "polish_engine", ddl: "ALTER TABLE transcriptions ADD COLUMN polish_engine TEXT" },
+        { name: "polish_duration_ms", ddl: "ALTER TABLE transcriptions ADD COLUMN polish_duration_ms INTEGER" },
+        { name: "polish_first_char_ms", ddl: "ALTER TABLE transcriptions ADD COLUMN polish_first_char_ms INTEGER" },
+      ];
+      for (const col of wanted) {
+        if (!names.has(col.name)) {
+          this.db.exec(col.ddl);
+        }
+      }
+    } catch (error) {
+      if (this.logger && this.logger.error) {
+        this.logger.error("迁移 transcriptions 新列失败:", error);
+      }
+    }
   }
 
   // 初始化默认设置（仅在键不存在时写入，不覆盖用户已有配置）
@@ -141,6 +170,9 @@ class DatabaseManager {
       sound_volume: 0.3,
       // 识别引擎：sensevoice(快，默认) / paraformer(稳，回退)
       asr_engine: 'sensevoice',
+      // 润色引擎：cloud(云端AI,默认) / local-4b(安装后后台下载)。
+      // 两引擎互不兜底：选哪个用哪个，失败直接贴原文并系统通知，绝不回退其它引擎。
+      polish_engine: 'cloud',
       // 文案优化中转：开启后客户端不持有 DeepSeek key，只调用自建 Worker
       llm_relay_enabled: !!RELAY_DEFAULTS.RELAY_ENABLED,
       llm_relay_url: RELAY_DEFAULTS.RELAY_URL || '',
@@ -210,8 +242,9 @@ class DatabaseManager {
     const stmt = this.db.prepare(`
       INSERT INTO transcriptions (
         text, raw_text, processed_text, confidence,
-        language, duration, file_size
-      ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        language, duration, file_size,
+        polish_engine, polish_duration_ms, polish_first_char_ms
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
     return stmt.run(
@@ -221,7 +254,10 @@ class DatabaseManager {
       data.confidence || 0,
       data.language || 'zh-CN',
       data.duration || 0,
-      data.file_size || 0
+      data.file_size || 0,
+      typeof data.polish_engine === 'string' ? data.polish_engine : null,
+      Number.isFinite(data.polish_duration_ms) ? data.polish_duration_ms : null,
+      Number.isFinite(data.polish_first_char_ms) ? data.polish_first_char_ms : null
     );
   }
 
@@ -264,11 +300,14 @@ class DatabaseManager {
   updateTranscription(id, fields = {}) {
     if (!id) return { changes: 0 };
     const stmt = this.db.prepare(
-      "UPDATE transcriptions SET text = COALESCE(?, text), processed_text = COALESCE(?, processed_text) WHERE id = ?"
+      "UPDATE transcriptions SET text = COALESCE(?, text), processed_text = COALESCE(?, processed_text), polish_engine = COALESCE(?, polish_engine), polish_duration_ms = COALESCE(?, polish_duration_ms), polish_first_char_ms = COALESCE(?, polish_first_char_ms) WHERE id = ?"
     );
     return stmt.run(
       typeof fields.text === "string" ? fields.text : null,
       typeof fields.processed_text === "string" ? fields.processed_text : null,
+      typeof fields.polish_engine === "string" ? fields.polish_engine : null,
+      Number.isFinite(fields.polish_duration_ms) ? fields.polish_duration_ms : null,
+      Number.isFinite(fields.polish_first_char_ms) ? fields.polish_first_char_ms : null,
       id
     );
   }

@@ -2,8 +2,9 @@ import React, { useState, useEffect } from "react";
 import ReactDOM from "react-dom/client";
 import "./index.css";
 import { toast, Toaster } from "sonner";
-import { Settings, Save, Eye, EyeOff, Loader2, TestTube, CheckCircle, XCircle, Mic, Shield, Keyboard, Volume2, Play, Sparkles, Info, Drama, Palette } from "lucide-react";
+import { Settings, Save, Eye, EyeOff, Loader2, TestTube, CheckCircle, XCircle, Mic, Shield, Keyboard, Volume2, Play, Sparkles, Info, Drama, Palette, Cpu, Download, Cloud, User } from "lucide-react";
 import { usePermissions } from "./hooks/usePermissions";
+import { AccountPanel } from "./components/account/AccountPanel";
 import PermissionCard from "./components/ui/permission-card";
 import { SOUND_SCHEMES, previewSound, playEnd } from "./utils/sounds";
 import {
@@ -62,32 +63,183 @@ const SettingsPage = () => {
   // 初始分类可经 URL query 指定（如首启自动弹「权限」页：settings.html?tab=permissions）；
   // 缺省/非法值一律回退到 "permissions"（与原默认行为一致）。
   const [activeCategory, setActiveCategory] = useState(() => {
-    const VALID_TABS = ["permissions", "shortcuts", "sound", "skin", "role", "wordtoword", "general", "about"];
+    // 旧分类 id → 合并后的新分组 id（兼容历史 URL ?tab=，如首启 ?tab=permissions）
+    const TAB_MIGRATE = {
+      account: "account",
+      shortcuts: "shortcuts",
+      model: "polish", role: "polish", wordtoword: "polish",
+      sound: "personalize", skin: "personalize",
+      permissions: "system", general: "system", about: "system",
+      polish: "polish", personalize: "personalize", system: "system",
+    };
     try {
       const tab = new URLSearchParams(window.location.search).get("tab");
-      if (tab && VALID_TABS.includes(tab)) return tab;
+      if (tab && TAB_MIGRATE[tab]) return TAB_MIGRATE[tab];
     } catch (e) {
       // 解析失败回退默认
     }
-    return "permissions";
+    return "system";
   });
 
   // 应用版本号（运行时从 app.getVersion() 获取，不硬编码）
   const [appVersion, setAppVersion] = useState("");
 
+  // ——— 应用内更新（免签名）状态 ———
+  // checking: 正在查清单；update: 检查结果 { hasUpdate, latest, notes, url, mandatory }
+  // downloading + downloadPercent: 下载进度；downloaded: 已下好并打开 dmg
+  const [updateChecking, setUpdateChecking] = useState(false);
+  const [updateInfo, setUpdateInfo] = useState(null);
+  const [updateNoNew, setUpdateNoNew] = useState(false);
+  const [updateDownloading, setUpdateDownloading] = useState(false);
+  const [updateDownloadPercent, setUpdateDownloadPercent] = useState(0);
+  const [updateDownloaded, setUpdateDownloaded] = useState(false);
+
+  const handleCheckForUpdate = async () => {
+    if (updateChecking || updateDownloading) return;
+    setUpdateNoNew(false);
+    setUpdateInfo(null);
+    setUpdateDownloaded(false);
+    setUpdateChecking(true);
+    try {
+      const res = window.electronAPI?.checkForUpdate
+        ? await window.electronAPI.checkForUpdate()
+        : { hasUpdate: false };
+      if (res && res.hasUpdate) {
+        setUpdateInfo(res);
+      } else {
+        setUpdateNoNew(true);
+      }
+    } catch (e) {
+      toast.error("检查更新失败，请稍后再试");
+    } finally {
+      setUpdateChecking(false);
+    }
+  };
+
+  const handleDownloadUpdate = async () => {
+    if (!updateInfo?.url || updateDownloading) return;
+    setUpdateDownloading(true);
+    setUpdateDownloadPercent(0);
+    try {
+      const res = await window.electronAPI.downloadUpdate(updateInfo.url);
+      if (res && res.success) {
+        setUpdateDownloaded(true);
+      } else {
+        toast.error((res && res.error) || "下载失败，请稍后再试");
+      }
+    } catch (e) {
+      toast.error("下载失败，请稍后再试");
+    } finally {
+      setUpdateDownloading(false);
+    }
+  };
+
+  // 订阅下载进度
+  useEffect(() => {
+    if (!window.electronAPI?.onUpdateDownloadProgress) return undefined;
+    const unsub = window.electronAPI.onUpdateDownloadProgress((p) => {
+      if (p && typeof p.percent === "number") setUpdateDownloadPercent(p.percent);
+    });
+    return () => {
+      try {
+        unsub();
+      } catch (e) {
+        /* 忽略 */
+      }
+    };
+  }, []);
+
   // 行标签统一字号（权限行与快捷键行保持一致）
   const rowLabelClass = "text-[15px] font-medium text-gray-900 dark:text-gray-100";
 
+  // 导航排序：账户置顶（惯例）→ 核心功能（模型/角色/快捷键/词转词）→ 个性化（提示音/皮肤）
+  // 合并后（10→5）：账户 → 转写与润色（模型/角色/词转词）→ 快捷键
+  // → 个性化（提示音/皮肤）→ 系统（权限/其他/关于）。各分组内以子标题分区。
   const categories = [
-    { id: "permissions", label: "权限", icon: Shield },
+    { id: "account", label: "账户", icon: User },
+    { id: "polish", label: "转写与润色", icon: Sparkles },
     { id: "shortcuts", label: "快捷键", icon: Keyboard },
-    { id: "sound", label: "提示音", icon: Volume2 },
-    { id: "skin", label: "皮肤", icon: Palette },
-    { id: "role", label: "角色", icon: Drama },
-    { id: "wordtoword", label: "词转词", icon: Sparkles },
-    { id: "general", label: "其他", icon: Settings },
-    { id: "about", label: "关于", icon: Info },
+    { id: "personalize", label: "个性化", icon: Palette },
+    { id: "system", label: "系统", icon: Settings },
   ];
+
+  // ——— 「模型」选项卡：润色引擎选择 + 本地模型下载 ———
+  // 2 个引擎互不兜底：cloud(默认) / local-4b(安装后后台自动下载)。
+  const [polishEngine, setPolishEngineState] = useState("cloud");
+  const [localModels, setLocalModels] = useState({}); // { engine: {ready,downloading,bundled,expectedSize} }
+  const [downloadProgress, setDownloadProgress] = useState({}); // { engine: 0-100 }
+
+  const LOCAL_ENGINE_META = [
+    { id: "local-4b", label: "本地模型", sizeText: "速度快，质量良好", bundled: false },
+  ];
+
+  const refreshLocalModels = async () => {
+    try {
+      if (window.electronAPI?.getLocalModelsStatus) {
+        const st = await window.electronAPI.getLocalModelsStatus();
+        setLocalModels(st || {});
+      }
+    } catch (e) { /* 忽略 */ }
+  };
+
+  useEffect(() => {
+    (async () => {
+      try {
+        if (window.electronAPI?.getPolishEngine) {
+          const e = await window.electronAPI.getPolishEngine();
+          if (e) setPolishEngineState(e);
+        }
+      } catch (e) { /* 忽略 */ }
+      await refreshLocalModels();
+    })();
+    // 订阅下载进度
+    let unsub = () => {};
+    if (window.electronAPI?.onLocalModelDownloadProgress) {
+      unsub = window.electronAPI.onLocalModelDownloadProgress((p) => {
+        if (p && p.engine) {
+          setDownloadProgress((prev) => ({ ...prev, [p.engine]: p.progress || 0 }));
+        }
+      });
+    }
+    return () => { try { unsub(); } catch (e) {} };
+  }, []);
+
+  // 选择引擎：立即持久化并生效（本地引擎会在主进程后台切换/预热）。
+  const chooseEngine = async (engine) => {
+    try {
+      setPolishEngineState(engine);
+      if (window.electronAPI?.setPolishEngine) {
+        const r = await window.electronAPI.setPolishEngine(engine);
+        if (r && r.success === false) {
+          toast.error(r.error || "切换引擎失败");
+          return;
+        }
+      }
+      toast.success("润色引擎已切换并生效");
+    } catch (e) {
+      toast.error("切换引擎失败");
+    }
+  };
+
+  // 下载本地模型（4B）：完成后刷新状态并自动选中该引擎。
+  const downloadEngine = async (engine) => {
+    try {
+      setDownloadProgress((prev) => ({ ...prev, [engine]: 0 }));
+      setLocalModels((prev) => ({ ...prev, [engine]: { ...(prev[engine] || {}), downloading: true } }));
+      const r = await window.electronAPI.downloadLocalModel(engine);
+      await refreshLocalModels();
+      if (r && r.success) {
+        toast.success("模型下载完成");
+        await chooseEngine(engine);
+      } else {
+        toast.error((r && r.error) || "下载失败");
+        setLocalModels((prev) => ({ ...prev, [engine]: { ...(prev[engine] || {}), downloading: false } }));
+      }
+    } catch (e) {
+      toast.error("下载失败");
+      await refreshLocalModels();
+    }
+  };
 
   // 权限管理
   const showAlert = (alert) => {
@@ -566,7 +718,10 @@ const SettingsPage = () => {
           <div className="max-w-2xl mx-auto p-6 pb-8">
 
           {/* 权限 */}
-          {activeCategory === "permissions" && (
+          {activeCategory === "system" && (
+            <h2 className="text-[13px] font-semibold text-gray-400 dark:text-neutral-500 chinese-title px-1 mb-2">权限</h2>
+          )}
+          {activeCategory === "system" && (
             <div className="bg-white dark:bg-neutral-900 rounded-2xl shadow-sm border border-gray-100 dark:border-neutral-800">
               <div className="px-6">
                 <div className="py-4 border-b border-gray-100 dark:border-neutral-800">
@@ -1085,8 +1240,102 @@ const SettingsPage = () => {
             </div>
           )}
 
+          {/* 模型：润色引擎（4 选 1，互不兜底） */}
+          {activeCategory === "polish" && (
+            <h2 className="text-[13px] font-semibold text-gray-400 dark:text-neutral-500 chinese-title px-1 mb-2">模型</h2>
+          )}
+          {activeCategory === "polish" && (
+            <div className="bg-white dark:bg-neutral-900 rounded-2xl shadow-sm border border-gray-100 dark:border-neutral-800">
+              <div className="p-6">
+                <div className="mb-3 flex items-center space-x-2">
+                  <Cpu className="w-5 h-5 text-neutral-500 dark:text-neutral-400" />
+                  <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100 chinese-title">润色引擎</h2>
+                </div>
+                <div className="space-y-2.5">
+                  {/* 云端引擎 */}
+                  <label className={`flex items-center justify-between px-4 py-3 rounded-xl border cursor-pointer transition-colors ${polishEngine === "cloud" ? "border-neutral-900 dark:border-white bg-neutral-50 dark:bg-neutral-800" : "border-gray-200 dark:border-neutral-700 hover:bg-gray-50 dark:hover:bg-neutral-800/50"}`}>
+                    <div className="flex items-center space-x-3">
+                      <input
+                        type="radio"
+                        name="polish_engine"
+                        checked={polishEngine === "cloud"}
+                        onChange={() => chooseEngine("cloud")}
+                        className="accent-neutral-900 dark:accent-white"
+                      />
+                      <Cloud className="w-4 h-4 text-neutral-500 dark:text-neutral-400" />
+                      <div>
+                        <div className={rowLabelClass}>云端AI</div>
+                        <div className="text-xs text-gray-500 dark:text-neutral-400 mt-0.5">速度快，质量最好，中文润色天花板</div>
+                      </div>
+                    </div>
+                  </label>
+
+                  {/* 本地引擎 4B（安装后后台自动下载） */}
+                  {LOCAL_ENGINE_META.map((m) => {
+                    const status = localModels[m.id] || {};
+                    const ready = !!status.ready || m.bundled;
+                    const downloading = !!status.downloading;
+                    const progress = downloadProgress[m.id];
+                    const selected = polishEngine === m.id;
+                    return (
+                      <label
+                        key={m.id}
+                        className={`flex items-center justify-between px-4 py-3 rounded-xl border transition-colors ${selected ? "border-neutral-900 dark:border-white bg-neutral-50 dark:bg-neutral-800" : "border-gray-200 dark:border-neutral-700 hover:bg-gray-50 dark:hover:bg-neutral-800/50"} ${ready ? "cursor-pointer" : "cursor-default"}`}
+                      >
+                        <div className="flex items-center space-x-3">
+                          <input
+                            type="radio"
+                            name="polish_engine"
+                            checked={selected}
+                            disabled={!ready}
+                            onChange={() => ready && chooseEngine(m.id)}
+                            className="accent-neutral-900 dark:accent-white disabled:opacity-40"
+                          />
+                          <Cpu className="w-4 h-4 text-neutral-500 dark:text-neutral-400" />
+                          <div>
+                            <div className={rowLabelClass}>{m.label}</div>
+                            <div className="text-xs text-gray-500 dark:text-neutral-400 mt-0.5">{m.sizeText}</div>
+                          </div>
+                        </div>
+
+                        {/* 右侧：内置=已就绪；未下载=下载按钮/进度 */}
+                        <div className="flex items-center">
+                          {m.bundled || ready ? (
+                            <span className="inline-flex items-center text-xs text-green-600 dark:text-green-400">
+                              <CheckCircle className="w-4 h-4 mr-1" /> 已就绪
+                            </span>
+                          ) : downloading ? (
+                            <span className="inline-flex items-center text-xs text-neutral-500 dark:text-neutral-400">
+                              <Loader2 className="w-4 h-4 mr-1 animate-spin" />
+                              {typeof progress === "number" ? `${progress.toFixed(0)}%` : "下载中…"}
+                            </span>
+                          ) : (
+                            <button
+                              type="button"
+                              onClick={(e) => { e.preventDefault(); downloadEngine(m.id); }}
+                              className="inline-flex items-center px-3 py-1.5 text-xs bg-neutral-900 hover:bg-black text-white dark:bg-white dark:text-neutral-900 dark:hover:bg-neutral-200 rounded-lg transition-colors"
+                            >
+                              <Download className="w-3.5 h-3.5 mr-1" /> 未下载·点击下载
+                            </button>
+                          )}
+                        </div>
+                      </label>
+                    );
+                  })}
+                </div>
+
+                <p className="mt-4 text-xs text-gray-500 dark:text-gray-400">
+                  选中即时生效，无需点“保存设置”。4B 首次使用需下载到本机数据目录（支持断点续传）。
+                </p>
+              </div>
+            </div>
+          )}
+
           {/* 提示音 */}
-          {activeCategory === "sound" && (
+          {activeCategory === "personalize" && (
+            <h2 className="text-[13px] font-semibold text-gray-400 dark:text-neutral-500 chinese-title px-1 mb-2">提示音</h2>
+          )}
+          {activeCategory === "personalize" && (
             <div className="bg-white dark:bg-neutral-900 rounded-2xl shadow-sm border border-gray-100 dark:border-neutral-800">
               <div className="px-6">
                 {/* 提示音 */}
@@ -1129,7 +1378,10 @@ const SettingsPage = () => {
           )}
 
           {/* 皮肤 */}
-          {activeCategory === "skin" && (
+          {activeCategory === "personalize" && (
+            <h2 className="text-[13px] font-semibold text-gray-400 dark:text-neutral-500 chinese-title px-1 mt-6 mb-2">皮肤</h2>
+          )}
+          {activeCategory === "personalize" && (
             <div className="bg-white dark:bg-neutral-900 rounded-2xl shadow-sm border border-gray-100 dark:border-neutral-800">
               <div className="px-6">
                 {/* 音乐皮肤 */}
@@ -1262,7 +1514,10 @@ const SettingsPage = () => {
           )}
 
           {/* 角色 */}
-          {activeCategory === "role" && (
+          {activeCategory === "polish" && (
+            <h2 className="text-[13px] font-semibold text-gray-400 dark:text-neutral-500 chinese-title px-1 mt-6 mb-2">角色</h2>
+          )}
+          {activeCategory === "polish" && (
             <div className="bg-white dark:bg-neutral-900 rounded-2xl shadow-sm border border-gray-100 dark:border-neutral-800">
               <div className="px-6">
                 {/* 常规（默认） */}
@@ -1345,7 +1600,10 @@ const SettingsPage = () => {
           )}
 
           {/* 词转词 */}
-          {activeCategory === "wordtoword" && (
+          {activeCategory === "polish" && (
+            <h2 className="text-[13px] font-semibold text-gray-400 dark:text-neutral-500 chinese-title px-1 mt-6 mb-2">词转词</h2>
+          )}
+          {activeCategory === "polish" && (
             <div className="bg-white dark:bg-neutral-900 rounded-2xl shadow-sm border border-gray-100 dark:border-neutral-800">
               <div className="px-6 py-4">
                 <p className="text-[13px] leading-relaxed text-gray-500 dark:text-neutral-400">
@@ -1403,7 +1661,10 @@ const SettingsPage = () => {
           )}
 
           {/* 通用 */}
-          {activeCategory === "general" && (
+          {activeCategory === "system" && (
+            <h2 className="text-[13px] font-semibold text-gray-400 dark:text-neutral-500 chinese-title px-1 mt-6 mb-2">其他</h2>
+          )}
+          {activeCategory === "system" && (
             <div className="bg-white dark:bg-neutral-900 rounded-2xl shadow-sm border border-gray-100 dark:border-neutral-800">
               <div className="px-6">
                 <div className="flex items-center justify-between gap-4 py-4">
@@ -1515,7 +1776,14 @@ const SettingsPage = () => {
           )}
 
           {/* 关于 */}
-          {activeCategory === "about" && (
+          {activeCategory === "account" && (
+            <AccountPanel rowLabelClass={rowLabelClass} />
+          )}
+
+          {activeCategory === "system" && (
+            <h2 className="text-[13px] font-semibold text-gray-400 dark:text-neutral-500 chinese-title px-1 mt-6 mb-2">关于</h2>
+          )}
+          {activeCategory === "system" && (
             <div className="bg-white dark:bg-neutral-900 rounded-2xl shadow-sm border border-gray-100 dark:border-neutral-800">
               <div className="px-6">
                 {/* 应用信息 */}
@@ -1527,6 +1795,72 @@ const SettingsPage = () => {
                       版本 {appVersion || "—"}
                     </span>
                   </div>
+                </div>
+
+                {/* 检查更新 */}
+                <div className="py-5 border-b border-gray-100 dark:border-neutral-800">
+                  <div className="flex items-center justify-between mb-3">
+                    <h3 className={`${rowLabelClass} chinese-title`}>检查更新：</h3>
+                    <button
+                      type="button"
+                      onClick={handleCheckForUpdate}
+                      disabled={updateChecking || updateDownloading}
+                      className="px-4 py-1.5 text-[13px] rounded-lg bg-gray-900 text-white dark:bg-white dark:text-gray-900 hover:opacity-90 disabled:opacity-50 transition"
+                    >
+                      {updateChecking ? "检查中…" : "检查更新"}
+                    </button>
+                  </div>
+
+                  {updateNoNew && (
+                    <p className="text-[13px] text-gray-500 dark:text-neutral-400">
+                      已是最新版本
+                    </p>
+                  )}
+
+                  {updateInfo && (
+                    <div className="bg-gray-50 dark:bg-neutral-800/50 rounded-lg p-4 space-y-3">
+                      <div className="flex items-center justify-between">
+                        <span className="text-[14px] font-medium text-gray-900 dark:text-gray-100">
+                          发现新版本 v{updateInfo.latest}
+                          {updateInfo.mandatory && (
+                            <span className="ml-2 text-[12px] text-red-500">建议尽快更新</span>
+                          )}
+                        </span>
+                      </div>
+                      {updateInfo.notes && (
+                        <p className="text-[13px] text-gray-600 dark:text-neutral-300 whitespace-pre-line">
+                          {updateInfo.notes}
+                        </p>
+                      )}
+
+                      {updateDownloaded ? (
+                        <p className="text-[13px] text-green-600 dark:text-green-400">
+                          已下载，请在弹出的窗口中把「弦外小猫」拖入「应用程序」完成更新。
+                        </p>
+                      ) : updateDownloading ? (
+                        <div className="space-y-1.5">
+                          <div className="h-2 w-full rounded-full bg-gray-200 dark:bg-neutral-700 overflow-hidden">
+                            <div
+                              className="h-full bg-gray-900 dark:bg-white transition-[width] duration-200"
+                              style={{ width: `${updateDownloadPercent}%` }}
+                            />
+                          </div>
+                          <p className="text-[12px] text-gray-500 dark:text-neutral-400">
+                            正在下载… {updateDownloadPercent}%
+                          </p>
+                        </div>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={handleDownloadUpdate}
+                          disabled={!updateInfo.url}
+                          className="px-4 py-1.5 text-[13px] rounded-lg bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50 transition"
+                        >
+                          立即更新
+                        </button>
+                      )}
+                    </div>
+                  )}
                 </div>
 
                 {/* 功能建议 / bug反馈 */}

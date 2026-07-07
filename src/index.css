@@ -95,6 +95,17 @@ body {
   padding: 4px;
   -webkit-app-region: drag;
 }
+/* 出现：瞬间到位（不再做 opacity 淡入），只做一次极短的「影子落定」——
+   投影从贴近元素快速展开到常驻值，形成「带影子的瞬间出现」。
+   胶囊常驻投影见 .recorder-pill 的 filter；消失时窗口 hide，投影随之一起消失，两端对称。
+   只动 filter/drop-shadow（合成器友好），绝不用 transform/scale，尺寸瞬间到位。 */
+.pill-appear {
+  animation: pill-appear-pop 90ms ease-out both;
+}
+@keyframes pill-appear-pop {
+  from { filter: drop-shadow(0 0 1px rgba(0, 0, 0, 0.5)); }
+  to   { filter: drop-shadow(0 3px 7px rgba(0, 0, 0, 0.5)); }
+}
 .recorder-pill {
   position: relative;
   width: 100%;
@@ -107,6 +118,8 @@ body {
   gap: 7px;
   padding: 0 8px;
   -webkit-app-region: drag;
+  /* 常驻投影：出现即带影子、消失随窗口一起没影子，两端对称 */
+  filter: drop-shadow(0 3px 7px rgba(0, 0, 0, 0.5));
 }
 .recorder-pill button,
 .non-draggable {
@@ -605,7 +618,8 @@ body {
   .fade-in,
   .recording-pulse,
   .wave-bar,
-  .processing-spin {
+  .processing-spin,
+  .pill-appear {
     animation: none;
   }
   
@@ -762,7 +776,8 @@ body {
   .fade-in,
   .recording-pulse,
   .wave-bar,
-  .processing-spin {
+  .processing-spin,
+  .pill-appear {
     animation: none;
   }
   
@@ -779,6 +794,8 @@ body {
 }
 /* ===== 透明小黑猫皮肤 ===== */
 .cat-skin{position:absolute;inset:0;overflow:visible;pointer-events:auto;-webkit-app-region:drag;background:transparent}
+/* 小猫出现：仅轻微淡入，无缩放/跑入（由 CatSkin/CatSkinFx 在 enter 时一次性触发） */
+@keyframes cs-appear-fade{from{opacity:0}to{opacity:1}}
 .cs-runner{position:absolute;bottom:6px;left:0;transform-origin:center bottom;will-change:transform;pointer-events:none}
 .cs-sleeper{position:absolute;bottom:6px;will-change:transform;pointer-events:none}
 .cs-notes{position:absolute;bottom:22px;left:0;pointer-events:none}

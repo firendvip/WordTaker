@@ -420,8 +420,47 @@ class EmbeddedPythonBuilder {
       }
     }
 
+    // macOS Apple 芯片：额外安装本地大模型润色所需的 llama-cpp-python（Metal 预编译 arm64 轮子）。
+    // 走 abetlen 的 metal wheel 索引，只取二进制轮子、绝不本机编译。
+    if (this.targetPlatform === 'darwin' && this.isArm64) {
+      await this.installLlamaCppMetal(pythonPath);
+    }
+
     // 验证关键依赖
     await this.verifyDependencies(pythonPath);
+  }
+
+  // 安装 llama-cpp-python（macOS arm64 Metal 预编译轮子）。
+  // 说明：metal 轮子索引上个别版本存在损坏（Bad CRC-32），因此固定到一个已验证可用的版本，
+  // 并显式 --only-binary=:all: 确保不本机编译。numpy 保持仓库既有约束（<2，供 funasr_onnx）。
+  async installLlamaCppMetal(pythonPath) {
+    const sitePackagesPath = this.sitePackagesPath();
+    const env = this.pythonEnv();
+    // 固定版本（py3-none-macosx_11_0_arm64，已验证 zip 完整、可加载 GGUF）。
+    const LLAMA_SPEC = 'llama-cpp-python==0.3.30';
+    const METAL_INDEX = '--extra-index-url https://abetlen.github.io/llama-cpp-python/whl/metal';
+    console.log('🦙 安装 llama-cpp-python (Metal, arm64 预编译轮子)...');
+    try {
+      // 先装本体（不带依赖，避免连带升级 numpy 破坏 funasr_onnx）
+      execSync(
+        `"${pythonPath}" -m pip install --target "${sitePackagesPath}" --no-cache-dir --only-binary=:all: --no-deps ${METAL_INDEX} "${LLAMA_SPEC}"`,
+        { stdio: 'inherit', env }
+      );
+      // 再补装纯 Python 依赖（typing_extensions/diskcache/jinja2/MarkupSafe），不动 numpy
+      execSync(
+        `"${pythonPath}" -m pip install --target "${sitePackagesPath}" --no-cache-dir "typing_extensions>=4.5.0" "diskcache>=5.6.1" "jinja2>=2.11.3" "MarkupSafe"`,
+        { stdio: 'inherit', env }
+      );
+      // 兜底：确保 numpy 仍是 funasr_onnx 要求的 <=1.26.4（若被意外升级则纠回）
+      execSync(
+        `"${pythonPath}" -m pip install --target "${sitePackagesPath}" --no-cache-dir "numpy==1.26.4"`,
+        { stdio: 'inherit', env }
+      );
+      console.log('✅ llama-cpp-python 安装完成');
+    } catch (error) {
+      console.error('❌ llama-cpp-python 安装失败:', error.message);
+      // 不中断整体构建：本地润色不可用时应用仍可听写/云端润色。冒烟/CI 侧另行校验。
+    }
   }
 
   // 关键依赖清单（按模式区分）：纯 ONNX 模式不含 torch/librosa/funasr。

@@ -1,4 +1,4 @@
-const { Tray, Menu, nativeImage, app, shell } = require("electron");
+const { Tray, Menu, nativeImage, app, shell, Notification } = require("electron");
 const path = require("path");
 
 class TrayManager {
@@ -12,6 +12,11 @@ class TrayManager {
     this.logger = logger;
     // 数据库管理器（用于读取 tray_icon_style 设置）；可后置注入
     this.databaseManager = databaseManager;
+    // 「提醒」状态：有未读提醒时托盘图标闪烁；左键点击弹系统通知并清除。
+    this._attention = null;      // { title, body } 或 null
+    this._attnTimer = null;      // 闪烁 setInterval 句柄
+    this._attnStopTimer = null;  // 到点停止闪烁（保留未读）的 setTimeout 句柄
+    this._attnFlip = false;      // 闪烁时两图标交替标志
   }
 
   setDatabaseManager(databaseManager) {
@@ -96,8 +101,21 @@ class TrayManager {
       // 创建上下文菜单
       this.updateContextMenu();
 
-      // 左/右键都弹出菜单（应用在后台常驻，平时不显示任何窗口）
+      // 左键：有未读提醒时弹系统通知并清除闪烁；否则照旧弹菜单。右键始终弹菜单。
       this.tray.on("click", () => {
+        if (this._attention) {
+          try {
+            new Notification({
+              title: this._attention.title || "弦外小猫",
+              body: this._attention.body || "",
+              silent: false,
+            }).show();
+          } catch (e) {
+            if (this.logger && this.logger.error) this.logger.error("弹出提醒通知失败:", e);
+          }
+          this.stopAttention();
+          return;
+        }
         this.tray.popUpContextMenu();
       });
       this.tray.on("right-click", () => {
@@ -228,7 +246,49 @@ class TrayManager {
     this.tray.setContextMenu(contextMenu);
   }
 
+  // 触发「提醒」：记录待读文案并让托盘图标闪烁（约 600ms 交替两个图标）。
+  // 已有提醒时只更新文案、不叠加定时器。约 60s 后自动停止闪烁但保留未读（tooltip 提示）。
+  startAttention({ title, body } = {}) {
+    this._attention = { title: title || "弦外小猫", body: body || "" };
+    if (this.tray) this.tray.setToolTip(this._attention.body || "弦外小猫");
+    if (this._attnTimer) return; // 已在闪烁，仅更新文案即可
+    try {
+      const smileIcon = nativeImage.createFromPath(this.getSmileTrayIconPath());
+      const catIcon = nativeImage.createFromPath(this.getCatTrayIconPath());
+      smileIcon.setTemplateImage(true);
+      catIcon.setTemplateImage(false);
+      this._attnFlip = false;
+      this._attnTimer = setInterval(() => {
+        if (!this.tray) return;
+        this._attnFlip = !this._attnFlip;
+        try { this.tray.setImage(this._attnFlip ? catIcon : smileIcon); } catch (e) { /* 忽略 */ }
+      }, 600);
+      // 60s 后停止闪烁，但保留 _attention（点击仍可看到通知）
+      this._attnStopTimer = setTimeout(() => {
+        if (this._attnTimer) { clearInterval(this._attnTimer); this._attnTimer = null; }
+        try { if (this.tray) this.tray.setImage(this.buildTrayIcon()); } catch (e) { /* 忽略 */ }
+      }, 60000);
+    } catch (e) {
+      if (this.logger && this.logger.error) this.logger.error("启动托盘闪烁失败:", e);
+    }
+  }
+
+  // 停止提醒：清定时器、恢复正常图标、清空未读。
+  stopAttention() {
+    if (this._attnTimer) { clearInterval(this._attnTimer); this._attnTimer = null; }
+    if (this._attnStopTimer) { clearTimeout(this._attnStopTimer); this._attnStopTimer = null; }
+    this._attention = null;
+    try {
+      if (this.tray) {
+        this.tray.setImage(this.buildTrayIcon());
+        this.tray.setToolTip("中文语音转文字");
+      }
+    } catch (e) { /* 忽略 */ }
+  }
+
   destroy() {
+    if (this._attnTimer) { clearInterval(this._attnTimer); this._attnTimer = null; }
+    if (this._attnStopTimer) { clearTimeout(this._attnStopTimer); this._attnStopTimer = null; }
     if (this.tray) {
       this.tray.destroy();
       this.tray = null;

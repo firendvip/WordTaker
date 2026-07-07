@@ -237,7 +237,9 @@ class WindowManager {
 
   // 把胶囊录音条放到指定屏幕（默认光标所在屏）的底部居中。
   // 每次唤起都重新定位，忽略用户手动移动。
-  positionMainWindowBottomCenter(display) {
+  // branchLabel：日志用的分支名。默认 "bottom"；跟随开启时 field 失败后的
+  // 「前台窗口所在屏」兜底传 "front-screen"，便于日志区分走了哪级。
+  positionMainWindowBottomCenter(display, branchLabel = "bottom") {
     if (!this.mainWindow || this.mainWindow.isDestroyed()) return;
     try {
       const target = display || this._cursorDisplay();
@@ -246,7 +248,7 @@ class WindowManager {
       const x = Math.round(wa.x + (wa.width - w) / 2);
       const y = Math.round(wa.y + wa.height - h - BOTTOM_OFFSET_PX); // 距屏幕底部 24px
       this.mainWindow.setPosition(x, y);
-      this._logPlacement("bottom", { x: wa.x, y: wa.y, w: wa.width, h: wa.height }, { x, y, width: w, height: h });
+      this._logPlacement(branchLabel, { x: wa.x, y: wa.y, w: wa.width, h: wa.height }, { x, y, width: w, height: h });
     } catch (error) {
       // 定位失败不影响录音
     }
@@ -403,7 +405,10 @@ class WindowManager {
 
   // 唤起前的胶囊定位（不含 show）。绝不抛出：任何异常最终回退到「焦点屏底部居中」。
   // 关闭跟随：保持原行为（焦点屏底部居中）。
-  // 开启跟随：焦点输入框 → 鼠标点 → 焦点屏底部居中，逐级兜底。
+  // 开启跟随：焦点输入框 → 前台窗口所在屏底部居中 → 鼠标点，逐级兜底。
+  //   （原顺序是 field → 鼠标点：三屏场景下鼠标常在副屏、打字焦点在另一屏，
+  //     AX 读不到输入框时胶囊就跟去了鼠标屏，用户感觉"不在焦点附近"。
+  //     现在 field 失败先落到「前台窗口所在屏」——那才是正在打字的屏。）
   async positionPillForRecording() {
     if (!this.mainWindow || this.mainWindow.isDestroyed()) return;
 
@@ -418,14 +423,28 @@ class WindowManager {
 
     // 开启跟随：整段解析包在 try/catch，任何异常 → 底部居中兜底。
     try {
-      // STEP 1：焦点输入框（macOS）。
+      // STEP 1：焦点输入框（macOS）。成功路径保持不变。
       const placedByField = await this._positionByFocusedField();
       if (placedByField) return;
 
-      // STEP 2：光标兜底（含 Windows 跟随路径）。
+      // STEP 2（仅 macOS）：前台窗口所在屏底部居中（用户正在打字的屏），
+      // 日志 branch=front-screen。Windows 无 AX/osascript，保持原「跟鼠标」路径不变。
+      if (process.platform === "darwin") {
+        try {
+          const display = await this.getFocusDisplay();
+          if (display) {
+            this.positionMainWindowBottomCenter(display, "front-screen");
+            return;
+          }
+        } catch (e) {
+          // 取前台窗口屏失败 → 走下一级
+        }
+      }
+
+      // STEP 3：鼠标光标兜底（最后一级；含 Windows 跟随路径）。
       if (this._positionByCursor()) return;
 
-      // STEP 3：原行为——焦点屏底部居中。
+      // STEP 4：原行为——焦点屏底部居中。
       this.positionMainWindowBottomCenter(await this.getFocusDisplay());
     } catch (e) {
       try {

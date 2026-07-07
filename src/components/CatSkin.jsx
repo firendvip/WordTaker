@@ -66,11 +66,17 @@ export default function CatSkin({ micState, audioLevel = 0, isBusy = false }) {
 
       if (mode === "idle") {
         setView("none"); showN(false); x = C; hasEntered = false;
-        if (active) { mode = "enter"; t0 = now; setView("run"); }
+        if (active) {
+          mode = "enter"; t0 = now; setView("run");
+          // 出现改为瞬间：去掉由小跑入放大，仅保留一次轻微 opacity 淡入。
+          runWrap.style.animation = "none"; void runWrap.offsetWidth;
+          runWrap.style.animation = "cs-appear-fade 150ms ease";
+        }
       } else if (mode === "enter") {
-        const te = Math.min(1, (now - t0) / ENTER_MS), k = easeOut(te);
-        x = ENTER_FROM + (C - ENTER_FROM) * k; renderRun(0.32 + 0.68 * k, 1);
-        if (te >= 1) { hasEntered = true; wp = 0; if (!active) { mode = "idle"; } else { mode = want === "rest" ? "settle" : want; t0 = now; xRet = x; } }
+        // 瞬间到位、满尺寸（不再 0.32→1.0 放大、不再侧边跑入）。
+        x = C; renderRun(1, 1); hasEntered = true; wp = 0;
+        if (!active) { mode = "idle"; }
+        else { mode = want === "rest" ? "settle" : want; t0 = now; xRet = x; }
       } else if (mode === "walk" || mode === "process") {
         if (!active || want === "rest") { mode = "settle"; t0 = now; xRet = x; showN(false); }
         else { mode = want; showN(mode === "process"); wp += mode === "process" ? PROC_W : WALK_W; x = C + AMP * Math.sin(wp); renderRun(1, Math.cos(wp) >= 0 ? 1 : -1); if (mode === "process") notes.style.transform = `translateX(${x - 22}px)`; }

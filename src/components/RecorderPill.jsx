@@ -76,7 +76,26 @@ export function RecorderPill({
   const vkLevelRef = useRef(0);
   const vkRecordingRef = useRef(false);
   const breatheRowRef = useRef(null);    // music 皮肤呼吸音符行容器（rAF 写入 --amp）
+  const pillRootRef = useRef(null);      // 胶囊根容器：用于「出现」时的轻微淡入
   useEffect(() => { vkLevelRef.current = audioLevel || 0; }, [audioLevel]);
+
+  // 出现：窗口每次显示（document 从隐藏变可见）时，给胶囊加一次轻微 opacity 淡入。
+  // 去掉了原生窗口「由小变大」的观感（尺寸本就瞬间到位），只保留 ~150ms 纯淡入；
+  // 不触碰消失/结束路径。窗口是复用的（隐藏/显示而非重挂载），故用 visibilitychange 触发。
+  useEffect(() => {
+    const play = () => {
+      const el = pillRootRef.current;
+      if (!el || document.hidden) return;
+      el.classList.remove("pill-appear");
+      // 强制回流，确保连续两次显示都能重新触发动画
+      void el.offsetWidth;
+      el.classList.add("pill-appear");
+    };
+    // 首次挂载即淡入一次
+    play();
+    document.addEventListener("visibilitychange", play);
+    return () => document.removeEventListener("visibilitychange", play);
+  }, []);
   useEffect(() => { vkRecordingRef.current = micState === "recording"; }, [micState]);
 
   // music 皮肤音符上下晃动：用 rAF 缓动写入 --amp，突发/断续声音时幅度平滑过渡不抖
@@ -189,7 +208,7 @@ export function RecorderPill({
   }
 
   return (
-    <div className="pill-root">
+    <div className="pill-root" ref={pillRootRef}>
       <div className={`recorder-pill${modelFailed ? " is-error" : ""}`} title={statusText}>
         {/* 左：白色对勾徽章（点按开始/停止录音） */}
         <button

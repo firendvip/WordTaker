@@ -37,6 +37,10 @@
     <!-- 允许应用访问麦克风 -->
     <key>com.apple.security.device.microphone</key>
     <true/>
+
+    <!-- 硬化运行时（非沙盒）下麦克风音频输入的正确 entitlement -->
+    <key>com.apple.security.device.audio-input</key>
+    <true/>
     
     <!-- 允许应用访问辅助功能（文本插入需要） -->
     <key>com.apple.security.automation.apple-events</key>

@@ -2,6 +2,43 @@ import React from "react";
 import { createRoot } from "react-dom/client";
 import "./index.css";
 
+// 毫秒 → 秒字符串：精确到小数点后 2 位，第 3 位起直接截断(floor，不四舍五入)。
+// 219ms→"0.21"、200ms→"0.20"。
+const formatPolishDuration = (ms) => (Math.floor(ms / 10) / 100).toFixed(2);
+
+// 润色引擎 → 展示名（标明由哪个模型优化）。
+const POLISH_ENGINE_LABELS = {
+  cloud: "云端AI",
+  "local-4b": "本地模型",
+};
+
+// 「AI优化」标题：
+//  - 有 polish_engine → 前缀标明模型「AI优化·<模型>」；老记录无引擎 → 仅「AI优化」。
+//  - 无 polish_duration_ms（老记录/未走润色）→ 只到前缀，不带指标。
+//  - 有耗时 → 追加「 X字/秒，总耗时：Y秒」；X = 润色输出字数 ÷ 总耗时(秒)，取整数。
+//    润色输出字数 = 最终展示的润色结果文本(processed_text)的字符数（按码点计）。
+//  - 若为流式记录（polish_first_char_ms 非空）→ 再追加「，流式上屏首字：Z秒」。
+const aiOptimizeLabel = (item) => {
+  const engineLabel = POLISH_ENGINE_LABELS[item?.polish_engine];
+  let label = engineLabel ? `AI优化·${engineLabel}` : "AI优化";
+
+  const ms = item?.polish_duration_ms;
+  if (!Number.isFinite(ms) || ms <= 0) return label;
+
+  const totalSec = ms / 1000;
+  const outText = item?.processed_text || "";
+  const charCount = [...outText].length;
+  const cps = Math.round(charCount / totalSec);
+
+  label += ` ${cps}字/秒，总耗时：${formatPolishDuration(ms)}秒`;
+
+  const firstMs = item?.polish_first_char_ms;
+  if (Number.isFinite(firstMs)) {
+    label += `，流式上屏首字：${formatPolishDuration(firstMs)}秒`;
+  }
+  return label;
+};
+
 // 历史记录页面组件
 const HistoryPage = () => {
   const handleCopy = async (text, event) => {
@@ -299,6 +336,9 @@ const HistoryContent = ({ onCopy }) => {
                         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
                       </svg>
                       <span>{formatDate(item.created_at)}</span>
+                      <span className="bg-gray-100 dark:bg-neutral-800 text-gray-400 dark:text-neutral-500 px-2 py-0.5 rounded-md text-xs font-mono select-text">
+                        ID {item.id}
+                      </span>
                       {item.confidence > 0 && (
                         <span className="bg-gray-100 dark:bg-neutral-800 text-gray-700 dark:text-neutral-300 px-2 py-0.5 rounded-md text-xs">
                           置信度: {Math.round(item.confidence * 100)}%
@@ -333,7 +373,7 @@ const HistoryContent = ({ onCopy }) => {
                   {/* AI优化（放在上面） */}
                   {item.processed_text && item.processed_text.trim() !== (item.raw_text || item.text || '').trim() && (
                     <div className="mb-4">
-                      <h4 className="text-[13px] font-medium text-gray-500 dark:text-gray-400 mb-2">AI优化</h4>
+                      <h4 className="text-[13px] font-medium text-gray-500 dark:text-gray-400 mb-2">{aiOptimizeLabel(item)}</h4>
                       <p className="chinese-content leading-relaxed bg-gray-50 dark:bg-neutral-800/40 p-4 rounded-xl border border-gray-100 dark:border-neutral-700/30 text-gray-800 dark:text-gray-100">
                         {item.processed_text}
                       </p>
