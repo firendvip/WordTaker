@@ -4,11 +4,14 @@ import { Loader2, ShoppingCart, CreditCard, Sparkles, QrCode } from "lucide-reac
 import { centsToYuan, formatChars } from "./format";
 import { PayQrModal } from "./PayQrModal";
 
+// 微信支付开关：微信仍为 mock，渠道调整暂只展示支付宝（代码保留，置 true 即恢复）。
+const WECHAT_PAY_ENABLED = false;
+
 // 支付渠道：支付宝为真实支付（应用内扫码弹窗，qr_pay_mode=4 嵌入二维码）；微信暂为 mock
 const CHANNELS = [
   { id: "wechat", label: "微信" },
   { id: "alipay", label: "支付宝" },
-];
+].filter((c) => WECHAT_PAY_ENABLED || c.id !== "wechat");
 
 // 自动轮询到账：每 5s 一次，最多 2 分钟
 const POLL_INTERVAL_MS = 5000;
@@ -75,7 +78,7 @@ export function PlansCard({ api, isLoggedIn, onLoginRequest, onPurchased }) {
   const [plans, setPlans] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
-  const [channel, setChannel] = useState("wechat");
+  const [channel, setChannel] = useState(CHANNELS[0].id);
   const [buyingCode, setBuyingCode] = useState("");
   const [waiting, setWaiting] = useState(null); // { planName } 浏览器付款等待态（iframe 失败的回退）
   const [paying, setPaying] = useState(null); // { plan, payUrl } 应用内扫码弹窗

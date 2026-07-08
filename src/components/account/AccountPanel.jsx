@@ -8,17 +8,19 @@ import { RedeemCard } from "./RedeemCard";
 import { PlansCard } from "./PlansCard";
 import { MembershipHero } from "./MembershipHero";
 
+// 短信登录开关：渠道调整暂下线手机验证码入口（代码保留，置 true 即恢复）。
+const SMS_LOGIN_ENABLED = false;
+
 // 登录方式：手机验证码 / 邮箱验证码
 const METHODS = [
   { id: "phone", label: "手机验证码", icon: Smartphone },
   { id: "email", label: "邮箱验证码", icon: Mail },
-];
+].filter((m) => SMS_LOGIN_ENABLED || m.id !== "phone");
 
 const CODE_RESEND_SECONDS = 60;
 
-// 微信登录开关：需微信开放平台「网站应用」审核通过并配好 snsapi_login 后再置 true。
-// 当前用的是小程序 appid（无 snsapi_login 权限），故先隐藏按钮，仅留手机/邮箱验证码登录。
-const WECHAT_LOGIN_ENABLED = false;
+// 微信登录开关：微信开放平台「网站应用」appid 已配好 snsapi_login（real qrconnect），启用。
+const WECHAT_LOGIN_ENABLED = true;
 
 // 账户/会员面板：登录闭环 + 云端额度 + 邀请码 + 兑换码 + 套餐购买（dev mock 支付）。
 // 额度卡匿名可见；改额度操作（兑换/购买）需登录，未登录时引导先登录。
@@ -27,7 +29,7 @@ export function AccountPanel({ rowLabelClass }) {
 
   const [initializing, setInitializing] = useState(true);
   const [account, setAccount] = useState(null); // 已登录账号摘要
-  const [method, setMethod] = useState("phone");
+  const [method, setMethod] = useState(METHODS[0].id);
   const [phone, setPhone] = useState("");
   const [email, setEmail] = useState("");
   const [code, setCode] = useState("");
