@@ -3,6 +3,12 @@
 All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/); versioning follows [SemVer](https://semver.org/).
 
+## [1.22.0] - 2026-07-08
+
+### Changed
+- 无需登录即可使用云端AI——每台机器自动赠送 2000 云端字数（绑定机器码，一台仅一次）；额度卡未登录时显示本机赠送余额
+- 登录后本机剩余赠送额度自动并入账号，并有到账提示
+
 ## [1.21.0] - 2026-07-08
 
 ### Added

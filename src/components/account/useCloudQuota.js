@@ -2,8 +2,9 @@ import { useState, useEffect, useCallback, useRef } from "react";
 
 // 云端额度查询 hook。返回 { quota, loading, error, refresh, clear }。quota 形如
 //   { cloudRemaining, subscription:{active,planCode,endAt}, dailyUsed, dailyCap, registered }
-// 已登录进面板即拉一次；额度变动（兑换/购买成功）后由调用方主动 refresh。
-// 未登录不打网络（后端 /quota 匿名恒 0/registered:false），直接清空展示——省流量、防闪烁。
+// 进面板即拉一次（登录与否都拉）；额度变动（兑换/购买成功）后由调用方主动 refresh。
+// 未登录也请求：后端 /quota 匿名按 X-Device-Id 返回本机赠送额度（registered:false）。
+// isLoggedIn 仅作为依赖参与 refresh 重建：登录/退出时自动重新拉取对应额度。
 export function useCloudQuota(api, isLoggedIn = true) {
   const [quota, setQuota] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -19,13 +20,6 @@ export function useCloudQuota(api, isLoggedIn = true) {
 
   const refresh = useCallback(async () => {
     if (!api?.getCloudQuota) {
-      setLoading(false);
-      return;
-    }
-    // 未登录：不发请求，本地态清空（UI 显示 0 + 引导登录）
-    if (!isLoggedIn) {
-      setQuota(null);
-      setError(null);
       setLoading(false);
       return;
     }
@@ -50,9 +44,10 @@ export function useCloudQuota(api, isLoggedIn = true) {
     } finally {
       if (aliveRef.current) setLoading(false);
     }
+    // isLoggedIn 变化时重建 refresh → useEffect 自动重新拉取（登录拿账号额度 / 退出拿匿名设备额度）
   }, [api, isLoggedIn]);
 
-  // 立即清空本地额度态（退出登录时用）：不打网络，UI 马上回到未登录/清零展示
+  // 立即清空本地额度态（退出登录时用）：不打网络，随后 refresh 会拿到匿名设备额度（可能为 0）
   const clear = useCallback(() => {
     setQuota(null);
     setError(null);

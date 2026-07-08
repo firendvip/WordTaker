@@ -296,6 +296,7 @@ class AiService {
   }
 
   // 「请登录」类通知节流：10 分钟内只提示一次（每次录音都弹会烦）。
+  // 现仅供 401 过期/额度类错误场景复用（未登录已不再前置拦截云端请求）。
   _notifyLoginThrottled(body) {
     const now = Date.now();
     if (now - this._lastLoginNotifyAt < LOGIN_NOTIFY_THROTTLE_MS) return;
@@ -309,35 +310,10 @@ class AiService {
       && this.llmManager.isModelReady('local-4b'));
   }
 
-  // 云端润色必须登录：本地无 token 时不发请求，直接降级。
-  // 返回 null=已登录可继续；否则 { action: 'local' | 'passthrough' }（本地就绪→本地润色，否则原文直贴）。
-  _resolveNotLoggedIn() {
-    let token = null;
-    try {
-      token = require('./tokenStore').getAccessToken();
-    } catch (e) {
-      token = null;
-    }
-    if (token) return null;
-    const localReady = this._isLocalReady();
-    this.logger.warn('云端润色需登录，未登录降级:', { action: localReady ? 'local' : 'passthrough' });
-    this._notifyLoginThrottled(
-      localReady
-        ? '请登录后使用云端AI。本句已自动改用本地模型。'
-        : '请登录后使用云端AI。本句已直接上屏（未润色）。'
-    );
-    return { action: localReady ? 'local' : 'passthrough' };
-  }
-
   async processTextStreamRouted(text, mode, relayUrl, onDelta) {
     const engine = await this.getPolishEngine();
     if (engine === 'cloud') {
-      // 云端必须登录：未登录不发请求，直接降级本地/直贴（通知已在 _resolveNotLoggedIn 内节流触发）
-      const nl = this._resolveNotLoggedIn();
-      if (nl) {
-        if (nl.action === 'local') return await this.processTextViaLocal('local-4b', text, mode, onDelta);
-        return this._passthroughResult(text);
-      }
+      // 未登录也可用云端：backendClient 匿名带 X-Device-Id（设备赠送额度），不做登录前置拦截。
       // 逐句降级判断（余额不足→本地/直贴），只影响 cloud 分支
       const d = await this._resolveCloudDegrade(text);
       if (d.action === 'local') {
@@ -405,12 +381,7 @@ class AiService {
   async processTextWithAI(text, mode = 'optimize') {
     const engine = await this.getPolishEngine();
     if (engine === 'cloud') {
-      // 云端必须登录：未登录不发请求，直接降级本地/直贴（通知已在 _resolveNotLoggedIn 内节流触发）
-      const nl = this._resolveNotLoggedIn();
-      if (nl) {
-        if (nl.action === 'local') return await this.processTextViaLocal('local-4b', text, mode);
-        return this._passthroughResult(text);
-      }
+      // 未登录也可用云端：backendClient 匿名带 X-Device-Id（设备赠送额度），不做登录前置拦截。
       // 逐句降级判断（余额不足→本地/直贴），只影响 cloud 分支
       const d = await this._resolveCloudDegrade(text);
       if (d.action === 'local') {

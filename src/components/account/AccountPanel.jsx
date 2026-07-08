@@ -42,8 +42,8 @@ export function AccountPanel({ rowLabelClass }) {
 
   const isLoggedIn = !!account;
 
-  // 云端额度：登录后进面板拉一次；兑换/购买/登录后 refresh；退出登录先 clear 清零。
-  // 未登录不打网络（后端 /quota 匿名恒 0），hook 内直接清空展示。
+  // 云端额度：进面板即拉一次（未登录拉匿名设备赠送额度）；兑换/购买/登录后 refresh；
+  // 退出登录先 clear 清零，随后 hook 依 isLoggedIn 变化自动重拉（拿到匿名设备额度，可能为 0）。
   const { quota, loading: quotaLoading, error: quotaError, refresh: refreshQuota, clear: clearQuota } =
     useCloudQuota(api, isLoggedIn);
 
@@ -159,6 +159,7 @@ export function AccountPanel({ rowLabelClass }) {
         setShowLoginModal(false);
         toast.success(r.isNew ? "注册并登录成功" : "登录成功");
         if (r.deviceGift === "granted") toast.success("已赠送 2000 云端字数");
+        else if (r.deviceGift === "merged") toast.success("本机剩余赠送额度已并入账号");
         refreshAccount();
         refreshQuota();
       } else {
@@ -182,6 +183,7 @@ export function AccountPanel({ rowLabelClass }) {
         setAccount(r.account || {});
         toast.success(r.isNew ? "微信注册并登录成功" : "微信登录成功");
         if (r.deviceGift === "granted") toast.success("已赠送 2000 云端字数");
+        else if (r.deviceGift === "merged") toast.success("本机剩余赠送额度已并入账号");
         refreshAccount();
         refreshQuota();
       } else {

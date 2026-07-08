@@ -35,26 +35,23 @@ export function QuotaCard({
       </div>
 
       <div className="relative">
-        {!isLoggedIn ? (
-          /* 未登录：不展示任何账号/设备残留数字，统一显示 0 + 引导登录 */
-          <>
-            <p className="text-[36px] leading-tight font-bold tracking-tight">
-              0
-              <span className="text-[15px] font-medium text-white/70 ml-1.5">字</span>
-            </p>
-            <p className="text-[12px] text-white/70 mt-0.5">未登录，登录后查看云端字数</p>
-          </>
-        ) : loading && remaining == null ? (
+        {loading && remaining == null ? (
           <div className="h-10 flex items-center">
             <Loader2 className="w-5 h-5 animate-spin text-white/80" />
           </div>
         ) : error ? (
           <p className="text-[13px] text-white/90 py-2">{error}</p>
         ) : (
-          <p className="text-[36px] leading-tight font-bold tracking-tight">
-            {formatChars(remaining)}
-            <span className="text-[15px] font-medium text-white/70 ml-1.5">字</span>
-          </p>
+          <>
+            <p className="text-[36px] leading-tight font-bold tracking-tight">
+              {formatChars(remaining)}
+              <span className="text-[15px] font-medium text-white/70 ml-1.5">字</span>
+            </p>
+            {/* 未登录：显示的是本机匿名设备的赠送额度，轻标识说明来源 */}
+            {!isLoggedIn && (
+              <p className="text-[12px] text-white/70 mt-0.5">未登录 · 本机赠送额度</p>
+            )}
+          </>
         )}
       </div>
 
