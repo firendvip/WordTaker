@@ -403,12 +403,7 @@ export function PlansCard({ api, isLoggedIn, onLoginRequest, onPurchased }) {
         </div>
       )}
 
-      {channel === "alipay" ? (
-        <p className="mt-3 text-[12px] text-gray-500 dark:text-neutral-400 flex items-center gap-1">
-          <CreditCard className="w-3.5 h-3.5" />
-          支付宝为真实付款：点击后弹出扫码窗口，手机支付宝扫码即可支付。
-        </p>
-      ) : (
+      {channel !== "alipay" && (
         <p className="mt-3 text-[12px] text-amber-600 dark:text-amber-400 flex items-center gap-1">
           <CreditCard className="w-3.5 h-3.5" />
           微信当前为体验版模拟支付，点击购买即时到账，不产生真实扣款。

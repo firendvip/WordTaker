@@ -200,3 +200,6 @@ mobile/ios/DerivedData/
 prompts.local.json
 prompts.local.js
 relay/**/prompts.local.json
+
+# 图标旧版备份（不入库）
+*.bak

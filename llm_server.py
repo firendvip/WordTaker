@@ -176,11 +176,15 @@ class LLMServer:
             from llama_cpp import Llama
 
             t0 = time.time()
+            # GPU 层数按平台分支：
+            #   - macOS（Apple 芯片，Metal 轮子）：-1 = 全部层进 Metal GPU；
+            #   - Windows/Linux（CPU 预编译轮子）：0 = 纯 CPU 推理，显式归零，
+            #     避免依赖轮子后端的隐式行为。
+            n_gpu_layers = -1 if sys.platform == "darwin" else 0
             kwargs = dict(
                 model_path=self.model_path,
                 n_ctx=self.n_ctx,
-                # Apple 芯片：全部层放到 Metal GPU（-1 表示尽可能多）。
-                n_gpu_layers=-1,
+                n_gpu_layers=n_gpu_layers,
                 verbose=False,
             )
             if self.n_threads:

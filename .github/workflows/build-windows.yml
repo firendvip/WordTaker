@@ -102,6 +102,9 @@ jobs:
           $env:PYTHONIOENCODING = "utf-8"
           & $py -c "import numpy, onnxruntime, soundfile; print('onnx deps OK:', 'numpy', numpy.__version__, '| onnxruntime', onnxruntime.__version__)"
           if ($LASTEXITCODE -ne 0) { Write-Error "FAIL: 纯 ONNX 依赖 import 校验失败"; exit 1 }
+          # 本地 4B 润色硬依赖：llama-cpp-python（abetlen CPU 轮子）必须可 import。
+          & $py -c "import llama_cpp; print('llama_cpp OK:', llama_cpp.__version__)"
+          if ($LASTEXITCODE -ne 0) { Write-Error "FAIL: llama_cpp import 校验失败（x64 本地模型润色不可用）"; exit 1 }
           # 瘦身红线：torch/funasr 不应再被打进 x64 包。
           foreach ($bad in @("torch", "funasr")) {
             if (Test-Path (Join-Path "python\Lib\site-packages" $bad)) {
@@ -109,7 +112,7 @@ jobs:
               exit 1
             }
           }
-          Write-Host "x64 纯 ONNX 嵌入式 Python 校验通过（无 torch/funasr）。"
+          Write-Host "x64 纯 ONNX 嵌入式 Python 校验通过（无 torch/funasr，含 llama_cpp）。"
 
       - name: Verify embedded Python (arm64 static)
         if: matrix.arch == 'arm64'
@@ -139,7 +142,14 @@ jobs:
           if (Test-Path (Join-Path $site "torch")) {
             Write-Host "WARN: arm64 包内出现 torch 目录（不应存在，但不致命）"
           }
-          Write-Host "arm64 嵌入式 Python 静态校验通过（运行期导入需在 ARM 机验证）。"
+          # 瘦身红线：llama_cpp 绝不应进 arm64 包（无 win_arm64 轮子，UI 已隐藏本地模型选项）。
+          $llamaDir = Test-Path (Join-Path $site "llama_cpp")
+          $llamaDist = (Get-ChildItem -Path $site -Filter "llama_cpp_python*.dist-info" -Directory -ErrorAction SilentlyContinue | Measure-Object).Count -gt 0
+          if ($llamaDir -or $llamaDist) {
+            Write-Error "FAIL: arm64 包内不应存在 llama_cpp（按设计排除，本地模型选项在 UI 层隐藏）"
+            exit 1
+          }
+          Write-Host "arm64 嵌入式 Python 静态校验通过（运行期导入需在 ARM 机验证；无 llama_cpp）。"
 
       # 下载并准备 SenseVoice ONNX 模型到 models/sensevoice/（仓库 .gitignore 了 models/）。
       # 两个架构的嵌入式 Python 都是纯 ONNX 最小依赖集（无 funasr_onnx/modelscope/torch），

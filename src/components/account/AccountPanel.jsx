@@ -126,7 +126,7 @@ export function AccountPanel({ rowLabelClass }) {
           ? await api.authSmsSend(phone.trim())
           : await api.authEmailSend(email.trim());
       if (r && r.success) {
-        toast.success("验证码已发送（开发环境固定 000000）");
+        toast.success("验证码已发送");
         startCountdown();
       } else {
         toast.error((r && r.error) || "发送失败");
@@ -158,8 +158,6 @@ export function AccountPanel({ rowLabelClass }) {
         setInviteCode("");
         setShowLoginModal(false);
         toast.success(r.isNew ? "注册并登录成功" : "登录成功");
-        if (r.deviceGift === "granted") toast.success("已赠送 2000 云端字数");
-        else if (r.deviceGift === "merged") toast.success("本机剩余赠送额度已并入账号");
         refreshAccount();
         refreshQuota();
       } else {
@@ -182,8 +180,6 @@ export function AccountPanel({ rowLabelClass }) {
       if (r && r.success) {
         setAccount(r.account || {});
         toast.success(r.isNew ? "微信注册并登录成功" : "微信登录成功");
-        if (r.deviceGift === "granted") toast.success("已赠送 2000 云端字数");
-        else if (r.deviceGift === "merged") toast.success("本机剩余赠送额度已并入账号");
         refreshAccount();
         refreshQuota();
       } else {

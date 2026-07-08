@@ -3,6 +3,16 @@
 All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/); versioning follows [SemVer](https://semver.org/).
 
+## [1.23.0] - 2026-07-09
+
+### Added
+- Windows 支持本地大模型润色（x64，CPU 推理；模型后台下载）；Windows ARM64 自动隐藏本地模型选项并回退云端
+
+### Changed
+- 赠送额度改为永久绑定设备（机器码硬件派生，重装不重复赠送）；登录后可用额度=本机赠送剩余+账号余额，消费先扣赠送；登录不再合并/赠送
+- 小猫头像全面矢量化（SVG 唯一源），图标/安装器/托盘各尺寸更清晰
+- 未登录按钮改浅橙色；验证码发送提示去除开发环境说明；移除支付页支付宝说明文字
+
 ## [1.22.0] - 2026-07-08
 
 ### Changed

@@ -393,11 +393,23 @@ class EmbeddedPythonBuilder {
   //   - soundfile：读音频（替代 librosa，自带 libsndfile，两架构均有轮子）
   // 不装 funasr_onnx（其依赖 kaldi-native-fbank/torch，arm64 无轮子；引擎已不需要）。
   onnxDependencies() {
-    return [
+    const deps = [
       { spec: 'numpy>=2.3.0' },
       { spec: 'onnxruntime>=1.24.2' },
       { spec: 'soundfile>=0.12.1' },
     ];
+    // Windows-x64 额外装 llama-cpp-python（本地 4B GGUF 润色，纯 CPU 推理）。
+    // 轮子来源：abetlen 官方 CPU 预编译轮子索引（PyPI 上只有 sdist、CI 绝不本机编译），
+    //   https://abetlen.github.io/llama-cpp-python/whl/cpu
+    // 固定 0.3.19（该索引上 cp311/win_amd64 的最新可用版本，轮子约 4.5MB）。
+    // arm64 不装：无可靠 win_arm64 轮子，本地模型选项在 UI 层按平台隐藏。
+    if (this.isWindows && !this.isArm64) {
+      deps.push({
+        spec: 'llama-cpp-python==0.3.19',
+        extraArgs: '--only-binary=:all: --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu',
+      });
+    }
+    return deps;
   }
 
   // 用嵌入式解释器自带 pip 原生安装依赖（目标解释器可在本机执行的场景：
@@ -490,9 +502,14 @@ class EmbeddedPythonBuilder {
 
   // 关键依赖清单（按模式区分）：纯 ONNX 模式不含 torch/librosa/funasr。
   criticalDeps() {
-    return this.onnxOnly
-      ? ['numpy', 'onnxruntime', 'soundfile']
-      : ['numpy', 'torch', 'librosa', 'funasr', 'onnxruntime', 'funasr_onnx'];
+    if (this.onnxOnly) {
+      const deps = ['numpy', 'onnxruntime', 'soundfile'];
+      // Windows-x64 本地模型润色硬依赖 llama_cpp（缺失应让构建失败而非上线后发现）。
+      // arm64 按设计不含（无 win_arm64 轮子）。
+      if (!this.isArm64) deps.push('llama_cpp');
+      return deps;
+    }
+    return ['numpy', 'torch', 'librosa', 'funasr', 'onnxruntime', 'funasr_onnx'];
   }
 
   // 文件系统校验某个依赖是否已落地：site-packages 下存在「包目录」或「<dep>*.dist-info」。

@@ -176,10 +176,26 @@ class IPCHandlers {
 
     // ——— 润色引擎（cloud / local-4b，互不兜底）———
 
-    // 取当前润色引擎（默认 cloud）
+    // 取当前润色引擎（默认 cloud）。平台不支持本地模型（win32+arm64）时，
+    // 若历史设置里残留 local-*，一次性纠回 cloud 并提示（渲染层直接看到已回退的值）。
     ipcMain.handle("get-polish-engine", async () => {
       try {
-        return await this.databaseManager.getSetting("polish_engine", "cloud");
+        const engine = await this.databaseManager.getSetting("polish_engine", "cloud");
+        const localUnsupported = !!(this.llmManager
+          && typeof this.llmManager.isLocalLLMSupported === "function"
+          && !this.llmManager.isLocalLLMSupported());
+        if (localUnsupported && typeof engine === "string" && engine.startsWith("local-")) {
+          this.logger.warn("润色引擎为本地但当前设备不支持，已回退云端AI", { engine });
+          try { this.databaseManager.setSetting("polish_engine", "cloud"); } catch (e) { /* 忽略 */ }
+          try {
+            const { Notification } = require("electron");
+            if (Notification.isSupported()) {
+              new Notification({ title: "弦外小猫", body: "本地模型暂不支持当前设备，已自动切回云端AI。" }).show();
+            }
+          } catch (e) { /* 通知失败不影响回退 */ }
+          return "cloud";
+        }
+        return engine;
       } catch (error) {
         this.logger.error("读取润色引擎失败:", error);
         return "cloud";
@@ -191,6 +207,12 @@ class IPCHandlers {
       const VALID = new Set(["cloud", "local-4b"]);
       if (!VALID.has(engine)) {
         return { success: false, error: "无效的润色引擎" };
+      }
+      // 平台不支持本地模型（win32+arm64）：拒绝切换，保持云端。
+      if (engine.startsWith("local-") && this.llmManager
+        && typeof this.llmManager.isLocalLLMSupported === "function"
+        && !this.llmManager.isLocalLLMSupported()) {
+        return { success: false, error: "本地模型暂不支持当前设备，请使用云端AI" };
       }
       const r = this.databaseManager.setSetting("polish_engine", engine);
       // 本地引擎且模型就绪：后台切换/预热，即时生效（不等待）

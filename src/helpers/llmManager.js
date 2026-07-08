@@ -23,6 +23,10 @@ const MODELSCOPE_BASE = "https://modelscope.cn/models";
 const DEFAULT_LOCAL_ENGINE = "local-4b";
 const INIT_TIMEOUT_MS = 120000; // 加载 GGUF 最长等待
 
+// 本地 LLM 平台支持：Windows-ARM64 不支持（llama-cpp-python 无可靠 win_arm64 轮子，
+// 嵌入式 Python 未打包该依赖）。macOS（Metal 轮子）与 Windows-x64（CPU 轮子）均支持。
+const LOCAL_LLM_SUPPORTED = !(process.platform === "win32" && process.arch === "arm64");
+
 class LLMManager {
   constructor(logger = null) {
     this.logger = logger || console;
@@ -104,8 +108,15 @@ class LLMManager {
     return Object.prototype.hasOwnProperty.call(LOCAL_ENGINES, engine);
   }
 
-  // 某引擎的模型文件是否已就绪（存在且大小达标）。
+  // 本地 LLM 在当前平台是否可用（win32+arm64 不可用，其余平台可用）。
+  isLocalLLMSupported() {
+    return LOCAL_LLM_SUPPORTED;
+  }
+
+  // 某引擎的模型文件是否已就绪（存在且大小达标）。平台不支持一律视为未就绪，
+  // 让上层（额度降级/预热/后台下载）自然跳过本地路径。
   isModelReady(engine) {
+    if (!LOCAL_LLM_SUPPORTED) return false;
     const cfg = LOCAL_ENGINES[engine];
     if (!cfg) return false;
     const p = this.getModelPath(engine);
@@ -168,6 +179,11 @@ class LLMManager {
 
   // 确保指定引擎已加载并就绪；引擎变化时重载。返回 { success, error? }。
   async ensureEngine(engine) {
+    if (!LOCAL_LLM_SUPPORTED) {
+      const msg = `本地模型暂不支持当前设备（${process.platform}/${process.arch}），请使用云端AI`;
+      this.logger.warn && this.logger.warn("本地 LLM 平台不支持，拒绝启动", { platform: process.platform, arch: process.arch });
+      return { success: false, error: msg, code: "platform_unsupported" };
+    }
     if (!this.isValidLocalEngine(engine)) {
       return { success: false, error: `无效的本地引擎: ${engine}` };
     }
@@ -272,8 +288,13 @@ class LLMManager {
         }
       });
 
+      // 留存启动期 stderr 末尾（Windows 上 python.exe 缺 DLL/import 失败等
+      // 只会打到 stderr 就退出；没有它，日志里只剩一个裸退出码，无法定位）。
+      let stderrTail = "";
       proc.stderr.on("data", (data) => {
-        this.logger.debug && this.logger.debug("LLM stderr", { out: data.toString() });
+        const s = data.toString();
+        if (!settled) stderrTail = (stderrTail + s).slice(-800);
+        this.logger.debug && this.logger.debug("LLM stderr", { out: s });
       });
 
       proc.on("close", (code) => {
@@ -283,8 +304,14 @@ class LLMManager {
           this.serverReady = false;
         }
         if (!settled) {
+          this.logger.error && this.logger.error("本地 LLM 初始化前退出", {
+            code,
+            pythonCmd,
+            modelPath,
+            stderrTail,
+          });
           this.serverStartError = { reason: "process-exited", message: `进程在初始化前退出(${code})` };
-          settle({ success: false, error: `LLM 进程退出(${code})` });
+          settle({ success: false, error: `LLM 进程退出(${code})${stderrTail ? `: ${stderrTail.slice(-200)}` : ""}` });
         }
       });
 
@@ -440,6 +467,8 @@ class LLMManager {
         downloading: this._downloading.has(key),
         bundled: LOCAL_ENGINES[key].bundled,
         expectedSize: LOCAL_ENGINES[key].expectedSize,
+        // 平台支持标记：win32+arm64 为 false，设置页据此隐藏「本地模型」选项。
+        supported: LOCAL_LLM_SUPPORTED,
       };
     }
     return out;
@@ -448,6 +477,10 @@ class LLMManager {
   // 下载指定引擎模型到用户数据目录（HF 直链，失败回退 ModelScope 镜像）。
   // progressCallback({ engine, downloaded, total, progress })。
   async downloadModel(engine, progressCallback = null) {
+    if (!LOCAL_LLM_SUPPORTED) {
+      // win32+arm64：不下 2.7GB 模型（推理依赖未打包，下了也用不了）。
+      return { success: false, error: "本地模型暂不支持当前设备", code: "platform_unsupported" };
+    }
     if (!this.isValidLocalEngine(engine)) {
       return { success: false, error: `无效引擎: ${engine}` };
     }
@@ -472,6 +505,24 @@ class LLMManager {
     }
     const dest = this.getModelPath(engine);
     const tmp = `${dest}.part`;
+
+    // 磁盘空间检查（跨平台，statfsSync 对目录在 mac/win 均可用）：
+    // 剩余需下载体量 + 10% 余量不足则直接失败，避免下到一半写满盘。
+    // statfs 不可用（老 Node/异常）时跳过检查，不阻断下载。
+    try {
+      const already = fs.existsSync(tmp) ? fs.statSync(tmp).size : 0;
+      const needBytes = Math.max(0, cfg.expectedSize - already) * 1.1;
+      const st = fs.statfsSync(dir);
+      const freeBytes = st.bavail * st.bsize;
+      if (freeBytes < needBytes) {
+        this._downloading.delete(engine);
+        const needGB = (needBytes / 1024 / 1024 / 1024).toFixed(1);
+        const freeGB = (freeBytes / 1024 / 1024 / 1024).toFixed(1);
+        return { success: false, error: `磁盘空间不足：需约 ${needGB}GB，剩余 ${freeGB}GB` };
+      }
+    } catch (e) {
+      this.logger.warn && this.logger.warn("模型下载磁盘检查跳过", e?.message || e);
+    }
 
     // 主通道：国内镜像 hf-mirror.com（resolve/main）
     const hfUrl = `${HF_BASE}/${cfg.repo}/resolve/main/${cfg.fileName}`;

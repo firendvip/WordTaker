@@ -1424,9 +1424,12 @@ const SettingsPage = () => {
                     </div>
                   </label>
 
-                  {/* 本地引擎 4B（安装后后台自动下载） */}
+                  {/* 本地引擎 4B（安装后后台自动下载）。
+                      平台不支持时整项隐藏（win32+arm64：llama-cpp 无 win_arm64 轮子，
+                      主进程 getModelsStatus 标记 supported=false）。 */}
                   {LOCAL_ENGINE_META.map((m) => {
                     const status = localModels[m.id] || {};
+                    if (status.supported === false) return null;
                     const ready = !!status.ready || m.bundled;
                     const downloading = !!status.downloading;
                     const progress = downloadProgress[m.id];

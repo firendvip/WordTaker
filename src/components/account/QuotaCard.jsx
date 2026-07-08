@@ -80,7 +80,7 @@ export function QuotaCard({
           <button
             type="button"
             onClick={onLogin}
-            className="inline-flex items-center gap-1 bg-white/15 hover:bg-white/25 text-white/90 rounded-full px-2.5 py-1 text-[12px] font-medium transition-colors"
+            className="inline-flex items-center gap-1 bg-orange-100 hover:bg-orange-200 text-orange-900 rounded-full px-2.5 py-1 text-[12px] font-medium transition-colors"
           >
             未登录 · 点此登录
           </button>

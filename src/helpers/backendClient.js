@@ -164,10 +164,10 @@ async function redeem(code) {
 }
 
 // —— 以下为 CP2（登录）预留的薄封装，接口以 CLIENT_INTEGRATION_SPEC 为准 ——
-// 后端 dev 验证码固定 000000。登录/注册可带 inviteCode、deviceId（匿名合并 + 登录赠字）。
+// 登录/注册可带 inviteCode、deviceId（后端登录不再赠送/合并，deviceGift 仅回 already_granted/no_device/invalid_device）。
 
 // 登录 body 里的 deviceId：后端约束 8-64 位 [A-Za-z0-9._:-]。
-// 本地 UUID 天然合规；仍做规整（剔除非法字符 + 截断 64），规整后不足 8 位则不带（后端按 no_device 处理）。
+// 硬件派生 sha256 截 32 位 hex 天然合规；仍做规整（剔除非法字符 + 截断 64），规整后不足 8 位则不带（后端按 no_device 处理）。
 function loginDeviceId() {
   const raw = String(deviceIdentity.getDeviceId() || "");
   const cleaned = raw.replace(/[^A-Za-z0-9._:-]/g, "").slice(0, 64);
