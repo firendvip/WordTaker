@@ -1,5 +1,7 @@
 const { clipboard } = require("electron");
 const { spawn } = require("child_process");
+const path = require("path");
+const fs = require("fs");
 
 // 模拟 Cmd+V 前，等待剪贴板写入稳定的时间。
 // 剪贴板写入已在 _pasteTextImpl 里做过同步回读校验，这里只需给系统粘贴板很短的传播余量，
@@ -16,6 +18,31 @@ const CLIPBOARD_RESTORE_MS = 700;
 // 粘贴子进程的兜底超时：超过该时间仍未结束则 SIGKILL，避免挂死的粘贴进程堆积（ROB-4）。
 const PASTE_KILL_TIMEOUT_MS = 3000;
 const COPY_SETTLE_MS = 320; // 等待目标应用把选区写入剪贴板（大段选区/慢机器需要更久）
+// Windows 常驻 SendKeys worker：单条命令的回执超时（有真实回执，判定不再靠 exit code 猜）
+const WIN_WORKER_ACK_TIMEOUT_MS = 1500;
+// worker 回执 err 后的重试间隔
+const WIN_WORKER_RETRY_DELAY_MS = 200;
+// 原生按键注入器 sendkeys.exe 的单次执行超时（纯 Win32 SendInput，正常几十 ms 内退出）
+const SENDKEYS_EXE_TIMEOUT_MS = 1000;
+
+// —— Windows 原生按键注入器 sendkeys.exe（三级链最优先路径①）——
+// 企业策略机上 PowerShell 处于 Constrained Language Mode：Add-Type（.NET SendKeys）
+// 与 New-Object -ComObject（WScript.Shell）全被禁 → PS 常驻 worker 与一次性 PS 全灭。
+// sendkeys.exe 是纯 Win32 SendInput 小工具（build/win/sendkeys.c，CI 用 MSVC 编译，
+// 经 extraResources 打进包），不依赖任何脚本引擎，在 CLM 机器上也可用。
+// 仅打包后存在（resources/bin/sendkeys.exe）；dev 环境或文件缺失返回 null，
+// 静默落到②PS worker，不报错。
+function resolveSendkeysExePath() {
+  if (process.platform !== "win32") return null;
+  try {
+    const { app } = require("electron");
+    if (!app || !app.isPackaged) return null; // dev 环境跳过
+    const exe = path.join(process.resourcesPath, "bin", "sendkeys.exe");
+    return fs.existsSync(exe) ? exe : null;
+  } catch (e) {
+    return null;
+  }
+}
 
 // 简单的等待工具：用于粘贴前的稳定窗口与粘贴后的消费窗口。
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -34,6 +61,40 @@ function spawnWindowsSendKeys(psCommand) {
   );
 }
 
+// —— Windows 常驻隐藏 SendKeys worker 脚本 ——
+// 常驻循环读 stdin：'paste'/'copy'/'selectall' → SendKeys，成功回 'ok'，失败回 'err:<原因>'；
+// 'ping' → 'pong'（预热用）。首选 .NET Windows.Forms SendWait（兼容性好），
+// 抛错时同一 worker 内换 WScript.Shell COM 备路再试一次。
+// 相比每次冷启动 PowerShell：无冷启动延迟、无被安全策略反复拦截的概率、有真实回执。
+const WIN_WORKER_SCRIPT = `
+$ErrorActionPreference = 'Stop'
+Add-Type -AssemblyName System.Windows.Forms
+$wsh = $null
+while ($true) {
+  $line = [Console]::In.ReadLine()
+  if ($null -eq $line) { break }
+  if ($line -eq 'ping') { [Console]::Out.WriteLine('pong'); continue }
+  $keys = $null
+  if ($line -eq 'paste') { $keys = '^v' }
+  elseif ($line -eq 'copy') { $keys = '^c' }
+  elseif ($line -eq 'selectall') { $keys = '^a' }
+  if ($null -eq $keys) { [Console]::Out.WriteLine('err:unknown-cmd'); continue }
+  try {
+    [System.Windows.Forms.SendKeys]::SendWait($keys)
+    [Console]::Out.WriteLine('ok')
+  } catch {
+    try {
+      if ($null -eq $wsh) { $wsh = New-Object -ComObject WScript.Shell }
+      $wsh.SendKeys($keys)
+      [Console]::Out.WriteLine('ok')
+    } catch {
+      $msg = ($_.Exception.Message -replace '[\\r\\n]+', ' ')
+      [Console]::Out.WriteLine('err:' + $msg)
+    }
+  }
+}
+`;
+
 class ClipboardManager {
   constructor(logger, databaseManager = null) {
     // 初始化剪贴板管理器
@@ -49,6 +110,12 @@ class ClipboardManager {
     // 否则一句长文会瞬间派生几十上百个进程把输入法/前台 App 卡死。缓存一段时间即可。
     this._accessOk = null;
     this._accessCheckedAt = 0;
+    // Windows 常驻 SendKeys worker：进程句柄 / 待回执队列(FIFO) / stdout 行缓冲
+    this._winWorker = null;
+    this._winWorkerQueue = [];
+    this._winWorkerBuf = "";
+    // 原生按键注入器 sendkeys.exe 路径缓存：undefined=未解析，null=不可用，string=可用路径
+    this._sendkeysExe = undefined;
     
     // 尝试加载 osascript 模块（仅在 macOS 上）
     this.osascript = null;
@@ -280,53 +347,216 @@ class ClipboardManager {
     });
   }
 
-  async pasteWindows(originalClipboard, pastedText) {
-    return new Promise((resolve, reject) => {
-      // 经 spawnWindowsSendKeys：隐藏控制台窗口，避免抢焦点导致 ^v 落空（见顶部注释）。
-      const pasteProcess = spawnWindowsSendKeys(
-        'Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.SendKeys]::SendWait("^v")'
-      );
+  // —— Windows 常驻隐藏 SendKeys worker（回执制，取代每次冷启动 PowerShell）——
 
-      let errorOutput = "";
-      if (pasteProcess.stderr) {
-        pasteProcess.stderr.on("data", (d) => { errorOutput += d.toString(); });
-      }
+  // 实际拉起 worker 进程（独立方法：便于单测替换为 node mock worker）
+  _spawnWinWorkerProcess() {
+    return spawn(
+      "powershell.exe",
+      [
+        "-NoProfile",
+        "-NonInteractive",
+        "-WindowStyle",
+        "Hidden",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-Command",
+        WIN_WORKER_SCRIPT,
+      ],
+      { windowsHide: true, stdio: ["pipe", "pipe", "pipe"] }
+    );
+  }
 
-      let hasTimedOut = false;
-      const timeoutId = setTimeout(() => {
-        hasTimedOut = true;
-        try { pasteProcess.kill("SIGKILL"); } catch (e) { /* 进程可能已退出 */ }
-        reject(new Error("Windows 粘贴操作超时。文本已复制到剪贴板。"));
-      }, PASTE_KILL_TIMEOUT_MS);
-
-      pasteProcess.on("close", (code) => {
-        if (hasTimedOut) return;
-        clearTimeout(timeoutId);
-        if (code === 0) {
-          this.safeLog("✅ Windows 已派发 Ctrl+V（隐藏窗口，无焦点抢占）");
-          // 文本粘贴成功，延迟并校验后恢复
-          this.restoreClipboardLater(originalClipboard, pastedText);
-          resolve();
-        } else {
-          this.safeLog("❌ Windows 粘贴失败", { code, stderr: errorOutput.slice(0, 300) });
-          reject(
-            new Error(
-              `Windows 粘贴失败，代码 ${code}。文本已复制到剪贴板。`
-            )
-          );
+  // 懒启动/复用常驻 worker；worker 挂掉时清空句柄并拒绝所有待回执命令（下次调用自动重启）
+  _ensureWinWorker() {
+    if (this._winWorker && !this._winWorker.killed) return this._winWorker;
+    const proc = this._spawnWinWorkerProcess();
+    this._winWorker = proc;
+    this._winWorkerBuf = "";
+    proc.stdout.on("data", (d) => {
+      this._winWorkerBuf += d.toString();
+      let idx;
+      while ((idx = this._winWorkerBuf.indexOf("\n")) >= 0) {
+        const line = this._winWorkerBuf.slice(0, idx).replace(/\r$/, "").trim();
+        this._winWorkerBuf = this._winWorkerBuf.slice(idx + 1);
+        if (!line) continue;
+        const pending = this._winWorkerQueue.shift();
+        if (pending) {
+          clearTimeout(pending.timer);
+          pending.resolve(line);
         }
+      }
+    });
+    if (proc.stderr) proc.stderr.on("data", () => { /* 丢弃，避免管道堵塞 */ });
+    const onGone = (why) => {
+      if (this._winWorker !== proc) return; // 已被更新/主动清理过
+      this._winWorker = null;
+      const q = this._winWorkerQueue;
+      this._winWorkerQueue = [];
+      q.forEach((p) => {
+        clearTimeout(p.timer);
+        p.reject(new Error("SendKeys worker 已退出: " + why));
       });
+      this.safeLog("⚠️ SendKeys worker 退出，下次按键将自动重启", String(why));
+    };
+    proc.on("exit", (code, signal) => onGone(`exit ${code} ${signal || ""}`));
+    proc.on("error", (e) => onGone(e.message));
+    this.safeLog("🚀 SendKeys worker 已拉起（常驻隐藏，回执制）");
+    return proc;
+  }
 
-      pasteProcess.on("error", (error) => {
+  // 发送一条命令并等待回执行；超时视为 worker 异常 → 杀掉置空（下次懒启动全新 worker）
+  _winWorkerSend(cmd, timeoutMs = WIN_WORKER_ACK_TIMEOUT_MS) {
+    return new Promise((resolve, reject) => {
+      let proc;
+      try {
+        proc = this._ensureWinWorker();
+      } catch (e) {
+        return reject(e);
+      }
+      const pending = { resolve, reject, timer: null };
+      pending.timer = setTimeout(() => {
+        const i = this._winWorkerQueue.indexOf(pending);
+        if (i >= 0) this._winWorkerQueue.splice(i, 1);
+        if (this._winWorker === proc) this._winWorker = null;
+        try { proc.kill(); } catch (e) { /* 可能已退出 */ }
+        reject(new Error(`SendKeys worker 回执超时(${timeoutMs}ms): ${cmd}`));
+      }, timeoutMs);
+      this._winWorkerQueue.push(pending);
+      try {
+        proc.stdin.write(cmd + "\n");
+      } catch (e) {
+        clearTimeout(pending.timer);
+        const i = this._winWorkerQueue.indexOf(pending);
+        if (i >= 0) this._winWorkerQueue.splice(i, 1);
+        reject(e);
+      }
+    });
+  }
+
+  // 解析并缓存 sendkeys.exe 路径（懒解析一次；dev/缺文件为 null → 直接走②）
+  _getSendkeysExe() {
+    if (this._sendkeysExe === undefined) this._sendkeysExe = resolveSendkeysExePath();
+    return this._sendkeysExe;
+  }
+
+  // 运行一次 sendkeys.exe <cmd>：exit code 0 = 成功；超时/非 0/spawn 失败均 reject
+  _runSendkeysExe(exe, cmd) {
+    return new Promise((resolve, reject) => {
+      const p = spawn(exe, [cmd], { windowsHide: true });
+      let hasTimedOut = false;
+      const to = setTimeout(() => {
+        hasTimedOut = true;
+        try { p.kill("SIGKILL"); } catch (e) { /* 进程可能已退出 */ }
+        reject(new Error(`sendkeys.exe 超时(${SENDKEYS_EXE_TIMEOUT_MS}ms)`));
+      }, SENDKEYS_EXE_TIMEOUT_MS);
+      p.on("close", (code) => {
         if (hasTimedOut) return;
-        clearTimeout(timeoutId);
-        reject(
-          new Error(
-            `Windows 粘贴失败: ${error.message}。文本已复制到剪贴板。`
-          )
-        );
+        clearTimeout(to);
+        code === 0 ? resolve() : reject(new Error(`sendkeys.exe 退出码 ${code}`));
+      });
+      p.on("error", (e) => {
+        if (hasTimedOut) return;
+        clearTimeout(to);
+        reject(e);
       });
     });
+  }
+
+  // 高层按键入口（三级链）：① 原生 sendkeys.exe（纯 Win32 SendInput，CLM 企业策略机唯一可用路径）
+  // → ② PS 常驻 worker（回执制，err 回执 200ms 后重试一次）→ ③ 一次性隐藏 PowerShell
+  async _pressKeyWin(cmd) {
+    const exe = this._getSendkeysExe();
+    if (exe) {
+      try {
+        await this._runSendkeysExe(exe, cmd);
+        this.safeLog(`✅ sendkeys.exe ${cmd} 成功（原生 SendInput）`);
+        return;
+      } catch (e) {
+        this.safeLog(`⚠️ sendkeys.exe ${cmd} 失败，回退 PS worker: ${e.message}`);
+      }
+    }
+    try {
+      let reply = await this._winWorkerSend(cmd);
+      if (reply === "ok") return;
+      this.safeLog("⚠️ SendKeys worker 回执异常，稍后重试一次", reply.slice(0, 200));
+      await sleep(WIN_WORKER_RETRY_DELAY_MS);
+      reply = await this._winWorkerSend(cmd);
+      if (reply === "ok") return;
+      throw new Error("worker 回执: " + reply.slice(0, 200));
+    } catch (workerErr) {
+      // 最后备路：worker 拉不起来/超时/连续 err 时，退回旧的一次性隐藏 PowerShell
+      this.safeLog("⚠️ SendKeys worker 失败，回退一次性 PowerShell", workerErr.message);
+      await this._pressKeyWinOneShot(cmd);
+    }
+  }
+
+  // 旧路径保留为最后备路：一次性隐藏 PowerShell SendKeys（exit code 判定）
+  _pressKeyWinOneShot(cmd) {
+    const keys = { paste: "^v", copy: "^c", selectall: "^a" }[cmd];
+    if (!keys) return Promise.reject(new Error("unknown key cmd: " + cmd));
+    return new Promise((resolve, reject) => {
+      const p = spawnWindowsSendKeys(
+        `Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.SendKeys]::SendWait("${keys}")`
+      );
+      let hasTimedOut = false;
+      const to = setTimeout(() => {
+        hasTimedOut = true;
+        try { p.kill("SIGKILL"); } catch (e) { /* 进程可能已退出 */ }
+        reject(new Error(`Windows ${cmd} 操作超时。文本已复制到剪贴板。`));
+      }, PASTE_KILL_TIMEOUT_MS);
+      p.on("close", (code) => {
+        if (hasTimedOut) return;
+        clearTimeout(to);
+        code === 0 ? resolve() : reject(new Error(`Windows ${cmd} 失败，代码 ${code}。文本已复制到剪贴板。`));
+      });
+      p.on("error", (e) => {
+        if (hasTimedOut) return;
+        clearTimeout(to);
+        reject(new Error(`Windows ${cmd} 失败: ${e.message}。文本已复制到剪贴板。`));
+      });
+    });
+  }
+
+  // App 启动后空闲预热：提前拉起 worker + ping，让首次粘贴不吃 PowerShell 冷启动延迟
+  async prewarmWindowsWorker() {
+    if (process.platform !== "win32") return;
+    try {
+      const reply = await this._winWorkerSend("ping");
+      this.safeLog(reply === "pong" ? "✅ SendKeys worker 预热完成" : "⚠️ SendKeys worker 预热回执异常: " + reply);
+    } catch (e) {
+      this.safeLog("⚠️ SendKeys worker 预热失败（首次粘贴时自动重试）:", e?.message || e);
+    }
+  }
+
+  // App 退出时清理常驻 worker，绝不留孤儿进程
+  killWinWorker() {
+    const proc = this._winWorker;
+    this._winWorker = null; // 先置空，让 onGone 的守卫跳过重复清理
+    const q = this._winWorkerQueue;
+    this._winWorkerQueue = [];
+    q.forEach((p) => {
+      clearTimeout(p.timer);
+      p.reject(new Error("App 退出，SendKeys worker 已关闭"));
+    });
+    if (proc) {
+      try { proc.stdin.end(); } catch (e) { /* 忽略 */ }
+      try { proc.kill(); } catch (e) { /* 忽略 */ }
+    }
+  }
+
+  async pasteWindows(originalClipboard, pastedText) {
+    // 剪贴板写入已在 _pasteTextImpl 回读校验，这里给系统粘贴板短暂传播余量后再发 'paste'
+    await sleep(PASTE_SETTLE_MS);
+    try {
+      await this._pressKeyWin("paste");
+    } catch (e) {
+      this.safeLog("❌ Windows 粘贴失败（worker 与备路均失败）", e.message);
+      throw new Error(`Windows 粘贴失败: ${e.message}。文本已复制到剪贴板。`);
+    }
+    this.safeLog("✅ Windows 粘贴回执 ok（常驻 worker / 备路）");
+    // 收到 ok 回执后再安排延迟恢复原剪贴板，避免竞态截断
+    this.restoreClipboardLater(originalClipboard, pastedText);
   }
 
   async pasteLinux(originalClipboard, pastedText) {
@@ -526,14 +756,13 @@ class ClipboardManager {
     try { clipboard.writeText(text); } catch (e) { /* 忽略 */ }
   }
 
-  // 按一次粘贴键（不恢复剪贴板），平台通用
+  // 按一次粘贴键（不恢复剪贴板），平台通用；Windows 走常驻 worker（回执制，失败自动回退一次性 spawn）
   _pressPaste() {
+    if (process.platform === "win32") return this._pressKeyWin("paste");
     return new Promise((resolve, reject) => {
       let p;
       if (process.platform === "darwin") {
         p = spawn("osascript", ["-e", 'tell application "System Events" to keystroke "v" using command down']);
-      } else if (process.platform === "win32") {
-        p = spawnWindowsSendKeys('Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.SendKeys]::SendWait("^v")');
       } else {
         p = spawn("xdotool", ["key", "ctrl+v"]);
       }
@@ -545,12 +774,11 @@ class ClipboardManager {
 
   // 按一次复制键（Cmd/Ctrl+C），不动剪贴板恢复，平台通用。结构与 _pressPaste 一致。
   _pressCopy() {
+    if (process.platform === "win32") return this._pressKeyWin("copy");
     return new Promise((resolve, reject) => {
       let p;
       if (process.platform === "darwin") {
         p = spawn("osascript", ["-e", 'tell application "System Events" to keystroke "c" using command down']);
-      } else if (process.platform === "win32") {
-        p = spawnWindowsSendKeys('Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.SendKeys]::SendWait("^c")');
       } else {
         p = spawn("xdotool", ["key", "ctrl+c"]);
       }
@@ -563,12 +791,11 @@ class ClipboardManager {
 
   // 按一次全选键（Cmd/Ctrl+A），平台通用。结构与 _pressPaste 一致。
   _pressSelectAll() {
+    if (process.platform === "win32") return this._pressKeyWin("selectall");
     return new Promise((resolve, reject) => {
       let p;
       if (process.platform === "darwin") {
         p = spawn("osascript", ["-e", 'tell application "System Events" to keystroke "a" using command down']);
-      } else if (process.platform === "win32") {
-        p = spawnWindowsSendKeys('Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.SendKeys]::SendWait("^a")');
       } else {
         p = spawn("xdotool", ["key", "ctrl+a"]);
       }

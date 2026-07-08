@@ -3,6 +3,15 @@
 All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/); versioning follows [SemVer](https://semver.org/).
 
+## [1.20.1] - 2026-07-08
+
+### Fixed
+- Windows 转写结果不粘贴到焦点输入框（企业策略机型 PowerShell 约束语言模式导致按键注入全灭）——新增原生 sendkeys.exe 注入器（CI 编译随包分发，不依赖任何脚本引擎），粘贴链路改为 原生exe→常驻PS worker→一次性PS 三级；粘贴失败不再弹通知窗，仅记日志且文本留在剪贴板
+
+### Changed
+- Windows 粘贴通道改常驻隐藏进程+真实回执（预热/重试/退出清理）
+- 安装器界面定制——标题栏图标补 20px 共 8 档更清晰；安装中提示改「弦外小猫 正在安装，语音模型较大，请耐心等待...」；完成页新增使用提示（单击左alt录音、再次单击结束并AI润色）；界面配色改小猫画风（奶白底+侧栏/页眉小猫图）
+
 ## [1.20.0] - 2026-07-08
 
 ### Added

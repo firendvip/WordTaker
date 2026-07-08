@@ -1056,6 +1056,18 @@ async function startApp() {
     }
   })();
 
+  // Windows：空闲时预热常驻 SendKeys worker（拉起隐藏 PowerShell + ping），
+  // 首次粘贴不吃冷启动延迟；失败不影响启动，首次粘贴时会自动重试懒启动。
+  if (process.platform === "win32") {
+    setTimeout(() => {
+      try {
+        clipboardManager.prewarmWindowsWorker();
+      } catch (e) {
+        logger.warn('SendKeys worker 预热失败', e?.message || e);
+      }
+    }, 2500);
+  }
+
   // 安装后静默下载本地 4B 模型：默认引擎为云端AI，用户可立即使用；4B 在后台自动补齐。
   // 已就绪 / 正在下载则跳过；失败一律吞掉并 log，绝不崩主进程；断点续传由 llmManager 内部处理。
   (async () => {
@@ -1224,6 +1236,10 @@ app.on("will-quit", () => {
   } catch (error) {
     logger.error('关闭本地 LLM 失败:', error);
   }
+  // 关闭 Windows 常驻 SendKeys worker（mac/linux 为空操作），绝不留孤儿 PowerShell
+  try {
+    clipboardManager.killWinWorker();
+  } catch (_) { /* 忽略 */ }
   try {
     cancelTriggerManager.stop();
   } catch (_) { /* 忽略 */ }
@@ -1241,6 +1257,7 @@ app.on("will-quit", () => {
 app.on("before-quit", () => {
   try { funasrManager.killServerSync(); } catch (e) { /* 忽略 */ }
   try { llmManager.killServerSync(); } catch (e) { /* 忽略 */ }
+  try { clipboardManager.killWinWorker(); } catch (e) { /* 忽略 */ }
 });
 
 // 导出管理器供其他模块使用

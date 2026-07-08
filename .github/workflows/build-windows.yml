@@ -204,6 +204,29 @@ jobs:
       - name: Build renderer (Vite)
         run: pnpm run build:renderer
 
+      # 编译原生按键注入器 sendkeys.exe（纯 Win32 SendInput，零脚本引擎依赖）。
+      # 企业策略机 PowerShell 处于 Constrained Language Mode 时 Add-Type / COM 全被禁，
+      # 该 exe 是 clipboard.js Windows 按键三级链的最优先路径（①exe → ②PS worker → ③一次性 PS）。
+      # arm64 leg 用 amd64_arm64 交叉工具链在 x64 runner 上编出 ARM64 PE。
+      # 产物 build/win/sendkeys.exe 由 package.json build.win.extraResources 打进包（resources/bin/sendkeys.exe）。
+      - name: Setup MSVC toolchain
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: ${{ matrix.arch == 'arm64' && 'amd64_arm64' || 'amd64' }}
+
+      - name: Compile sendkeys.exe (native key injector)
+        shell: cmd
+        run: cl /nologo /O1 /W3 build\win\sendkeys.c /Fe:build\win\sendkeys.exe /link user32.lib
+
+      - name: Assert sendkeys.exe built
+        shell: pwsh
+        run: |
+          if (-not (Test-Path "build\win\sendkeys.exe")) {
+            Write-Error "FAIL: build\win\sendkeys.exe 未生成（MSVC 编译失败？）"
+            exit 1
+          }
+          Write-Host ("OK: sendkeys.exe 已生成（{0} KB）" -f [math]::Round((Get-Item "build\win\sendkeys.exe").Length/1KB, 1))
+
       # 真正产出 .exe：nsis 安装器 + portable 便携版，按矩阵架构构建。--publish never 不发布到 GitHub。
       # 关键修复（v1.4.6）：package.json 的 build.win.target 显式写了 arch:["x64","arm64"]，
       # 此时 `--win --<arch>` 标志只作「无 arch 目标」的默认值，不会过滤显式 arch 列表——
