@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import { toast } from "sonner";
-import { Loader2, ShoppingCart, CreditCard, Sparkles, QrCode } from "lucide-react";
+import { Loader2, ShoppingCart, CreditCard, QrCode } from "lucide-react";
 import { centsToYuan, formatChars } from "./format";
 import { PayQrModal } from "./PayQrModal";
 
@@ -17,14 +17,11 @@ const CHANNELS = [
 const POLL_INTERVAL_MS = 5000;
 const POLL_MAX_TICKS = 24;
 
-// 套餐权益一行文案
+// 套餐权益一行文案（后端现只售字数包：charAmount + validityDays）
 function planBenefit(p) {
-  if (p.type === "subscription") {
-    const days = p.durationDays || 0;
-    return days >= 365 ? "订阅 · 有效期约 1 年" : `订阅 · ${days} 天不限量`;
-  }
-  if (p.charAmount != null) return `字数包 · ${formatChars(p.charAmount)} 字`;
-  return "";
+  if (p.charAmount == null) return "";
+  const dur = durationCN(p.validityDays ?? p.durationDays);
+  return `字数包 · ${charsCN(p.charAmount)} 字${dur ? ` · 有效期${dur}` : ""}`;
 }
 
 // 字数以「万」为单位的中文友好展示（100000 → "10万"），不整万时退回千分位
@@ -44,15 +41,12 @@ function durationCN(days) {
   return `${d}天`;
 }
 
-// 支付弹窗副标题：明确写清是充值包还是订阅、哪一档（从 Plan 数据拼，不写死）
+// 支付弹窗副标题：写清哪一档字数包（从 Plan 数据拼，不写死）
 function payDesc(p) {
   if (!p) return "";
-  const dur = durationCN(p.durationDays);
-  if (p.type === "subscription") {
-    return `订阅 · ${p.name}（云端不限量${dur ? `/${dur}` : ""}）`;
-  }
+  const dur = durationCN(p.validityDays ?? p.durationDays);
   const chars = p.charAmount != null ? `云端${charsCN(p.charAmount)}字` : "";
-  const inner = [chars, dur].filter(Boolean).join("/");
+  const inner = [chars, dur ? `有效期${dur}` : ""].filter(Boolean).join("/");
   return `充值包 · ${p.name}${inner ? `（${inner}）` : ""}`;
 }
 
@@ -155,7 +149,7 @@ export function PlansCard({ api, isLoggedIn, onLoginRequest, onPurchased }) {
       stopPolling();
       setWaiting(null);
       setPaidDone(true);
-      toast.success(`支付成功：${planName}，字数/订阅已到账`);
+      toast.success(`支付成功：${planName}，云端字数已到账`);
       onPurchased && onPurchased();
       if (closeTimerRef.current) clearTimeout(closeTimerRef.current);
       closeTimerRef.current = setTimeout(() => {
@@ -367,20 +361,14 @@ export function PlansCard({ api, isLoggedIn, onLoginRequest, onPurchased }) {
       ) : (
         <div className="grid grid-cols-2 gap-2.5">
           {plans.map((p) => {
-            const isSub = p.type === "subscription";
             const busy = buyingCode === p.code;
             const isAlipay = channel === "alipay";
             return (
               <div
                 key={p.code}
-                className={`rounded-xl border p-3 flex flex-col ${
-                  isSub
-                    ? "border-amber-200 dark:border-amber-500/30 bg-amber-50/40 dark:bg-amber-500/5"
-                    : "border-gray-150 dark:border-neutral-700 bg-white dark:bg-neutral-900"
-                }`}
+                className="rounded-xl border p-3 flex flex-col border-gray-150 dark:border-neutral-700 bg-white dark:bg-neutral-900"
               >
                 <div className="flex items-center gap-1.5">
-                  {isSub && <Sparkles className="w-3.5 h-3.5 text-amber-500" />}
                   <span className="text-[14px] font-semibold text-gray-900 dark:text-gray-100">
                     {p.name}
                   </span>

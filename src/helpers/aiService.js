@@ -43,6 +43,8 @@ const QUOTA_ALERT_PREV_KEY = 'quota_alert_prev_remaining';
 const QUOTA_ALERT_PREV_DEFAULT = 1e12;
 // 额度快照最大有效期（超过则重新拉取；充值后 15s 内会自动过期→自动切回云端）。
 const QUOTA_SNAP_MAX_AGE_MS = 15000;
+// 「请登录」类系统通知的节流间隔：每次录音都提示会烦，10 分钟内只提示一次。
+const LOGIN_NOTIFY_THROTTLE_MS = 10 * 60 * 1000;
 
 class AiService {
   constructor({ databaseManager, logger, llmManager = null }) {
@@ -54,6 +56,8 @@ class AiService {
     this._quotaSnap = null;
     // 提醒回调（main.js 注入，通常指向 trayManager.startAttention）。未注入则安全降级。
     this._notifier = null;
+    // 上次「请登录」类通知时间戳（内存态，重启重置），配合 LOGIN_NOTIFY_THROTTLE_MS 节流。
+    this._lastLoginNotifyAt = 0;
   }
 
   // 注入提醒回调（payload:{title, body}）。main.js 里传 (p)=>trayManager.startAttention(p)。
@@ -291,9 +295,49 @@ class AiService {
     return { success: true, text: (typeof text === 'string' ? text : ''), engine: 'passthrough' };
   }
 
+  // 「请登录」类通知节流：10 分钟内只提示一次（每次录音都弹会烦）。
+  _notifyLoginThrottled(body) {
+    const now = Date.now();
+    if (now - this._lastLoginNotifyAt < LOGIN_NOTIFY_THROTTLE_MS) return;
+    this._lastLoginNotifyAt = now;
+    this._notify('弦外小猫', body);
+  }
+
+  // 本地 4B 模型是否就绪（登录降级/额度降级共用判断）。
+  _isLocalReady() {
+    return !!(this.llmManager && typeof this.llmManager.isModelReady === 'function'
+      && this.llmManager.isModelReady('local-4b'));
+  }
+
+  // 云端润色必须登录：本地无 token 时不发请求，直接降级。
+  // 返回 null=已登录可继续；否则 { action: 'local' | 'passthrough' }（本地就绪→本地润色，否则原文直贴）。
+  _resolveNotLoggedIn() {
+    let token = null;
+    try {
+      token = require('./tokenStore').getAccessToken();
+    } catch (e) {
+      token = null;
+    }
+    if (token) return null;
+    const localReady = this._isLocalReady();
+    this.logger.warn('云端润色需登录，未登录降级:', { action: localReady ? 'local' : 'passthrough' });
+    this._notifyLoginThrottled(
+      localReady
+        ? '请登录后使用云端AI。本句已自动改用本地模型。'
+        : '请登录后使用云端AI。本句已直接上屏（未润色）。'
+    );
+    return { action: localReady ? 'local' : 'passthrough' };
+  }
+
   async processTextStreamRouted(text, mode, relayUrl, onDelta) {
     const engine = await this.getPolishEngine();
     if (engine === 'cloud') {
+      // 云端必须登录：未登录不发请求，直接降级本地/直贴（通知已在 _resolveNotLoggedIn 内节流触发）
+      const nl = this._resolveNotLoggedIn();
+      if (nl) {
+        if (nl.action === 'local') return await this.processTextViaLocal('local-4b', text, mode, onDelta);
+        return this._passthroughResult(text);
+      }
       // 逐句降级判断（余额不足→本地/直贴），只影响 cloud 分支
       const d = await this._resolveCloudDegrade(text);
       if (d.action === 'local') {
@@ -361,6 +405,12 @@ class AiService {
   async processTextWithAI(text, mode = 'optimize') {
     const engine = await this.getPolishEngine();
     if (engine === 'cloud') {
+      // 云端必须登录：未登录不发请求，直接降级本地/直贴（通知已在 _resolveNotLoggedIn 内节流触发）
+      const nl = this._resolveNotLoggedIn();
+      if (nl) {
+        if (nl.action === 'local') return await this.processTextViaLocal('local-4b', text, mode);
+        return this._passthroughResult(text);
+      }
       // 逐句降级判断（余额不足→本地/直贴），只影响 cloud 分支
       const d = await this._resolveCloudDegrade(text);
       if (d.action === 'local') {
@@ -416,6 +466,24 @@ class AiService {
     } catch (err) {
       const kind = err && err.kind;
       const code = err && err.code;
+
+      // 401 NOT_LOGGED_IN（token 过期/失效）：清 token + 降级本地/直贴 + 通知重新登录。
+      if (code === 'NOT_LOGGED_IN' || (kind === 'http' && err.status === 401)) {
+        try {
+          require('./tokenStore').clear();
+        } catch (e) { /* 清除失败不阻断降级 */ }
+        const localReady = this._isLocalReady();
+        this.logger.warn('云端润色 401，登录已过期，清 token 并降级:', {
+          action: localReady ? 'local' : 'passthrough',
+        });
+        // 过期通知直接发（一次性事件：清 token 后后续走未登录节流路径），并同步节流时间戳防紧跟着重复弹
+        this._lastLoginNotifyAt = Date.now();
+        this._notify('弦外小猫', localReady
+          ? '登录已过期，请重新登录。本句已自动改用本地模型。'
+          : '登录已过期，请重新登录。本句已直接上屏（未润色）。');
+        if (localReady) return await this.processTextViaLocal('local-4b', text, mode);
+        return this._passthroughResult(text);
+      }
 
       // 额度不足 / 超日上限：结构化失败，绝不回退 relay、绝不转本地。
       if (code === 'INSUFFICIENT_QUOTA' || code === 'DAILY_CAP_EXCEEDED') {

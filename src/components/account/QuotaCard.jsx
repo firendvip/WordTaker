@@ -35,7 +35,16 @@ export function QuotaCard({
       </div>
 
       <div className="relative">
-        {loading && remaining == null ? (
+        {!isLoggedIn ? (
+          /* 未登录：不展示任何账号/设备残留数字，统一显示 0 + 引导登录 */
+          <>
+            <p className="text-[36px] leading-tight font-bold tracking-tight">
+              0
+              <span className="text-[15px] font-medium text-white/70 ml-1.5">字</span>
+            </p>
+            <p className="text-[12px] text-white/70 mt-0.5">未登录，登录后查看云端字数</p>
+          </>
+        ) : loading && remaining == null ? (
           <div className="h-10 flex items-center">
             <Loader2 className="w-5 h-5 animate-spin text-white/80" />
           </div>
@@ -49,23 +58,25 @@ export function QuotaCard({
         )}
       </div>
 
-      <div className="mt-3 flex flex-wrap items-center gap-2 relative">
-        {subActive ? (
-          <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[12px] font-medium bg-amber-300/90 text-amber-900">
-            <Crown className="w-3.5 h-3.5" />
-            {sub.endAt ? `订阅有效 · 至 ${formatDate(sub.endAt)}` : "订阅有效 · 不限量"}
-          </span>
-        ) : (
-          <span className="inline-flex items-center px-2.5 py-1 rounded-full text-[12px] font-medium bg-white/15 text-white/90">
-            未订阅
-          </span>
-        )}
-        {dailyUsed != null && (
-          <span className="inline-flex items-center px-2.5 py-1 rounded-full text-[12px] font-medium bg-white/15 text-white/90">
-            今日已用 {formatChars(dailyUsed)} 字
-          </span>
-        )}
-      </div>
+      {isLoggedIn && (
+        <div className="mt-3 flex flex-wrap items-center gap-2 relative">
+          {subActive ? (
+            <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[12px] font-medium bg-amber-300/90 text-amber-900">
+              <Crown className="w-3.5 h-3.5" />
+              {sub.endAt ? `订阅有效 · 至 ${formatDate(sub.endAt)}` : "订阅有效 · 不限量"}
+            </span>
+          ) : (
+            <span className="inline-flex items-center px-2.5 py-1 rounded-full text-[12px] font-medium bg-white/15 text-white/90">
+              未订阅
+            </span>
+          )}
+          {dailyUsed != null && (
+            <span className="inline-flex items-center px-2.5 py-1 rounded-full text-[12px] font-medium bg-white/15 text-white/90">
+              今日已用 {formatChars(dailyUsed)} 字
+            </span>
+          )}
+        </div>
+      )}
 
       {!isLoggedIn && !loading && (
         <div className="mt-3 relative">

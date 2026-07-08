@@ -213,7 +213,13 @@ const SettingsPage = () => {
   }, []);
 
   // 选择引擎：立即持久化并生效（本地引擎会在主进程后台切换/预热）。
+  // 点击已选中的引擎时给出明确反馈（radio 已 checked 时不触发 onChange，需经 onClick 走到这里）。
   const chooseEngine = async (engine) => {
+    if (engine === polishEngine) {
+      const label = engine === "cloud" ? "云端AI" : "本地模型";
+      toast.success(`当前正在使用「${label}」`);
+      return;
+    }
     try {
       setPolishEngineState(engine);
       if (window.electronAPI?.setPolishEngine) {
@@ -788,6 +794,8 @@ const SettingsPage = () => {
 
   return (
     <div className="h-screen bg-gray-50 dark:bg-neutral-950 flex flex-col">
+      {/* Toast 容器：设置窗口是独立页面，必须自己挂载，否则所有 toast 反馈都不可见 */}
+      <Toaster position="top-center" richColors />
       {/* 主要内容 - 左侧分类 + 右侧内容面板 */}
       <div className="flex-1 flex min-h-0 overflow-hidden">
         {/* 左侧分类侧边栏 */}
@@ -1405,6 +1413,7 @@ const SettingsPage = () => {
                         name="polish_engine"
                         checked={polishEngine === "cloud"}
                         onChange={() => chooseEngine("cloud")}
+                        onClick={() => { if (polishEngine === "cloud") chooseEngine("cloud"); }}
                         className="accent-neutral-900 dark:accent-white"
                       />
                       <Cloud className="w-4 h-4 text-neutral-500 dark:text-neutral-400" />
@@ -1434,6 +1443,7 @@ const SettingsPage = () => {
                             checked={selected}
                             disabled={!ready}
                             onChange={() => ready && chooseEngine(m.id)}
+                            onClick={() => { if (ready && selected) chooseEngine(m.id); }}
                             className="accent-neutral-900 dark:accent-white disabled:opacity-40"
                           />
                           <Cpu className="w-4 h-4 text-neutral-500 dark:text-neutral-400" />

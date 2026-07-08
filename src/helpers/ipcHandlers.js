@@ -1506,6 +1506,8 @@ class IPCHandlers {
         account,
         isNew: !!(data && data.isNew),
         cloudRemaining: (data && data.cloudRemaining) ?? null,
+        // 登录赠字结果：granted / already_granted / invalid_device / no_device（UI 据此提示）
+        deviceGift: (data && data.deviceGift) || null,
       };
     };
 

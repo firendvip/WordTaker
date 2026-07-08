@@ -3,6 +3,22 @@
 All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/); versioning follows [SemVer](https://semver.org/).
 
+## [1.21.0] - 2026-07-08
+
+### Added
+- 首次登录赠送 2000 云端字数（绑定本机机器码，一台机器仅赠一次）
+
+### Changed
+- 充值套餐全新改版——4 档字数包：小包 ¥9/15万字、中包 ¥19/40万字、大包 ¥39/100万字（各 1 年），超大包 ¥99/300万字（2 年）；订阅形式下线
+- 云端AI 需登录使用——未登录时字数显示 0，说话自动降级本地模型/原文并提示登录（10分钟内只提醒一次）
+
+### Fixed
+- 退出登录后云端字数仍显示原账号数值的问题——退出即清零
+- 设置页所有操作提示不显示（Toaster 未挂载）；点选已在使用的润色引擎现在有明确反馈
+
+### Docs
+- 新增 Windows 打包指南（docs/WINDOWS_BUILD.md），打包规则写入 CLAUDE.md
+
 ## [1.20.1] - 2026-07-08
 
 ### Fixed

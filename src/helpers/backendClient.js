@@ -164,7 +164,15 @@ async function redeem(code) {
 }
 
 // —— 以下为 CP2（登录）预留的薄封装，接口以 CLIENT_INTEGRATION_SPEC 为准 ——
-// 后端 dev 验证码固定 000000。登录/注册可带 inviteCode、deviceId（匿名合并）。
+// 后端 dev 验证码固定 000000。登录/注册可带 inviteCode、deviceId（匿名合并 + 登录赠字）。
+
+// 登录 body 里的 deviceId：后端约束 8-64 位 [A-Za-z0-9._:-]。
+// 本地 UUID 天然合规；仍做规整（剔除非法字符 + 截断 64），规整后不足 8 位则不带（后端按 no_device 处理）。
+function loginDeviceId() {
+  const raw = String(deviceIdentity.getDeviceId() || "");
+  const cleaned = raw.replace(/[^A-Za-z0-9._:-]/g, "").slice(0, 64);
+  return cleaned.length >= 8 ? cleaned : null;
+}
 
 async function authSmsSend(phone) {
   return request("/auth/sms/send", { method: "POST", body: { phone } });
@@ -172,7 +180,8 @@ async function authSmsSend(phone) {
 async function authSmsLogin(phone, code, inviteCode) {
   const body = { phone, code };
   if (inviteCode) body.inviteCode = inviteCode;
-  body.deviceId = deviceIdentity.getDeviceId();
+  const did = loginDeviceId();
+  if (did) body.deviceId = did;
   return request("/auth/sms/login", { method: "POST", body });
 }
 async function authEmailSend(email) {
@@ -181,7 +190,8 @@ async function authEmailSend(email) {
 async function authEmailLogin(email, code, inviteCode) {
   const body = { email, code };
   if (inviteCode) body.inviteCode = inviteCode;
-  body.deviceId = deviceIdentity.getDeviceId();
+  const did = loginDeviceId();
+  if (did) body.deviceId = did;
   return request("/auth/email/login", { method: "POST", body });
 }
 async function authMe() {
@@ -198,7 +208,9 @@ async function getWechatAuthUrl() {
 // 微信登录：拿到官方回调 code 后回传后端换取 JWT。
 // 带 deviceId 做匿名合并、可选 inviteCode。
 async function authWechatLogin(code, inviteCode) {
-  const body = { code, deviceId: deviceIdentity.getDeviceId() };
+  const body = { code };
+  const did = loginDeviceId();
+  if (did) body.deviceId = did;
   if (inviteCode) body.inviteCode = inviteCode;
   return request("/auth/wechat/callback", { method: "POST", body });
 }

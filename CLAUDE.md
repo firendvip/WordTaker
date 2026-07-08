@@ -5,8 +5,9 @@
 - 例外：登录/输入凭据、以及最终不可逆的支付/确认步骤，仍由用户本人做（安全所限不代做）。
 
 ## 打包/发布规则（本项目）
-- **只生成 Mac 端安装包（.dmg），不再生成 Windows 端安装包。** 发版时不为出 Windows 包而推送 `v*` tag 触发 Windows CI；确需版本 tag 时另行说明。构建命令只用 `--mac`，绝不本机 `--win`。
-- **每次生成安装包文件后（dmg 产物），必须自动打开该安装包所在的文件夹**，方便用户立即取用。
+- Mac 端：本机构建 `.dmg`（`--mac`，不签名 `CSC_IDENTITY_AUTO_DISCOVERY=false`）。
+- **Windows 端：需要打包 Windows 版本时，必须先完整读取 [WordTaker/docs/WINDOWS_BUILD.md](WordTaker/docs/WINDOWS_BUILD.md) 并按其中流程执行**（铁律：绝不本机 `--win`，只走 GitHub CI；发版流程、产物核验清单、Windows 专属架构事实与踩坑记录都在该文档中）。此规则强制，任何新会话/新上下文均适用。
+- **每次生成安装包文件后（dmg / Windows setup.exe 产物），必须自动打开该安装包所在的文件夹**，方便用户立即取用。
   - macOS：`open <安装包所在目录>`（如 `open dist/`），或用 `open -R <安装包文件>` 在 Finder 中高亮该文件。
 
 ## 版本号显示规则

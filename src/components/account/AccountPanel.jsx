@@ -40,11 +40,12 @@ export function AccountPanel({ rowLabelClass }) {
   const [showLoginModal, setShowLoginModal] = useState(false);
   const timerRef = useRef(null);
 
-  // 云端额度（匿名可用）：进面板拉一次；兑换/购买/登录/退出后 refresh。
-  const { quota, loading: quotaLoading, error: quotaError, refresh: refreshQuota } =
-    useCloudQuota(api);
-
   const isLoggedIn = !!account;
+
+  // 云端额度：登录后进面板拉一次；兑换/购买/登录后 refresh；退出登录先 clear 清零。
+  // 未登录不打网络（后端 /quota 匿名恒 0），hook 内直接清空展示。
+  const { quota, loading: quotaLoading, error: quotaError, refresh: refreshQuota, clear: clearQuota } =
+    useCloudQuota(api, isLoggedIn);
 
   // 已登录时向后端拉最新账号摘要（含 inviteCode / 订阅），失败静默不影响本地态。
   const refreshAccount = useCallback(async () => {
@@ -157,6 +158,7 @@ export function AccountPanel({ rowLabelClass }) {
         setInviteCode("");
         setShowLoginModal(false);
         toast.success(r.isNew ? "注册并登录成功" : "登录成功");
+        if (r.deviceGift === "granted") toast.success("已赠送 2000 云端字数");
         refreshAccount();
         refreshQuota();
       } else {
@@ -179,6 +181,7 @@ export function AccountPanel({ rowLabelClass }) {
       if (r && r.success) {
         setAccount(r.account || {});
         toast.success(r.isNew ? "微信注册并登录成功" : "微信登录成功");
+        if (r.deviceGift === "granted") toast.success("已赠送 2000 云端字数");
         refreshAccount();
         refreshQuota();
       } else {
@@ -198,8 +201,9 @@ export function AccountPanel({ rowLabelClass }) {
       /* 即便失败也清本地态 */
     }
     setAccount(null);
+    // 立即清零本地额度态：不能让原账号的云端字数在退出后继续显示
+    clearQuota();
     toast.success("已退出登录");
-    refreshQuota();
   };
 
   if (initializing) {
