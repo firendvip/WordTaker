@@ -106,6 +106,15 @@ if (process.platform === "win32") {
   } catch (e) {
     earlyLog("disableHardwareAcceleration 调用失败", String(e && e.stack ? e.stack : e));
   }
+  // Windows 系统通知必须先设置 AppUserModelID（与 electron-builder appId 一致），
+  // 否则打包版 new Notification().show() 静默不显示——「润色失败，已贴出原文」
+  // 「云端额度不足」等所有提示在 Windows 上全被吞掉，用户看不到任何失败原因。
+  try {
+    app.setAppUserModelId("com.kittyecho.app");
+    earlyLog("win32：AppUserModelID 已设置（系统通知可见性）");
+  } catch (e) {
+    earlyLog("setAppUserModelId 调用失败", String(e && e.stack ? e.stack : e));
+  }
 }
 
 // 导入日志管理器

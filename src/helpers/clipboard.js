@@ -20,6 +20,20 @@ const COPY_SETTLE_MS = 320; // 等待目标应用把选区写入剪贴板（大�
 // 简单的等待工具：用于粘贴前的稳定窗口与粘贴后的消费窗口。
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+// —— Windows 按键注入统一入口（根因修复）——
+// 旧实现 spawn("powershell", ["-Command", ...]) 未设 windowsHide，Node 默认 windowsHide:false，
+// 会为 powershell 新建一个「可见控制台窗口」并抢走前台焦点 → SendKeys 的 ^v 发进了这个控制台
+// 而不是用户的输入框，且退出码为 0，上层误判粘贴成功。
+// 修复：CREATE_NO_WINDOW（windowsHide:true）+ -NoProfile/-NonInteractive 加速冷启动，
+// 焦点始终留在用户的目标窗口，SendKeys 才能命中。
+function spawnWindowsSendKeys(psCommand) {
+  return spawn(
+    "powershell.exe",
+    ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", psCommand],
+    { windowsHide: true }
+  );
+}
+
 class ClipboardManager {
   constructor(logger, databaseManager = null) {
     // 初始化剪贴板管理器
@@ -268,10 +282,15 @@ class ClipboardManager {
 
   async pasteWindows(originalClipboard, pastedText) {
     return new Promise((resolve, reject) => {
-      const pasteProcess = spawn("powershell", [
-        "-Command",
-        'Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.SendKeys]::SendWait("^v")',
-      ]);
+      // 经 spawnWindowsSendKeys：隐藏控制台窗口，避免抢焦点导致 ^v 落空（见顶部注释）。
+      const pasteProcess = spawnWindowsSendKeys(
+        'Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.SendKeys]::SendWait("^v")'
+      );
+
+      let errorOutput = "";
+      if (pasteProcess.stderr) {
+        pasteProcess.stderr.on("data", (d) => { errorOutput += d.toString(); });
+      }
 
       let hasTimedOut = false;
       const timeoutId = setTimeout(() => {
@@ -284,10 +303,12 @@ class ClipboardManager {
         if (hasTimedOut) return;
         clearTimeout(timeoutId);
         if (code === 0) {
+          this.safeLog("✅ Windows 已派发 Ctrl+V（隐藏窗口，无焦点抢占）");
           // 文本粘贴成功，延迟并校验后恢复
           this.restoreClipboardLater(originalClipboard, pastedText);
           resolve();
         } else {
+          this.safeLog("❌ Windows 粘贴失败", { code, stderr: errorOutput.slice(0, 300) });
           reject(
             new Error(
               `Windows 粘贴失败，代码 ${code}。文本已复制到剪贴板。`
@@ -508,15 +529,14 @@ class ClipboardManager {
   // 按一次粘贴键（不恢复剪贴板），平台通用
   _pressPaste() {
     return new Promise((resolve, reject) => {
-      let cmd, args;
+      let p;
       if (process.platform === "darwin") {
-        cmd = "osascript"; args = ["-e", 'tell application "System Events" to keystroke "v" using command down'];
+        p = spawn("osascript", ["-e", 'tell application "System Events" to keystroke "v" using command down']);
       } else if (process.platform === "win32") {
-        cmd = "powershell"; args = ["-Command", 'Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.SendKeys]::SendWait("^v")'];
+        p = spawnWindowsSendKeys('Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.SendKeys]::SendWait("^v")');
       } else {
-        cmd = "xdotool"; args = ["key", "ctrl+v"];
+        p = spawn("xdotool", ["key", "ctrl+v"]);
       }
-      const p = spawn(cmd, args);
       const to = setTimeout(() => { try { p.kill("SIGKILL"); } catch (e) {} reject(new Error("paste timeout")); }, 3000);
       p.on("close", (code) => { clearTimeout(to); code === 0 ? resolve() : reject(new Error("paste " + code)); });
       p.on("error", (e) => { clearTimeout(to); reject(e); });
@@ -526,15 +546,14 @@ class ClipboardManager {
   // 按一次复制键（Cmd/Ctrl+C），不动剪贴板恢复，平台通用。结构与 _pressPaste 一致。
   _pressCopy() {
     return new Promise((resolve, reject) => {
-      let cmd, args;
+      let p;
       if (process.platform === "darwin") {
-        cmd = "osascript"; args = ["-e", 'tell application "System Events" to keystroke "c" using command down'];
+        p = spawn("osascript", ["-e", 'tell application "System Events" to keystroke "c" using command down']);
       } else if (process.platform === "win32") {
-        cmd = "powershell"; args = ["-Command", 'Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.SendKeys]::SendWait("^c")'];
+        p = spawnWindowsSendKeys('Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.SendKeys]::SendWait("^c")');
       } else {
-        cmd = "xdotool"; args = ["key", "ctrl+c"];
+        p = spawn("xdotool", ["key", "ctrl+c"]);
       }
-      const p = spawn(cmd, args);
       let hasTimedOut = false;
       const to = setTimeout(() => { hasTimedOut = true; try { p.kill("SIGKILL"); } catch (e) {} reject(new Error("copy timeout")); }, PASTE_KILL_TIMEOUT_MS);
       p.on("close", (code) => { if (hasTimedOut) return; clearTimeout(to); code === 0 ? resolve() : reject(new Error("copy " + code)); });
@@ -545,15 +564,14 @@ class ClipboardManager {
   // 按一次全选键（Cmd/Ctrl+A），平台通用。结构与 _pressPaste 一致。
   _pressSelectAll() {
     return new Promise((resolve, reject) => {
-      let cmd, args;
+      let p;
       if (process.platform === "darwin") {
-        cmd = "osascript"; args = ["-e", 'tell application "System Events" to keystroke "a" using command down'];
+        p = spawn("osascript", ["-e", 'tell application "System Events" to keystroke "a" using command down']);
       } else if (process.platform === "win32") {
-        cmd = "powershell"; args = ["-Command", 'Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.SendKeys]::SendWait("^a")'];
+        p = spawnWindowsSendKeys('Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.SendKeys]::SendWait("^a")');
       } else {
-        cmd = "xdotool"; args = ["key", "ctrl+a"];
+        p = spawn("xdotool", ["key", "ctrl+a"]);
       }
-      const p = spawn(cmd, args);
       let hasTimedOut = false;
       const to = setTimeout(() => { hasTimedOut = true; try { p.kill("SIGKILL"); } catch (e) {} reject(new Error("selectall timeout")); }, PASTE_KILL_TIMEOUT_MS);
       p.on("close", (code) => { if (hasTimedOut) return; clearTimeout(to); code === 0 ? resolve() : reject(new Error("selectall " + code)); });

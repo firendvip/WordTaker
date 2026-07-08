@@ -277,6 +277,12 @@ class AiService {
     // 余额不足：本地就绪→降级本地；否则→原文直贴
     const localReady = !!(this.llmManager && typeof this.llmManager.isModelReady === 'function'
       && this.llmManager.isModelReady('local-4b'));
+    // 关键决策落日志：enhanced_by_ai=false 的「额度用尽」根因必须能从 app.log 一眼看出。
+    this.logger.warn('云端降级决策: 余额不足', {
+      action: localReady ? 'local' : 'passthrough',
+      cloudRemaining: remaining,
+      needed,
+    });
     return { action: localReady ? 'local' : 'passthrough' };
   }
 

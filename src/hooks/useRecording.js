@@ -521,13 +521,20 @@ export const useRecording = ({ onTranscriptionCompleteRef, onAIOptimizationCompl
                 }
 
                 if (result && result.success && result.text) {
+                  // passthrough = 云端额度用尽且本地未装时的「原文直贴」：不是真正的润色。
+                  // 必须如实标注 enhanced_by_ai:false 并落日志，否则 Windows 上表现为
+                  // 「看起来没有 AI 润色（原文直接出）」却查不到原因。
+                  const isPassthrough = result.engine === 'passthrough';
+                  if (isPassthrough) {
+                    log('warn', '[润色] enhanced_by_ai=false 原因: 云端额度用尽且本地模型未装(passthrough 原文直贴)');
+                  }
                   finalData.processed_text = result.text;
                   finalData.text = result.text;
                   emit = {
                     ...transcriptionResult,
                     text: result.text,
                     processed_text: result.text,
-                    enhanced_by_ai: true,
+                    enhanced_by_ai: !isPassthrough,
                     paste: true,
                   };
                 } else {
@@ -544,6 +551,10 @@ export const useRecording = ({ onTranscriptionCompleteRef, onAIOptimizationCompl
                   const quotaLimited =
                     failReason === 'insufficient_quota' || failReason === 'daily_cap_exceeded';
                   log('error', '文案生成失败:', errMsg);
+                  // 统一根因日志：enhanced_by_ai=false 的原因（quota/网络/开关/引擎不可用）一行可查。
+                  log('error', '[润色] enhanced_by_ai=false 原因: ' +
+                    (failReason || (noKey ? 'no_api_key' : 'request_failed')) +
+                    ' | engine=' + polishEngine + ' | ' + errMsg);
                   // 所选引擎润色失败（非"未配置 key 的纯听写"）：贴原文 + 系统通知，绝不回退到其它引擎/云端。
                   if (!noKey) {
                     try {

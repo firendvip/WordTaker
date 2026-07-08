@@ -26,13 +26,35 @@ class LogManager {
     }
   }
 
+  // Error 对象 JSON.stringify 后是 {}，导致 app.log 里大量「失败原因: {}」无法定位根因。
+  // 这里把 Error（含嵌在对象一层内的 Error）转成 { message, stack前3行 } 再落盘。
+  _serializeData(data) {
+    if (data instanceof Error) {
+      return {
+        message: data.message,
+        stack: typeof data.stack === 'string' ? data.stack.split('\n').slice(0, 3).join(' | ') : undefined,
+      };
+    }
+    if (data && typeof data === 'object' && !Array.isArray(data)) {
+      const keys = Object.keys(data);
+      if (keys.some((k) => data[k] instanceof Error)) {
+        const out = {};
+        for (const k of keys) {
+          out[k] = data[k] instanceof Error ? this._serializeData(data[k]) : data[k];
+        }
+        return out;
+      }
+    }
+    return data;
+  }
+
   log(level, message, data = null) {
     const timestamp = new Date().toISOString();
     const logEntry = {
       timestamp,
       level,
       message,
-      data,
+      data: this._serializeData(data),
       pid: process.pid
     };
 
@@ -71,7 +93,7 @@ class LogManager {
       timestamp,
       level,
       message,
-      data,
+      data: this._serializeData(data),
       source: 'FunASR'
     };
 

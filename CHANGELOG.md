@@ -3,6 +3,21 @@
 All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/); versioning follows [SemVer](https://semver.org/).
 
+## [1.20.0] - 2026-07-08
+
+### Added
+- 微信扫码登录上线；登录方式调整为 微信+邮箱验证码（短信入口暂下线，代码保留）
+- 自动粘贴失败时通知「内容已复制，请手动 Ctrl+V」
+
+### Changed
+- 支付渠道暂只展示支付宝（微信支付代码保留，待商户 AppID 后恢复）
+
+### Fixed
+- Windows 转写结果不自动粘贴到焦点输入框——粘贴用的 PowerShell 每次弹出可见控制台抢走焦点导致按键发错窗口；改为隐藏窗口执行，粘贴恢复正常
+- Windows 系统通知全部不显示（缺 AppUserModelId）——「润色失败」「额度用尽」等提示现在可见
+- 云端额度用尽时原文直出却被标记为「已润色」——现在如实标记并提示
+- 日志里错误信息序列化成空对象，无法排查——现在完整记录错误原因
+
 ## [1.19.0] - 2026-07-08
 
 ### Added

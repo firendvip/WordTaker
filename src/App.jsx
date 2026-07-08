@@ -173,6 +173,11 @@ function RecorderApp() {
       }
     } catch (error) {
       window.electronAPI?.log?.('error', "粘贴文本失败:", error);
+      // 兜底：粘贴失败时文本仍留在剪贴板（pasteText 失败路径不会恢复原剪贴板），
+      // 必须给用户可见提示，绝不静默。
+      try {
+        window.electronAPI?.showNotification?.('弦外小猫', '自动粘贴失败：内容已复制到剪贴板，请手动粘贴（Ctrl+V / ⌘V）');
+      } catch (e) { /* 通知失败无妨 */ }
     }
   }, []);
 
