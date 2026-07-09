@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.24.0] - 2026-07-09
+
+### Added
+
+- 本地大模型 GPU 加速支持：`n_gpu_layers` 默认 -1（Metal/CUDA 轮子全层进 GPU，CPU 轮子自动忽略、行为不变）；env `LLM_N_GPU_LAYERS` 可覆盖（0=强制 CPU，正整数=部分层）；GPU 初始化失败自动回退纯 CPU 重试；init 响应与日志携带实际 GPU 层数
+- 新增 `scripts/win-gpu-upgrade.ps1`：NVIDIA Windows 机器一键就地升级 CUDA 版 llama-cpp-python（nvidia-smi 探测驱动选 cu124/126/128/130 轮源、锁定同版本 0.3.19、失败自动还原备份）
+
 ## [1.23.1] - 2026-07-09
 
 ### Fixed

@@ -176,31 +176,59 @@ class LLMServer:
             from llama_cpp import Llama
 
             t0 = time.time()
-            # GPU 层数按平台分支：
-            #   - macOS（Apple 芯片，Metal 轮子）：-1 = 全部层进 Metal GPU；
-            #   - Windows/Linux（CPU 预编译轮子）：0 = 纯 CPU 推理，显式归零，
-            #     避免依赖轮子后端的隐式行为。
-            n_gpu_layers = -1 if sys.platform == "darwin" else 0
+            # GPU 层数策略（全平台统一）：
+            #   默认 -1 = 全部层进 GPU —— Metal/CUDA 轮子生效；
+            #   CPU-only 预编译轮子会静默忽略该参数，等价纯 CPU，对 CPU 基线无损。
+            #   env LLM_N_GPU_LAYERS 覆盖：0 = 强制纯 CPU，正整数 = 部分层进 GPU。
+            n_gpu_layers = -1
+            env_layers = os.environ.get("LLM_N_GPU_LAYERS", "").strip()
+            if env_layers:
+                try:
+                    n_gpu_layers = int(env_layers)
+                except ValueError:
+                    logger.warning(
+                        "LLM_N_GPU_LAYERS 非法值 %r，按默认 -1 处理", env_layers
+                    )
             kwargs = dict(
                 model_path=self.model_path,
                 n_ctx=self.n_ctx,
                 n_gpu_layers=n_gpu_layers,
-                verbose=False,
+                # LLM_VERBOSE=1 放开 llama.cpp 的 stderr 日志（含
+                # "offloaded N/N layers to GPU"），用于 GPU 生效核验。
+                verbose=os.environ.get("LLM_VERBOSE") == "1",
             )
             if self.n_threads:
                 kwargs["n_threads"] = int(self.n_threads)
 
             # llama.cpp 加载会往 stdout 打印大量日志，必须重定向。
-            with suppress_stdout():
-                self.llm = Llama(**kwargs)
+            try:
+                with suppress_stdout():
+                    self.llm = Llama(**kwargs)
+            except Exception as gpu_err:
+                if kwargs["n_gpu_layers"] == 0:
+                    raise
+                # GPU 初始化失败（驱动/显存/轮子后端问题）→ 纯 CPU 重试一次。
+                logger.warning(
+                    "GPU 加载失败(n_gpu_layers=%s)，回退纯 CPU 重试: %s",
+                    n_gpu_layers,
+                    gpu_err,
+                )
+                n_gpu_layers = 0
+                kwargs["n_gpu_layers"] = 0
+                with suppress_stdout():
+                    self.llm = Llama(**kwargs)
 
             logger.info(
-                "模型加载成功: %s (%.2fs)", self.model_path, time.time() - t0
+                "模型加载成功: %s (%.2fs, n_gpu_layers=%s)",
+                self.model_path,
+                time.time() - t0,
+                n_gpu_layers,
             )
             return {
                 "success": True,
                 "message": "LLM 模型加载成功",
                 "model_path": self.model_path,
+                "n_gpu_layers": n_gpu_layers,
             }
         except ImportError as e:
             logger.error("llama_cpp 导入失败: %s", e)
