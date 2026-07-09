@@ -91,13 +91,17 @@ class WindowManager {
   _wireRendererDiagnostics(win, name) {
     try {
       const wc = win.webContents;
+      // 胶囊(pill)是 frameless + transparent 窗：内容一旦为空就"看不见"，静默 reload 的空白期
+      // 在透明窗上表现为"胶囊自己消失"。所以对 pill 做更保守的自动重载策略（见下）。
+      const isPill = name === "pill";
       // 自动恢复：渲染进程崩溃/页面加载失败时自动 reload（每窗口生命周期最多 2 次，
       // 防止崩溃-重载死循环；超限后只留日志，窗口保持现状等人工处理）。
       const MAX_AUTO_RELOADS = 2;
       let autoReloadCount = 0;
       const tryAutoReload = (why) => {
         if (autoReloadCount >= MAX_AUTO_RELOADS) {
-          this._logError(`[${name}] ${why}，已达自动重载上限(${MAX_AUTO_RELOADS})，不再重载`, null);
+          // 达上限：保持已渲染内容与当前可见性，不再把窗口刷空（透明胶囊尤其不能刷成空白）
+          this._logError(`[${name}] ${why}，已达自动重载上限(${MAX_AUTO_RELOADS})，保持已渲染内容不再重载`, null);
           return;
         }
         autoReloadCount += 1;
@@ -106,8 +110,14 @@ class WindowManager {
         setTimeout(() => {
           try {
             if (!win.isDestroyed() && !wc.isDestroyed()) {
+              // 透明胶囊窗：记录 reload 前的可见性，reload 后保持可见（不因重载而隐藏），
+              // 尽量缩短"透明+空内容=看起来自己消失"的观感。
+              const wasVisible = isPill && win.isVisible();
               this._logError(`[${name}] ${why} → 自动重载渲染层（第 ${attempt}/${MAX_AUTO_RELOADS} 次）`, null);
               wc.reload();
+              if (wasVisible && !win.isDestroyed() && !win.isVisible()) {
+                try { win.showInactive(); } catch (_) { /* 保持可见兜底失败不致命 */ }
+              }
             }
           } catch (e) {
             this._logError(`[${name}] 自动重载失败`, e);
@@ -116,6 +126,14 @@ class WindowManager {
       };
       wc.on("render-process-gone", (_e, details) => {
         this._logError(`[${name}] 渲染进程消失: ${JSON.stringify(details)}`, null);
+        const reason = details && details.reason;
+        // 区分"渲染进程真崩溃"与"GPU/DWM 合成回退/正常退出"：
+        // clean-exit / killed 多发生在隐藏/关闭或合成回退时，并非渲染层真失败；
+        // 此时若对透明胶囊静默 reload，只会把它刷成空白 → 表现为"没说话胶囊就消失"。
+        if (isPill && (reason === "clean-exit" || reason === "killed")) {
+          this._logError(`[pill] 胶囊窗合成回退/正常退出(${reason})，跳过静默reload（避免透明胶囊闪成空白）`, null);
+          return;
+        }
         tryAutoReload("渲染进程消失");
       });
       wc.on("did-fail-load", (_e, code, desc, url, isMainFrame) => {

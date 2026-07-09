@@ -42,6 +42,7 @@ class LLMManager {
     this._intentionalStop = false;
     this._downloading = new Set(); // 正在下载的引擎 key，防重复
     this._cachedPythonEnv = null;
+    this._promptsInjectedFor = null; // 已注入后端提示词的引擎 key，防重复（重启后重置以便重连再注入）
   }
 
   // ——— 路径解析（复用 funasrManager 的嵌入式 Python 布局约定）———
@@ -214,6 +215,7 @@ class LLMManager {
       this._intentionalStop = false;
       this.serverStartError = null;
       this.serverReady = false;
+      this._promptsInjectedFor = null; // 新进程：清除注入标记，就绪后重新注入一次
 
       let pythonCmd, serverPath, modelPath;
       try {
@@ -277,6 +279,8 @@ class LLMManager {
               this.serverStartError = null;
               this.logger.info && this.logger.info("本地 LLM 就绪", { engine });
               settle({ success: true });
+              // 就绪后异步注入后端下发的系统提示词：不阻塞就绪与首次润色；失败静默降级为本地精简提示词。
+              this._injectBackendPrompts(engine);
             } else if (result.success === false) {
               this.serverStartError = { reason: result.type || "init-failed", message: result.error };
               this.logger.error && this.logger.error("本地 LLM 初始化失败", result);
@@ -345,6 +349,53 @@ class LLMManager {
       try { proc.stdin && proc.stdin.write(JSON.stringify({ action: "exit" }) + "\n"); } catch (e) {}
       try { proc.kill(); } catch (e) {}
       setTimeout(() => { try { proc.kill("SIGKILL"); } catch (e) {} }, 800);
+    }
+  }
+
+  // 向 llm_server 写一行 JSON 命令（复用 exit/polish 的单行协议）。失败返回 false，不抛错。
+  _writeCommandLine(command) {
+    const proc = this.serverProcess;
+    if (!proc || !proc.stdin) return false;
+    try {
+      proc.stdin.write(JSON.stringify(command) + "\n");
+      return true;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  // 就绪后拉取后端下发的两个 mode 提示词并经 stdin 注入 llm_server。
+  // 完全异步、best-effort：网络/后端不可用（离线、旧后端 404、超时）是常态，
+  // 任何失败仅记 info/warn 并降级为 llm_server 内置精简提示词，绝不抛错到主流程。
+  async _injectBackendPrompts(engine) {
+    if (this._promptsInjectedFor === engine) return; // 同一进程就绪期只注入一次
+    this._promptsInjectedFor = engine;
+
+    let backendClient;
+    try {
+      backendClient = require("./backendClient");
+    } catch (e) {
+      return;
+    }
+
+    for (const mode of ["polish", "translate_en"]) {
+      try {
+        const data = await backendClient.getLocalPrompt(mode);
+        const prompt = data && typeof data.systemPrompt === "string" ? data.systemPrompt : "";
+        if (!prompt.trim()) {
+          this.logger.info && this.logger.info("后端未下发本地提示词，降级用本地精简提示词", { mode });
+          continue;
+        }
+        // 期间进程可能已被替换/停止：不再注入到旧/新进程
+        if (!this.serverReady || this.currentEngine !== engine) return;
+        if (this._writeCommandLine({ action: "set_prompt", mode, prompt })) {
+          this.logger.info && this.logger.info("已注入后端本地提示词", { mode, version: (data && data.version) || null });
+        } else {
+          this.logger.warn && this.logger.warn("本地提示词写入失败，降级用本地精简提示词", { mode });
+        }
+      } catch (e) {
+        this.logger.info && this.logger.info("拉取本地提示词失败，降级用本地精简提示词", { mode, err: e && e.message ? e.message : String(e) });
+      }
     }
   }
 

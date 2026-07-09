@@ -15,6 +15,11 @@ const BAND_RENDER_INTERVAL_MS = 1000 / BAND_RENDER_FPS;
 
 const createZeroBands = () => new Array(BAND_COUNT).fill(0);
 
+// 唤醒后最小驻留时长守卫：录音器刚显示的极短时间内(与 main.js fireCancel 的 800ms 守卫对齐)，
+// 不因 audioBlob.size===0 立即隐藏胶囊——Windows 唤醒时麦克风首帧偶发未就绪，会被误判为空录音，
+// 导致"没说话胶囊就自己消失"。此窗口内的空录音只丢弃数据、保留胶囊，不触发 hideRecorder。
+const MIN_RECORDER_RESIDENCE_MS = 800;
+
 // 录音内存感知保护（WS6）：动态预测内存峰值，仅在临界时自动停止，尽量给久。
 const MEM_CHECK_INTERVAL_MS = 5000; // 录音中每 ~5 秒检查一次预测峰值
 const WAV_BYTES_PER_SEC = 16000 * 2; // 16kHz、16bit 单声道 WAV 每秒字节数
@@ -225,10 +230,19 @@ export const useRecording = ({ onTranscriptionCompleteRef, onAIOptimizationCompl
 
           // 空/零长度音频：静默 no-op，不识别、不粘贴、不报错（ROB-5，对齐"未识别到语音"处理）
           if (!audioBlob || audioBlob.size === 0) {
+            audioChunksRef.current = [];
+            // 唤醒后最小驻留守卫：胶囊刚显示的极短时间内(<800ms)出现空录音，多半是麦克风首帧
+            // 未就绪而非用户"没说话"，此时保留胶囊、只丢弃数据，避免"没说话就自己消失"。
+            const elapsedMs = Date.now() - recordStartedAtRef.current;
+            if (elapsedMs < MIN_RECORDER_RESIDENCE_MS) {
+              if (window.electronAPI && window.electronAPI.log) {
+                window.electronAPI.log('info', `空录音但未达最小驻留(${elapsedMs}ms<${MIN_RECORDER_RESIDENCE_MS}ms)，忽略隐藏，避免麦克风首帧未就绪被误判为空录音`);
+              }
+              return;
+            }
             if (window.electronAPI && window.electronAPI.log) {
               window.electronAPI.log('info', '空录音（0 字节），跳过识别');
             }
-            audioChunksRef.current = [];
             if (window.electronAPI && window.electronAPI.hideRecorder) {
               try { await window.electronAPI.hideRecorder(); } catch (e) { /* 忽略 */ }
             }

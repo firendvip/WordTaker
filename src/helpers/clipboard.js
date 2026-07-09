@@ -19,11 +19,13 @@ const CLIPBOARD_RESTORE_MS = 700;
 const PASTE_KILL_TIMEOUT_MS = 3000;
 const COPY_SETTLE_MS = 320; // 等待目标应用把选区写入剪贴板（大段选区/慢机器需要更久）
 // Windows 常驻 SendKeys worker：单条命令的回执超时（有真实回执，判定不再靠 exit code 猜）
-const WIN_WORKER_ACK_TIMEOUT_MS = 1500;
+// 放宽到 2800ms：慢机 / 首帧 SendWait 偏慢时 1500ms 会误判超时，导致粘贴全链失败。
+const WIN_WORKER_ACK_TIMEOUT_MS = 2800;
 // worker 回执 err 后的重试间隔
 const WIN_WORKER_RETRY_DELAY_MS = 200;
 // 原生按键注入器 sendkeys.exe 的单次执行超时（纯 Win32 SendInput，正常几十 ms 内退出）
-const SENDKEYS_EXE_TIMEOUT_MS = 1000;
+// 放宽到 1500ms：慢机首次注入偏慢，1000ms 会误杀导致误判失败后无谓降级。
+const SENDKEYS_EXE_TIMEOUT_MS = 1500;
 
 // —— Windows 原生按键注入器 sendkeys.exe（三级链最优先路径①）——
 // 企业策略机上 PowerShell 处于 Constrained Language Mode：Add-Type（.NET SendKeys）
@@ -458,7 +460,11 @@ class ClipboardManager {
       p.on("error", (e) => {
         if (hasTimedOut) return;
         clearTimeout(to);
-        reject(e);
+        // spawn 失败（如 ENOENT：exe 缺失/路径错）明确标注原因，便于定位为何直接降级
+        const reason = e && e.code === "ENOENT"
+          ? `sendkeys.exe 未找到(ENOENT)：${exe}`
+          : `sendkeys.exe spawn 失败: ${e?.message || e}`;
+        reject(new Error(reason));
       });
     });
   }
@@ -545,6 +551,23 @@ class ClipboardManager {
     }
   }
 
+  // Windows 三级粘贴链全失败时的兜底提示：文本已在剪贴板，弹系统通知引导手动粘贴。
+  // 复用项目统一的 electron Notification 用法，绝不抛出（通知失败不影响主流程）。
+  _notifyPasteFallback() {
+    try {
+      const { Notification } = require("electron");
+      if (Notification && Notification.isSupported && Notification.isSupported()) {
+        new Notification({
+          title: "弦外小猫",
+          body: "文本已复制，请按 Ctrl+V 粘贴",
+          silent: false,
+        }).show();
+      }
+    } catch (e) {
+      this.safeLog("⚠️ 粘贴兜底通知失败", e?.message || e);
+    }
+  }
+
   async pasteWindows(originalClipboard, pastedText) {
     // 剪贴板写入已在 _pasteTextImpl 回读校验，这里给系统粘贴板短暂传播余量后再发 'paste'
     await sleep(PASTE_SETTLE_MS);
@@ -552,6 +575,9 @@ class ClipboardManager {
       await this._pressKeyWin("paste");
     } catch (e) {
       this.safeLog("❌ Windows 粘贴失败（worker 与备路均失败）", e.message);
+      // 三级链全灭：文本已在剪贴板（此路径不触发 restoreClipboardLater，内容保留），
+      // 主动弹系统通知引导用户手动 Ctrl+V，避免“转写完却没出字”的静默失败。
+      this._notifyPasteFallback();
       throw new Error(`Windows 粘贴失败: ${e.message}。文本已复制到剪贴板。`);
     }
     this.safeLog("✅ Windows 粘贴回执 ok（常驻 worker / 备路）");

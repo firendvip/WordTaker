@@ -134,6 +134,20 @@ async function getQuota() {
   };
 }
 
+/**
+ * 拉取本地模型系统提示词（后端下发，匿名设备可取）。GET /prompt?mode=polish|translate_en。
+ * 复用统一 request()（自动带 x-device-id/x-platform + 可选 Bearer）。
+ * 用短超时（4s）：拿不到就静默降级用 llm_server 内置精简提示词，不能拖住本地润色。
+ * 成功返回 data（含 { mode, systemPrompt, version }）；失败抛结构化错误由调用方降级。
+ */
+async function getLocalPrompt(mode) {
+  const json = await request(`/prompt?mode=${encodeURIComponent(mode)}`, {
+    method: "GET",
+    timeoutMs: 4000,
+  });
+  return (json && json.data) || null;
+}
+
 // —— CP3 会员/计费：套餐 / 下单 / dev 直付 / 兑换码 ——
 // 套餐列表（公开，无需 Bearer）。返回 { data:[{code,name,priceCents,type,charAmount,validityDays,durationDays}] }。
 async function listPlans() {
@@ -219,6 +233,7 @@ module.exports = {
   request,
   polish,
   getQuota,
+  getLocalPrompt,
   // CP3 会员/计费
   listPlans,
   createOrder,

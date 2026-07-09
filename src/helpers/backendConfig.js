@@ -34,8 +34,14 @@ const API_PREFIX =
   (process.env.AI_API_PREFIX && process.env.AI_API_PREFIX.trim()) ||
   (IS_PACKAGED ? PROD_API_PREFIX : DEV_API_PREFIX);
 
-// 请求平台标识（请求头 x-platform）。
-const CLIENT_PLATFORM = "mac";
+// 请求平台标识（请求头 x-platform）。按运行平台派生，避免 Windows 包误报 mac。
+// 后端 polish.controller 接收该值入库，Windows 统一用 "windows"（与后端约定对齐）。
+const CLIENT_PLATFORM =
+  process.platform === "darwin"
+    ? "mac"
+    : process.platform === "win32"
+    ? "windows"
+    : process.platform;
 
 // 后端不可达时是否回退旧 relay（保证云端仍可用）。默认开启。
 const BACKEND_CLOUD_FALLBACK_RELAY = true;
