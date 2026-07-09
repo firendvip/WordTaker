@@ -369,9 +369,17 @@ class EmbeddedPythonBuilder {
       { spec: 'torchaudio==2.0.2', extraArgs: CPU_TORCH_INDEX },
       { spec: 'torchvision==0.15.2', extraArgs: CPU_TORCH_INDEX },
       { spec: 'librosa>=0.11.0' },
-      { spec: 'funasr>=1.2.7' },
+      // funasr 必须硬 pin：1.3.x 改了模型解析/注册表行为，'damo/...' 模型名无法解析
+      // （报 "model 'damo/...' is not registered"），且其依赖会拉入
+      // transformers 5.x / numpy 2.x，与 torch 2.0.1 完全不兼容（曾把打包环境搞坏）。
+      { spec: 'funasr==1.2.7' },
+      // modelscope 与 funasr 1.2.7 同期版本（funasr 声明 modelscope 不带版本约束，必须显式 pin）
+      { spec: 'modelscope==1.23.2' },
       { spec: 'onnxruntime>=1.16.0' },   // ONNX 运行时（CPU）
       { spec: 'funasr_onnx>=0.4.1' },    // SenseVoice ONNX 封装
+      // 最后强制纠回 numpy：前面各包的「全依赖」安装可能把 numpy 抬到 2.x，
+      // 而 torch 2.0.1 / funasr_onnx 只兼容 numpy 1.x（==1.26.4 为已验证版本）。
+      { spec: 'numpy==1.26.4' },
     ];
 
     await this.installDependenciesNative(pythonPath, sitePackagesPath, dependencies);

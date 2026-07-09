@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.23.1] - 2026-07-09
+
+### Fixed
+
+- 修复 Mac 打包内语音引擎（funasr 包残缺）导致按快捷键无法进入录音的问题——重建嵌入式 Python 环境
+
 All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/); versioning follows [SemVer](https://semver.org/).
 
