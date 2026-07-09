@@ -387,9 +387,9 @@ class IPCHandlers {
       try { event.sender.send("polish-progress", { status: "done", charCount: polishedCharCount }); } catch (e) { /* 渲染层不可用时忽略 */ }
 
       if (flushError) {
-        return { success: false, error: flushError, text: result.text || "", pastedAny };
+        return { success: false, error: flushError, text: result.text || "", engine: result.engine, pastedAny };
       }
-      return { success: !!result.success, text: result.text || "", error: result.error, reason: result.reason, pastedAny };
+      return { success: !!result.success, text: result.text || "", engine: result.engine, error: result.error, reason: result.reason, pastedAny };
     });
 
     // 契约 C：内存信息（用 Node os 模块返回空闲/总内存字节数）。

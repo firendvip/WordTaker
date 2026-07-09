@@ -436,6 +436,10 @@ export const useRecording = ({ onTranscriptionCompleteRef, onAIOptimizationCompl
               // 润色标识：当前引擎 + 完整润色耗时（含本地首次加载模型的一次性开销）。
               // 耗时口径 = 从发起润色到拿到结果的完整等待时间。仅在实际走了润色时写入。
               const polishEngine = getS('polish_engine', 'cloud');
+              // 历史记录的「引擎」按【本次实际使用的引擎】写入，而非设置里的引擎——
+              // 云端额度不足时会自动降级本地(local-4b)真实润色，历史须如实标注实际引擎。
+              // 缺失（老路径/未回传）才回退设置值；passthrough(未润色)不覆盖，维持原有行为。
+              let actualEngine = polishEngine;
               let polishDurMs = null;
 
               // 先落库原文（解耦·不阻塞）：识别成功后立即派发入库 IPC（主进程会同步写库），
@@ -487,6 +491,8 @@ export const useRecording = ({ onTranscriptionCompleteRef, onAIOptimizationCompl
                     if (sres && (sres.success || sres.pastedAny)) {
                       polishDurMs = Date.now() - _sT0;
                       log('info', `[计时] 流式文案: ${polishDurMs}ms` + (Number.isFinite(firstCharMs) ? `，首字 ${firstCharMs}ms` : ''));
+                      // 实际引擎（云端降级本地时如实记录）；passthrough 不覆盖，维持原有行为
+                      if (sres.engine && sres.engine !== 'passthrough') actualEngine = sres.engine;
                       const t = sres.text || raw_text;
                       finalData.processed_text = t;
                       finalData.text = t;
@@ -541,6 +547,9 @@ export const useRecording = ({ onTranscriptionCompleteRef, onAIOptimizationCompl
                   const isPassthrough = result.engine === 'passthrough';
                   if (isPassthrough) {
                     log('warn', '[润色] enhanced_by_ai=false 原因: 云端额度用尽且本地模型未装(passthrough 原文直贴)');
+                  } else if (result.engine) {
+                    // 实际引擎（云端降级本地时如实记录）；passthrough 不覆盖，维持原有行为
+                    actualEngine = result.engine;
                   }
                   finalData.processed_text = result.text;
                   finalData.text = result.text;
@@ -605,6 +614,7 @@ export const useRecording = ({ onTranscriptionCompleteRef, onAIOptimizationCompl
                   log('error', 'AI文本优化捕获到错误:', err);
                 }
                 if (result && result.success) {
+                  if (result.engine && result.engine !== 'passthrough') actualEngine = result.engine;
                   const processed_text = result.text;
                   finalData.processed_text = processed_text;
                   const changed = processed_text && processed_text.trim() !== raw_text.trim();
@@ -635,7 +645,7 @@ export const useRecording = ({ onTranscriptionCompleteRef, onAIOptimizationCompl
               // 走过润色且拿到结果时，记录引擎与完整润色耗时（供历史界面显示「AI优化·<引擎> 时长X.XX秒」）。
               const polished = !!finalData.processed_text && Number.isFinite(polishDurMs);
               if (polished) {
-                finalData.polish_engine = polishEngine;
+                finalData.polish_engine = actualEngine;
                 finalData.polish_duration_ms = polishDurMs;
               }
 
@@ -650,7 +660,7 @@ export const useRecording = ({ onTranscriptionCompleteRef, onAIOptimizationCompl
                         text: finalData.text,
                         processed_text: finalData.processed_text,
                         ...(polished
-                          ? { polish_engine: polishEngine, polish_duration_ms: polishDurMs }
+                          ? { polish_engine: actualEngine, polish_duration_ms: polishDurMs }
                           : {}),
                         ...(Number.isFinite(finalData.polish_first_char_ms)
                           ? { polish_first_char_ms: finalData.polish_first_char_ms }

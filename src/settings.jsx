@@ -178,7 +178,7 @@ const SettingsPage = () => {
   const [downloadProgress, setDownloadProgress] = useState({}); // { engine: 0-100 }
 
   const LOCAL_ENGINE_META = [
-    { id: "local-4b", label: "本地模型", sizeText: "速度快，质量良好", bundled: false },
+    { id: "local-4b", label: "本地模型", sizeText: "速度较快，质量良好", bundled: false },
   ];
 
   const refreshLocalModels = async () => {

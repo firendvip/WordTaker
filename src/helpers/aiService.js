@@ -254,7 +254,7 @@ class AiService {
       // 流在未收到 done 终止标记的情况下结束=被上游截断，按错误返回防止吞掉不完整结果
       if (!sawDone) return { success: false, error: '流式响应未完成（缺少结束标记）' };
       this.logger.info('AI文案处理(中转·流式)完成:', { outputLength: out.length });
-      return { success: true, text: out };
+      return { success: true, text: out, engine: 'cloud' };
     } catch (error) {
       this.logger.error('流式中转请求失败:', error?.message || error);
       return { success: false, error: '无法连接文案中转服务(流式)' };
@@ -427,6 +427,7 @@ class AiService {
         return {
           success: true,
           text: out.text.trim(),
+          engine: 'cloud',
           cloudRemaining: out.cloudRemaining,
           subscription: out.subscription,
           dailyUsed: out.dailyUsed,
@@ -506,7 +507,7 @@ class AiService {
       const result = await this.llmManager.polish(engine, text, mode, onDelta);
       if (result && result.success && typeof result.text === 'string' && result.text.trim()) {
         this.logger.info('AI文案处理(本地)完成:', { engine, outputLength: result.text.length });
-        return { success: true, text: result.text.trim() };
+        return { success: true, text: result.text.trim(), engine };
       }
       const failure = { success: false, error: (result && result.error) || '本地润色失败' };
       // 透传结构化失败原因（如 input_too_long），供上层给出明确提示。
