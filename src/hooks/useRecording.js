@@ -102,16 +102,76 @@ export const useRecording = ({ onTranscriptionCompleteRef, onAIOptimizationCompl
         throw new Error('您的浏览器不支持录音功能');
       }
 
-      // 请求麦克风权限
-      const stream = await navigator.mediaDevices.getUserMedia({
-        audio: {
-          sampleRate: 16000,
-          channelCount: 1,
-          echoCancellation: true,
-          noiseSuppression: true,
-          autoGainControl: true
+      // 请求麦克风权限。默认跟随系统默认输入设备；用户在设置里指定过麦克风时优先用指定设备
+      // （蓝牙耳机/虚拟设备抢占系统默认时会选错设备，导致"权限已授予却录到静音"）。
+      const rlog = (level, ...args) => {
+        if (window.electronAPI && window.electronAPI.log) window.electronAPI.log(level, ...args);
+      };
+      const baseAudioConstraints = {
+        sampleRate: 16000,
+        channelCount: 1,
+        echoCancellation: true,
+        noiseSuppression: true,
+        autoGainControl: true
+      };
+
+      // 读取设置的麦克风（audio_input_device_id，'default'=系统默认）；读取失败按默认处理
+      let preferredDeviceId = 'default';
+      try {
+        preferredDeviceId = (await window.electronAPI?.getSetting?.('audio_input_device_id', 'default')) || 'default';
+      } catch (e) {
+        rlog('warn', '读取 audio_input_device_id 失败，使用系统默认麦克风:', e?.message || e);
+      }
+
+      const audioConstraints = { ...baseAudioConstraints };
+      if (preferredDeviceId && preferredDeviceId !== 'default') {
+        // 校验所选设备是否仍在线（蓝牙耳机/外接麦可能已断开）；不在则回退系统默认并回写设置
+        try {
+          const devices = await navigator.mediaDevices.enumerateDevices();
+          const stillPresent = devices.some((d) => d.kind === 'audioinput' && d.deviceId === preferredDeviceId);
+          if (stillPresent) {
+            audioConstraints.deviceId = { exact: preferredDeviceId };
+          } else {
+            rlog('warn', `所选麦克风已断开(deviceId=${preferredDeviceId})，回退系统默认`);
+            try { await window.electronAPI?.setSetting?.('audio_input_device_id', 'default'); } catch (_) {}
+          }
+        } catch (e) {
+          rlog('warn', '枚举音频设备失败，使用系统默认麦克风:', e?.message || e);
         }
-      });
+      }
+
+      let stream;
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({ audio: audioConstraints });
+      } catch (gumErr) {
+        // 指定设备约束失败（设备刚被拔走等）：自动降级为系统默认约束重试一次
+        if (audioConstraints.deviceId && (gumErr.name === 'OverconstrainedError' || gumErr.name === 'NotFoundError')) {
+          rlog('warn', `指定麦克风获取失败(${gumErr.name})，降级系统默认重试:`, gumErr?.message || gumErr);
+          stream = await navigator.mediaDevices.getUserMedia({ audio: baseAudioConstraints });
+        } else {
+          throw gumErr;
+        }
+      }
+
+      // 麦克风轨道诊断日志：远程排障"权限已授予却录到静音"（选错设备/轨道被系统静音）
+      try {
+        const track = stream.getAudioTracks()[0];
+        if (track) {
+          const ts = track.getSettings ? track.getSettings() : {};
+          rlog('info',
+            `[麦克风] label="${track.label}" enabled=${track.enabled} muted=${track.muted} ` +
+            `readyState=${track.readyState} deviceId=${ts.deviceId || '?'} sampleRate=${ts.sampleRate || '?'}`);
+          if (track.muted === true || track.readyState !== 'live') {
+            rlog('warn', '[麦克风] 麦克风轨道疑似无信号（muted 或非 live），本段可能录到静音');
+          }
+          // 录音期间轨道状态变化（系统抢占/设备拔出会触发）；track.stop 后自然失效，无需刻意解绑
+          track.addEventListener('mute', () => rlog('warn', '[麦克风] 轨道被静音(mute)，当前录音可能出现无声段'));
+          track.addEventListener('unmute', () => rlog('info', '[麦克风] 轨道恢复(unmute)'));
+          track.addEventListener('ended', () => rlog('warn', '[麦克风] 轨道已结束(ended)，设备可能被拔出或被系统回收'));
+        }
+      } catch (e) {
+        rlog('warn', '[麦克风] 轨道诊断日志记录失败:', e?.message || e);
+      }
 
       streamRef.current = stream;
       audioChunksRef.current = [];

@@ -36,6 +36,8 @@ const SettingsPage = () => {
     sound_scheme: "meow",
     sound_volume: 0.3,
     asr_engine: "sensevoice",
+    // 录音麦克风设备（'default'=系统默认）
+    audio_input_device_id: "default",
     llm_streaming_enabled: false,
     llm_active_role: "normal",
     pill_skin: "catfx",
@@ -91,6 +93,24 @@ const SettingsPage = () => {
 
   // 应用版本号（运行时从 app.getVersion() 获取，不硬编码）
   const [appVersion, setAppVersion] = useState("");
+
+  // 麦克风设备列表（audioinput）：打开设置时枚举一次，设备插拔(devicechange)时重新枚举
+  const [micDevices, setMicDevices] = useState([]);
+  useEffect(() => {
+    const refreshMicDevices = async () => {
+      try {
+        if (!navigator.mediaDevices || !navigator.mediaDevices.enumerateDevices) return;
+        const devices = await navigator.mediaDevices.enumerateDevices();
+        // 过滤掉浏览器合成的 'default' 项，避免与「系统默认」选项重复
+        setMicDevices(devices.filter((d) => d.kind === "audioinput" && d.deviceId && d.deviceId !== "default"));
+      } catch (e) {
+        console.error("枚举麦克风设备失败:", e);
+      }
+    };
+    refreshMicDevices();
+    navigator.mediaDevices?.addEventListener?.("devicechange", refreshMicDevices);
+    return () => navigator.mediaDevices?.removeEventListener?.("devicechange", refreshMicDevices);
+  }, []);
 
   // ——— 应用内更新（免签名）状态 ———
   // checking: 正在查清单；update: 检查结果 { hasUpdate, latest, notes, url, mandatory }
@@ -318,6 +338,9 @@ const SettingsPage = () => {
           sound_scheme: allSettings.sound_scheme || "meow",
           sound_volume: typeof allSettings.sound_volume === "number" ? allSettings.sound_volume : 0.3,
           asr_engine: allSettings.asr_engine || "sensevoice",
+          // 录音麦克风：非空字符串才采纳，否则回退系统默认
+          audio_input_device_id: (typeof allSettings.audio_input_device_id === "string" && allSettings.audio_input_device_id)
+            ? allSettings.audio_input_device_id : "default",
           llm_streaming_enabled: allSettings.llm_streaming_enabled === true,
           llm_active_role: allSettings.llm_active_role || "normal",
           pill_skin: allSettings.pill_skin || "catfx",
@@ -452,6 +475,9 @@ const SettingsPage = () => {
       }
       if (changed.has("llm_streaming_enabled")) {
         await window.electronAPI.setSetting("llm_streaming_enabled", next.llm_streaming_enabled === true);
+      }
+      if (changed.has("audio_input_device_id")) {
+        await window.electronAPI.setSetting("audio_input_device_id", next.audio_input_device_id || "default");
       }
       if (changed.has("llm_active_role")) {
         await window.electronAPI.setSetting("llm_active_role", next.llm_active_role);
@@ -1825,6 +1851,32 @@ const SettingsPage = () => {
           {activeCategory === "system" && (
             <div className="bg-white dark:bg-neutral-900 rounded-2xl shadow-sm border border-gray-100 dark:border-neutral-800">
               <div className="px-6">
+                {/* 麦克风选择：'default'=系统默认；所选设备断开时录音侧自动回退系统默认 */}
+                <div className="flex items-center justify-between gap-4 py-4 border-b border-gray-100 dark:border-neutral-800">
+                  <div className="min-w-0">
+                    <label className={`${rowLabelClass} chinese-title`}>麦克风</label>
+                    <p className="mt-0.5 text-[13px] text-gray-500 dark:text-neutral-400">
+                      录音使用的输入设备；所选设备断开时自动回退系统默认
+                    </p>
+                  </div>
+                  <select
+                    value={settings.audio_input_device_id}
+                    onChange={(e) => updateAndSave('audio_input_device_id', e.target.value)}
+                    className="w-48 flex-shrink-0 px-3 py-2 text-[15px] border border-gray-300 dark:border-neutral-700 rounded-lg focus:ring-1 focus:ring-neutral-400 focus:border-transparent bg-white dark:bg-neutral-800 text-gray-900 dark:text-gray-100"
+                  >
+                    <option value="default">系统默认</option>
+                    {micDevices.map((d, i) => (
+                      <option key={d.deviceId} value={d.deviceId}>
+                        {d.label || `麦克风 ${i + 1}`}
+                      </option>
+                    ))}
+                    {/* 已保存的设备当前不在列表（已断开）：补一个占位项，避免下拉显示为空 */}
+                    {settings.audio_input_device_id !== 'default' &&
+                      !micDevices.some((d) => d.deviceId === settings.audio_input_device_id) && (
+                        <option value={settings.audio_input_device_id}>已断开的麦克风</option>
+                      )}
+                  </select>
+                </div>
                 <div className="flex items-center justify-between gap-4 py-4">
                   <div className="min-w-0">
                     <label className={`${rowLabelClass} chinese-title`}>流式上屏</label>
