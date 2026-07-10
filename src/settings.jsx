@@ -33,12 +33,12 @@ const SettingsPage = () => {
     recording_trigger_accelerator: "",
     cancel_key: "Escape",
     cancel_taps: 1,
-    sound_scheme: "soft",
+    sound_scheme: "meow",
     sound_volume: 0.3,
     asr_engine: "sensevoice",
     llm_streaming_enabled: false,
     llm_active_role: "normal",
-    pill_skin: "music",
+    pill_skin: "catfx",
     translate_trigger_key: "LeftCtrl",
     translate_trigger_taps: 2,
     // 转英文触发器是否关闭（「无」）。新装默认关闭。
@@ -308,19 +308,19 @@ const SettingsPage = () => {
           recording_trigger_key: (allSettings.recording_trigger && allSettings.recording_trigger.key)
             || (isMac ? "LeftOption" : "LeftAlt"),
           recording_trigger_taps: (allSettings.recording_trigger && allSettings.recording_trigger.taps)
-            || (isMac ? 1 : 2),
+            || 1,
           recording_trigger_type: (allSettings.recording_trigger && allSettings.recording_trigger.type === "accelerator")
             ? "accelerator" : "modifier-tap",
           recording_trigger_accelerator: (allSettings.recording_trigger && allSettings.recording_trigger.type === "accelerator")
             ? (allSettings.recording_trigger.accelerator || "") : "",
           cancel_key: allSettings.cancel_key || "Escape",
           cancel_taps: Number(allSettings.cancel_taps) === 2 ? 2 : 1,
-          sound_scheme: allSettings.sound_scheme || "soft",
+          sound_scheme: allSettings.sound_scheme || "meow",
           sound_volume: typeof allSettings.sound_volume === "number" ? allSettings.sound_volume : 0.3,
           asr_engine: allSettings.asr_engine || "sensevoice",
           llm_streaming_enabled: allSettings.llm_streaming_enabled === true,
           llm_active_role: allSettings.llm_active_role || "normal",
-          pill_skin: allSettings.pill_skin || "music",
+          pill_skin: allSettings.pill_skin || "catfx",
           translate_trigger_key: (allSettings.translate_trigger && allSettings.translate_trigger.key) || "LeftCtrl",
           translate_trigger_taps: (allSettings.translate_trigger && allSettings.translate_trigger.taps) || 2,
           // 关闭态兜底：type:'none' / null / 空 / 非 modifier-tap 一律视为「无」（关闭）

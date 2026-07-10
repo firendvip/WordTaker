@@ -351,11 +351,11 @@ function registerFallbackRecordingHotkey(fire, reason) {
   return false;
 }
 
-// 设置录音触发（默认：mac 单击左 Option / Windows 双击左 Alt；裸修饰键经 uiohook 监听）
+// 设置录音触发（默认：mac 单击左 Option / Windows 单击左 Alt；裸修饰键经 uiohook 监听）
 function setupRecordingTrigger() {
   try {
     const platformDefault = process.platform === 'win32'
-      ? { type: 'modifier-tap', key: 'LeftAlt', taps: 2 }
+      ? { type: 'modifier-tap', key: 'LeftAlt', taps: 1 }
       : { type: 'modifier-tap', key: 'LeftOption', taps: 1 };
     const stored = databaseManager.getSetting('recording_trigger', null);
     // 修复误判：validateRecordingTrigger 校验通过时返回的是"重建的新对象"，

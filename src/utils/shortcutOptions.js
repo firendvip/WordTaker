@@ -77,16 +77,9 @@ const CANCEL_KEY_OPTIONS = CANCEL_KEYS.flatMap((k) =>
 
 // ===== 唤醒键预设（每平台 3 个；第一项为平台现有默认，老用户零感知） =====
 // modifier-tap 走 uiohook（保留原生机制），accelerator 走 globalShortcut。
-const WAKE_PRESETS_MAC = [
-  { id: "tap-loption", trigger: { type: "modifier-tap", key: "LeftOption", taps: 1 } },
-  { id: "ctrl-opt-space", trigger: { type: "accelerator", accelerator: "Control+Alt+Space" } },
-  { id: "opt-space", trigger: { type: "accelerator", accelerator: "Alt+Space" } },
-];
-const WAKE_PRESETS_WIN = [
-  { id: "tap-lalt", trigger: { type: "modifier-tap", key: "LeftAlt", taps: 2 } },
-  { id: "ctrl-alt-space", trigger: { type: "accelerator", accelerator: "Control+Alt+Space" } },
-  { id: "ctrl-shift-space", trigger: { type: "accelerator", accelerator: "Control+Shift+Space" } },
-];
+// 唤醒键预设已移除：只保留「自定义…」按钮，用户自行设定。
+const WAKE_PRESETS_MAC = [];
+const WAKE_PRESETS_WIN = [];
 
 function getWakePresets(isMac) {
   return isMac ? WAKE_PRESETS_MAC : WAKE_PRESETS_WIN;

@@ -1,6 +1,6 @@
 # Windows 打包指南（经验固化）
 
-> 打包 Windows 版本前必读。本文档由 1.16.2 → 1.20.1 多轮 Windows 真机踩坑沉淀而成。
+> 打包 Windows 版本前必读。本文档由 1.16.2 → 1.25.1 多轮 Windows 真机踩坑 + 发版核验实操沉淀而成。
 
 ## 一、铁律
 
@@ -58,3 +58,53 @@ shasum -a 256 <exe>  # 与 SHA256SUMS 比对
 3. 粘贴用可见 PowerShell 窗口会抢焦点、按键发错窗口；`windowsHide:true` 只是必要条件，企业 CLM 机型必须走 sendkeys.exe。
 4. NSIS 高压缩+torch 时代安装极慢；瘦身后仍要在安装中文案提示「语音模型较大请耐心等待」。
 5. 发版后模型检查如报「递归搜索 modelscope」死循环=模型路径判定退化成 torch 模式，检查 funasrManager 的 ONNX 分支。
+
+## 六、发版核验实操经验（主干侧发版，v1.21→1.25.1 固化）
+
+> v1.25.1 的 Windows x64 安装包已真机验证正常可用。以下为多轮发版沉淀的可复用实操，与上面的架构/踩坑互补。
+
+### 6.1 Mac + Win 并行发版编排（一次性出双平台）
+```bash
+# 1) bump 版本 + CHANGELOG + commit(--no-verify) + tag + push（推 tag 触发 Win CI）
+git push --no-verify origin main && git push --no-verify origin v<X.Y.Z>
+# 2) 后台盯 Win CI（省去反复 poll；约 20-40 分钟）
+gh run watch <RUN_ID> --exit-status --interval 60   # 用 run_in_background 挂后台
+# 3) 同时本机打 Mac（后台并行）
+npm run prebuild:mac && CSC_IDENTITY_AUTO_DISCOVERY=false npm run build:mac
+# 两路都完成 → 分别核验（Mac 见项目 CLAUDE.md，Win 见 §三 + 下方）
+```
+
+### 6.2 SHA256 校验的 CRLF 坑（必看）
+`SHA256SUMS-<arch>.txt` 是 **CRLF 行尾**，`shasum -a 256 -c SHA256SUMS...` 直接跑会全 `FAILED open or read`。正解——取期望值时 `tr -d '\r'` 或手动比对：
+```bash
+expect=$(grep setup.exe SHA256SUMS-x64.txt | awk '{print $1}' | tr -d '\r')
+actual=$(shasum -a 256 KittyEcho-<ver>-x64-setup.exe | awk '{print $1}')
+[ "$expect" = "$actual" ] && echo "x64 OK" || echo "MISMATCH"
+```
+
+### 6.3 asar 版本核验勿覆盖仓库 package.json（踩过的坑）
+`npx asar extract-file app.asar package.json` 会把提取出的 package.json **写到当前工作目录、覆盖仓库真文件**（scripts 全没了）。必须**提取到临时目录**再读，或提取后立即还原：
+```bash
+(cd /tmp && npx asar extract-file "<绝对路径>/app.asar" package.json && node -p "require('/tmp/package.json').version")
+# 若不慎在仓库目录跑过：git checkout -- package.json 还原
+```
+
+### 6.4 大文件完整性用 Content-Length 快验（下载站/服务器产物）
+SHA 慢，先用字节数快筛本机 vs 服务器是否一致，再抽 SHA 确认：
+```bash
+本机:   stat -f%z dist/KittyEcho-<ver>-arm64.dmg
+服务器: curl -s -r 0-0 -D - https://c.look3.cn/KittyEcho-<ver>-arm64.dmg -o /dev/null | grep -i content-range  # "/"后是总字节
+```
+
+### 6.5 本轮新增核验项（安全加固 + 多平台后必查）
+在 §三 清单基础上追加（从 asar 提对应文件 grep）：
+- [ ] `src/helpers/backendConfig.js` 的 `CLIENT_PLATFORM` 按 `process.platform` **派生**，非写死 `"mac"`（曾出现 Win 包上报 `x-platform:mac` 的 bug）。
+- [ ] `llm_server.py` **完整明文提示词 = 0**：`grep -c '【示例1】' <unpacked>/llm_server.py` == 0，且 `grep -c set_prompt` > 0（提示词已加密/服务端下发）。
+- [ ] `getLocalPrompt` / `/prompt` 拉取逻辑就位（提 `backendClient.js` grep）。
+- [ ] 下载站接链：**Windows 仅 x64**（下载页 `arm64-setup` 链接数 = 0，arm64 只留 GitHub Release）。
+
+### 6.6 其它
+- **secrets 扫描**：`git diff | grep -iE "(sk-|api[_-]?key|secret|token)"`，排除误报（`polish_engine`/`accessToken`/`HOOK_TOKEN`/`X-App-Token` 等业务词）。
+- **pre-push/commit hook** 本机 pnpm 环境失败属已知，`--no-verify` 跳过（与代码无关）。
+- **zsh 核验脚本注意**：中文安装路径的 glob、`node -p "..."` 引号转义在 zsh 易报错；拆小步、显式路径、必要时双引号包裹。
+- **订正**：模型 `model_quant.onnx` 实测 ≈230M（早期文档记 241M）。

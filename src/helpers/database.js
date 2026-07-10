@@ -149,9 +149,9 @@ class DatabaseManager {
       llm_fallback_paste_raw: true,
       // 透传到请求体的额外字段：关闭 DeepSeek 思考模式（v4-flash 默认会思考，关闭后约快 1.3 秒）
       llm_extra_body: { thinking: { type: 'disabled' } },
-      // 录音触发键：mac 单击左 Option / Windows 双击左 Alt（裸修饰键经 uiohook 监听）
+      // 录音触发键：mac 单击左 Option / Windows 单击左 Alt（裸修饰键经 uiohook 监听）
       recording_trigger: process.platform === 'win32'
-        ? { type: 'modifier-tap', key: 'LeftAlt', taps: 2 }
+        ? { type: 'modifier-tap', key: 'LeftAlt', taps: 1 }
         : { type: 'modifier-tap', key: 'LeftOption', taps: 1 },
       // 取消录音快捷键（默认 Esc，可在设置里改为裸修饰键单/双击）
       cancel_key: 'Escape',
@@ -166,7 +166,7 @@ class DatabaseManager {
       translate_trigger: { type: 'none' },
       translate_fallback_select_all: false,
       // 提示音：唤起/结束的合成音方案与音量（none 为无声）
-      sound_scheme: 'soft',
+      sound_scheme: 'meow',
       sound_volume: 0.3,
       // 识别引擎：sensevoice(快，默认) / paraformer(稳，回退)
       asr_engine: 'sensevoice',
@@ -183,8 +183,8 @@ class DatabaseManager {
       llm_streaming_enabled: false,
       // 保留最近一次生成结果到剪贴板：开启后粘贴完不恢复用户原剪贴板，留下最新生成文本；默认关（保持原"粘贴后恢复"行为）
       keep_result_in_clipboard: false,
-      // 胶囊中心动画皮肤：'music'（默认）| 'voiceink'
-      pill_skin: 'music',
+      // 胶囊中心动画皮肤：'catfx'（默认）| 'music' | 'voiceink'
+      pill_skin: 'catfx',
       // 胶囊跟随输入焦点：开（默认）出现在焦点输入框下方/无焦点时鼠标下方；关则固定屏幕底部居中
       pill_follow_focus: true,
       // 托盘图标样式：'smile'（中笑镂空单色模板，默认）| 'color'（彩色猫头）
@@ -206,6 +206,21 @@ class DatabaseManager {
     } catch (error) {
       if (this.logger && this.logger.error) {
         this.logger.error('初始化默认设置失败:', error);
+      }
+    }
+
+    // 一次性强制迁移：把所有用户（含老用户）的皮肤/提示音强制刷为「小猫」+「喵」。
+    // 用 flag 落盘只跑一次；迁移后用户仍可自由更改皮肤/提示音，不会被再次重置。
+    try {
+      const MIGRATE_FLAG = '_migrate_force_skin_sound_v126';
+      if (this.getSetting(MIGRATE_FLAG, null) !== '1') {
+        this.setSetting('pill_skin', 'catfx');
+        this.setSetting('sound_scheme', 'meow');
+        this.setSetting(MIGRATE_FLAG, '1');
+      }
+    } catch (error) {
+      if (this.logger && this.logger.error) {
+        this.logger.error('强制皮肤/提示音迁移失败:', error);
       }
     }
   }
