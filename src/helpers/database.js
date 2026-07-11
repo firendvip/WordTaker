@@ -86,6 +86,7 @@ class DatabaseManager {
         polish_engine TEXT,
         polish_duration_ms INTEGER,
         polish_first_char_ms INTEGER,
+        e2e_total_ms INTEGER,
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
         updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
       )
@@ -120,6 +121,7 @@ class DatabaseManager {
         { name: "polish_engine", ddl: "ALTER TABLE transcriptions ADD COLUMN polish_engine TEXT" },
         { name: "polish_duration_ms", ddl: "ALTER TABLE transcriptions ADD COLUMN polish_duration_ms INTEGER" },
         { name: "polish_first_char_ms", ddl: "ALTER TABLE transcriptions ADD COLUMN polish_first_char_ms INTEGER" },
+        { name: "e2e_total_ms", ddl: "ALTER TABLE transcriptions ADD COLUMN e2e_total_ms INTEGER" },
       ];
       for (const col of wanted) {
         if (!names.has(col.name)) {
@@ -275,8 +277,8 @@ class DatabaseManager {
       INSERT INTO transcriptions (
         text, raw_text, processed_text, confidence,
         language, duration, file_size,
-        polish_engine, polish_duration_ms, polish_first_char_ms
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        polish_engine, polish_duration_ms, polish_first_char_ms, e2e_total_ms
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
     return stmt.run(
@@ -289,7 +291,8 @@ class DatabaseManager {
       data.file_size || 0,
       typeof data.polish_engine === 'string' ? data.polish_engine : null,
       Number.isFinite(data.polish_duration_ms) ? data.polish_duration_ms : null,
-      Number.isFinite(data.polish_first_char_ms) ? data.polish_first_char_ms : null
+      Number.isFinite(data.polish_first_char_ms) ? data.polish_first_char_ms : null,
+      Number.isFinite(data.e2e_total_ms) ? data.e2e_total_ms : null
     );
   }
 
@@ -332,7 +335,7 @@ class DatabaseManager {
   updateTranscription(id, fields = {}) {
     if (!id) return { changes: 0 };
     const stmt = this.db.prepare(
-      "UPDATE transcriptions SET text = COALESCE(?, text), processed_text = COALESCE(?, processed_text), polish_engine = COALESCE(?, polish_engine), polish_duration_ms = COALESCE(?, polish_duration_ms), polish_first_char_ms = COALESCE(?, polish_first_char_ms) WHERE id = ?"
+      "UPDATE transcriptions SET text = COALESCE(?, text), processed_text = COALESCE(?, processed_text), polish_engine = COALESCE(?, polish_engine), polish_duration_ms = COALESCE(?, polish_duration_ms), polish_first_char_ms = COALESCE(?, polish_first_char_ms), e2e_total_ms = COALESCE(?, e2e_total_ms) WHERE id = ?"
     );
     return stmt.run(
       typeof fields.text === "string" ? fields.text : null,
@@ -340,6 +343,7 @@ class DatabaseManager {
       typeof fields.polish_engine === "string" ? fields.polish_engine : null,
       Number.isFinite(fields.polish_duration_ms) ? fields.polish_duration_ms : null,
       Number.isFinite(fields.polish_first_char_ms) ? fields.polish_first_char_ms : null,
+      Number.isFinite(fields.e2e_total_ms) ? fields.e2e_total_ms : null,
       id
     );
   }

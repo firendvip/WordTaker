@@ -50,6 +50,8 @@ export const useRecording = ({ onTranscriptionCompleteRef, onAIOptimizationCompl
   const levelRafRef = useRef(null);
   // 内存感知保护（WS6）：录音开始时间戳 + 周期性内存检查定时器句柄
   const recordStartedAtRef = useRef(0);
+  // 端到端埋点：录音结束（mediaRecorder 停止）的时刻（ms）。纯测量，用于历史「端到端字/秒」。
+  const recEndTsRef = useRef(0);
   const memCheckTimerRef = useRef(null);
 
   // 添加防重复处理机制
@@ -269,6 +271,8 @@ export const useRecording = ({ onTranscriptionCompleteRef, onAIOptimizationCompl
       };
 
       mediaRecorder.onstop = async () => {
+        // 端到端埋点 t0：录音真正结束的时刻（所有停止起因的唯一收口）。纯记录，不改任何行为。
+        recEndTsRef.current = Date.now();
         setIsRecording(false);
         // 录音结束：停止实时电平分析并释放 AudioContext（不泄漏）
         stopAudioAnalysis();
@@ -493,6 +497,9 @@ export const useRecording = ({ onTranscriptionCompleteRef, onAIOptimizationCompl
 
               let finalData = { ...transcriptionData };
               let emit;
+              // 端到端埋点：快照本条录音的结束时刻（避免期间新录音覆盖 ref）。
+              // e2e_total_ms = 真正粘贴完成时刻 − recEndTs。仅测量、异步补写、失败静默。
+              const recEndTs = recEndTsRef.current;
               // 润色标识：当前引擎 + 完整润色耗时（含本地首次加载模型的一次性开销）。
               // 耗时口径 = 从发起润色到拿到结果的完整等待时间。仅在实际走了润色时写入。
               const polishEngine = getS('polish_engine', 'cloud');
@@ -550,6 +557,10 @@ export const useRecording = ({ onTranscriptionCompleteRef, onAIOptimizationCompl
                     }
                     if (sres && (sres.success || sres.pastedAny)) {
                       polishDurMs = Date.now() - _sT0;
+                      // 端到端 t_end（流式）：processTextStream 返回 = 主进程最后一段增量已粘贴落屏。
+                      if (Number.isFinite(recEndTs) && recEndTs > 0) {
+                        finalData.e2e_total_ms = Date.now() - recEndTs;
+                      }
                       log('info', `[计时] 流式文案: ${polishDurMs}ms` + (Number.isFinite(firstCharMs) ? `，首字 ${firstCharMs}ms` : ''));
                       // 实际引擎（云端降级本地时如实记录）；passthrough 不覆盖，维持原有行为
                       if (sres.engine && sres.engine !== 'passthrough') actualEngine = sres.engine;
@@ -699,7 +710,27 @@ export const useRecording = ({ onTranscriptionCompleteRef, onAIOptimizationCompl
               if (myGen !== generationRef.current) {
                 log('info', '已被更新的录音取代，跳过本次粘贴');
               } else if (onAIOptimizationCompleteRef?.current) {
-                onAIOptimizationCompleteRef?.current(emit);
+                const doneP = onAIOptimizationCompleteRef?.current(emit);
+                // 端到端 t_end（非流式）：handleAIOptimizationComplete 为 async，其返回 Promise 在
+                // safePaste 的 pasteText 完成后 resolve（整段真正落屏）。仅观测、不 await、不阻塞出字；
+                // 仅当本次确有粘贴(emit.paste)且 recEndTs 有效时，粘贴完成后拿行 id 异步补写 e2e_total_ms。
+                if (
+                  emit && emit.paste === true &&
+                  Number.isFinite(recEndTs) && recEndTs > 0 &&
+                  window.electronAPI && window.electronAPI.updateTranscription
+                ) {
+                  Promise.resolve(doneP)
+                    .then(() => {
+                      const e2e = Date.now() - recEndTs;
+                      return Promise.resolve(savePromise).then((r) => {
+                        const sid = r && r.lastInsertRowid != null ? r.lastInsertRowid : null;
+                        if (sid != null) {
+                          return window.electronAPI.updateTranscription(sid, { e2e_total_ms: e2e });
+                        }
+                      });
+                    })
+                    .catch(() => { /* 埋点失败静默，绝不影响粘贴/入库 */ });
+                }
               }
 
               // 走过润色且拿到结果时，记录引擎与完整润色耗时（供历史界面显示「AI优化·<引擎> 时长X.XX秒」）。
@@ -724,6 +755,10 @@ export const useRecording = ({ onTranscriptionCompleteRef, onAIOptimizationCompl
                           : {}),
                         ...(Number.isFinite(finalData.polish_first_char_ms)
                           ? { polish_first_char_ms: finalData.polish_first_char_ms }
+                          : {}),
+                        // 端到端字/秒（流式路径已在出字时算好）；非流式此处为空、由粘贴完成后单独补写。
+                        ...(Number.isFinite(finalData.e2e_total_ms)
+                          ? { e2e_total_ms: finalData.e2e_total_ms }
                           : {}),
                       });
                     }

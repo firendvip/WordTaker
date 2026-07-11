@@ -39,6 +39,20 @@ const aiOptimizeLabel = (item) => {
   return label;
 };
 
+// 端到端字/秒：从「录音结束」到「整段文本真正粘贴落屏」的总耗时算出的吞吐，
+// 作为端到端提速的度量基线，与「AI优化字/秒」并列展示、不替换。
+//  - 字数 = 最终落屏文本(processed_text，无则回退 raw_text/text)的码点数。
+//  - 老记录无 e2e_total_ms（或为 0）→ 返回 null，界面优雅降级、不显示。
+const e2eThroughputLabel = (item) => {
+  const ms = item?.e2e_total_ms;
+  if (!Number.isFinite(ms) || ms <= 0) return null;
+  const text = item?.processed_text || item?.raw_text || item?.text || '';
+  const chars = [...text].length;
+  if (chars <= 0) return null;
+  const cps = Math.round(chars / (ms / 1000));
+  return `端到端 ${cps} 字/秒（总 ${formatPolishDuration(ms)} 秒）`;
+};
+
 // 历史记录页面组件
 const HistoryPage = () => {
   const handleCopy = async (text, event) => {
@@ -342,6 +356,11 @@ const HistoryContent = ({ onCopy }) => {
                       {item.confidence > 0 && (
                         <span className="bg-gray-100 dark:bg-neutral-800 text-gray-700 dark:text-neutral-300 px-2 py-0.5 rounded-md text-xs">
                           置信度: {Math.round(item.confidence * 100)}%
+                        </span>
+                      )}
+                      {e2eThroughputLabel(item) && (
+                        <span className="bg-blue-50 dark:bg-blue-900/20 text-blue-600 dark:text-blue-300 px-2 py-0.5 rounded-md text-xs">
+                          {e2eThroughputLabel(item)}
                         </span>
                       )}
                     </div>
