@@ -185,8 +185,8 @@ class DatabaseManager {
       keep_result_in_clipboard: false,
       // 胶囊中心动画皮肤：'catfx'（默认）| 'music' | 'voiceink'
       pill_skin: 'catfx',
-      // 胶囊跟随输入焦点：开（默认）出现在焦点输入框下方/无焦点时鼠标下方；关则固定屏幕底部居中
-      pill_follow_focus: true,
+      // 胶囊唤醒定位：关（默认）出现在光标附近、瞬时零跳动；开则跟随焦点输入框正下方（需 AX 查询，可能有轻微延迟/位移）
+      pill_follow_focus: false,
       // 托盘图标样式：'smile'（中笑镂空单色模板，默认）| 'color'（彩色猫头）
       tray_icon_style: 'smile',
       // 开机启动：登录电脑后自动打开（默认开；仅打包版真正注册登录项）
@@ -221,6 +221,21 @@ class DatabaseManager {
     } catch (error) {
       if (this.logger && this.logger.error) {
         this.logger.error('强制皮肤/提示音迁移失败:', error);
+      }
+    }
+
+    // 一次性强制迁移：把所有用户（含老用户，此前默认 true）的「胶囊跟随输入焦点」刷为 false，
+    // 使唤醒默认走「光标定位」（瞬时零跳动，用户拍板）。用 flag 落盘只跑一次；
+    // 迁移后用户仍可在设置里手动重新开启跟随，不会被再次重置。
+    try {
+      const MIGRATE_FLAG = '_migrate_pill_follow_focus_off_v1';
+      if (this.getSetting(MIGRATE_FLAG, null) !== '1') {
+        this.setSetting('pill_follow_focus', false);
+        this.setSetting(MIGRATE_FLAG, '1');
+      }
+    } catch (error) {
+      if (this.logger && this.logger.error) {
+        this.logger.error('胶囊跟随焦点默认关迁移失败:', error);
       }
     }
   }

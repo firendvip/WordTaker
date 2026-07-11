@@ -49,7 +49,7 @@ const SettingsPage = () => {
     keep_result_in_clipboard: false,
     // 开机启动：默认开启
     launch_at_login: true,
-    pill_follow_focus: true,
+    pill_follow_focus: false,
     tray_icon_style: "smile",
     wtw_rules_json: "[]"
   });
@@ -355,8 +355,8 @@ const SettingsPage = () => {
           keep_result_in_clipboard: allSettings.keep_result_in_clipboard === true,
           // 开机启动：缺省视为开启（老用户无该键按 true 处理）
           launch_at_login: allSettings.launch_at_login !== false,
-          // 胶囊跟随焦点：缺省视为开启（默认 true）
-          pill_follow_focus: allSettings.pill_follow_focus !== false,
+          // 胶囊跟随焦点：缺省视为关闭（默认 false，走光标定位）；仅显式 true 才开
+          pill_follow_focus: allSettings.pill_follow_focus === true,
           // 托盘图标样式：缺省为中笑（'smile'）
           tray_icon_style: allSettings.tray_icon_style === "color" ? "color" : "smile",
           // 词转词规则 JSON 字符串
@@ -1672,9 +1672,9 @@ const SettingsPage = () => {
                 {/* 胶囊跟随输入焦点 */}
                 <div className="flex items-center justify-between gap-4 py-4 border-t border-gray-100 dark:border-neutral-800">
                   <div className="min-w-0">
-                    <label className={`${rowLabelClass} chinese-title`}>胶囊跟随输入焦点</label>
+                    <label className={`${rowLabelClass} chinese-title`}>唤醒位置</label>
                     <p className="mt-0.5 text-[13px] text-gray-500 dark:text-neutral-400">
-                      开：出现在焦点输入框下方/无焦点时鼠标下方；关：固定屏幕底部居中
+                      关（默认·跟随鼠标）：胶囊出现在鼠标位置附近，瞬间显示、不跳动；开（跟随输入框）：胶囊贴在正在输入的框正下方，更精准但首次唤醒可能有轻微延迟/位移
                     </p>
                   </div>
                   <button

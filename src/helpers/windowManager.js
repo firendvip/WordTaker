@@ -25,8 +25,12 @@ function pillHeightForSkin(skin) {
 // 让整条 show 链路控制在 ~800ms 内，超时直接走光标/底部兜底，绝不阻塞唤起。
 const FOCUS_FIELD_TIMEOUT_MS = 900;
 
-// 胶囊与焦点输入框（或鼠标点）之间的竖直间距（像素）：略大的下移量，让胶囊明显落在输入框下方。
+// 胶囊与焦点输入框之间的竖直间距（像素）：略大的下移量，让胶囊明显落在输入框下方。
 const FIELD_GAP_PX = 14;
+
+// 光标定位模式：胶囊顶边与鼠标点之间的竖直间距（像素）。比 FIELD_GAP_PX 略大，
+// 让胶囊清晰落在鼠标指针下方、不与指针箭头重叠。
+const CURSOR_GAP_PX = 24;
 
 // AX 尺寸的合理上限（像素）：超过即视为垃圾值，按解析失败处理。
 const MAX_AX_DIMENSION_PX = 20000;
@@ -324,6 +328,11 @@ class WindowManager {
       const [w, h] = this.mainWindow.getSize();
       const x = Math.round(wa.x + (wa.width - w) / 2);
       const y = Math.round(wa.y + wa.height - h - BOTTOM_OFFSET_PX); // 距屏幕底部 24px
+      // 「同坐标跳过」守卫：目标 (x,y) 与当前窗口位置完全一致时不再 setPosition。
+      // 这样「显示先行」在光标屏摆好后，异步补位若解析出同屏同槽位即为 no-op → 消除同屏闪动；
+      // 仅当真跨到不同屏/不同槽位（坐标不同）才补位。
+      const [curX, curY] = this.mainWindow.getPosition();
+      if (curX === x && curY === y) return;
       this.mainWindow.setPosition(x, y);
       this._logPlacement(branchLabel, { x: wa.x, y: wa.y, w: wa.width, h: wa.height }, { x, y, width: w, height: h });
     } catch (error) {
@@ -358,14 +367,42 @@ class WindowManager {
     return { x, y, width: rect.width, height: rect.height };
   }
 
-  // 读取「跟随焦点」开关：默认 true。DB 不可用/异常时按 true 处理（与设置默认一致）。
+  // 读取「跟随焦点」开关：**默认 false**（默认走光标定位，瞬时零跳动）。
+  // 仅当用户在设置里显式开启，才走「跟随输入框」的 AX 贴框模式（可能有轻微延迟/位移）。
+  // DB 不可用/异常时按 false 处理（与设置默认一致）。
   _isFollowFocusEnabled() {
     try {
       const dbm = this.databaseManager;
-      if (!dbm || typeof dbm.getSetting !== "function") return true;
-      return dbm.getSetting("pill_follow_focus", true) !== false;
+      if (!dbm || typeof dbm.getSetting !== "function") return false;
+      return dbm.getSetting("pill_follow_focus", false) === true;
     } catch (e) {
+      return false;
+    }
+  }
+
+  // 首帧「零跳动」摆位：直接用上次成功的输入框锚点（this._lastFocusPoint）把胶囊摆到输入框下方，
+  // 同步、瞬时、不走 AX。仅当锚点有效**且与当前光标同屏**时才用——跨屏则视为过期/跟随了别的屏，
+  // 返回 false 由上层回退「光标屏底部居中」，优先保证「首帧不跨屏跳」。稳态（同一输入框连唤）
+  // 首帧即在正确位置，随后 STEP2 AX 精解析与之同位 → 被 field 的「同坐标 no-op」守卫拦下，零跳动。
+  // 成功 setBounds 并 return true；无缓存/跨屏/异常 return false。绝不抛出。
+  _positionByCachedFieldAnchor() {
+    try {
+      if (!this.mainWindow || this.mainWindow.isDestroyed()) return false;
+      const anchor = this._lastFocusPoint;
+      if (!anchor || !Number.isFinite(anchor.x) || !Number.isFinite(anchor.y)) return false;
+      const { screen } = require("electron");
+      const cursorDisp = screen.getDisplayNearestPoint(screen.getCursorScreenPoint());
+      const anchorDisp = screen.getDisplayNearestPoint({ x: Math.round(anchor.x), y: Math.round(anchor.y) });
+      // 缓存锚点与当前光标不在同屏 → 过期/跨屏，回退底部居中（消除跨屏跳动优先于沿用旧锚点）。
+      if (!cursorDisp || !anchorDisp || cursorDisp.id !== anchorDisp.id) return false;
+      const [w, h] = this.mainWindow.getSize();
+      const rect = { x: Math.round(anchor.x - w / 2), y: Math.round(anchor.y), width: w, height: h };
+      const clamped = this.clampRectToWorkArea(rect, anchorDisp.workArea);
+      this.mainWindow.setBounds(clamped);
+      this._logPlacement("field-cache", { x: anchor.x, y: anchor.y, w: 0, h: 0 }, clamped);
       return true;
+    } catch (e) {
+      return false;
     }
   }
 
@@ -439,9 +476,16 @@ class WindowManager {
                 height: h,
               };
               const clamped = this.clampRectToWorkArea(rect, display.workArea);
-              this.mainWindow.setBounds(clamped);
-              // 缓存成功锚点，供平滑偶发单次失败用。
+              // 缓存成功锚点，供首帧摆位与平滑偶发单次失败用（无论是否 setBounds 都要刷新）。
               this._lastFocusPoint = { x: anchorX, y: anchorY };
+              // 「同坐标 no-op」守卫：AX 精解析出的位置与当前（首帧缓存锚点摆好的）位置一致 →
+              // 不再 setBounds，消除同一输入框连唤时的同位闪动。仅换了输入框/位置变化才真正补位。
+              const [curX, curY] = this.mainWindow.getPosition();
+              if (curX === clamped.x && curY === clamped.y) {
+                this._logPlacement("field-noop", { x: fx, y: fy, w: fw, h: fh }, clamped);
+                return done(true);
+              }
+              this.mainWindow.setBounds(clamped);
               this._logPlacement("field", { x: fx, y: fy, w: fw, h: fh }, clamped);
               done(true);
             } catch (e) {
@@ -456,8 +500,9 @@ class WindowManager {
     });
   }
 
-  // STEP 2：光标兜底（也是 Windows 在「跟随」开启时的主路径，AX 仅 macOS）。
-  // 把胶囊放到鼠标点正下方居中，夹紧到光标屏 workArea。成功 true，失败 false。
+  // 光标定位（默认唤醒模式）：把胶囊放到鼠标点正下方、水平以光标居中，夹紧到光标屏 workArea。
+  // 同步、瞬时、一次到位——首帧即终位、零跳动、多屏正确（光标在哪屏就在哪屏）。
+  // 也是 Windows「跟随」路径与 macOS 跟随模式失败时的兜底。成功 true，失败 false。
   _positionByCursor() {
     try {
       if (!this.mainWindow || this.mainWindow.isDestroyed()) return false;
@@ -467,7 +512,7 @@ class WindowManager {
       const [w, h] = this.mainWindow.getSize();
       const rect = {
         x: Math.round(pt.x - w / 2),
-        y: Math.round(pt.y + FIELD_GAP_PX),
+        y: Math.round(pt.y + CURSOR_GAP_PX),
         width: w,
         height: h,
       };
@@ -532,20 +577,47 @@ class WindowManager {
     }
   }
 
-  // 唤起：先定位（跟随焦点/光标，或固定底部居中），再显示（不抢焦点）。
-  // 定位链路全部时间盒 + try/catch，绝不阻塞或卡死整屏。
-  async showRecorderAtBottom() {
+  // 唤起：显示先行、定位后补——避免被 osascript/AX 焦点屏解析（约 0.3-0.5s）阻塞首帧。
+  //   1) 先用「无需异步」的最优猜测——**当前光标屏**（唤醒要输入时光标本就在焦点屏，同步瞬时取得），
+  //      立即底部居中并 showInactive，让胶囊在焦点屏与提示音同步瞬间出现；
+  //   2) 再异步走完整定位链路（跟随焦点/光标或固定底部居中）。绝大多数场景 STEP2 解析出的屏/坐标
+  //      与首帧相同 → positionMainWindowBottomCenter 的「同坐标跳过」守卫使其不再 setPosition，无跳屏；
+  //      仅当真跨到不同屏/不同槽位时才补一次位（窗口已可见，仅位移）。
+  //   （不再优先 _lastFocusDisplay：那可能是上次残留的主屏，会导致首帧落错屏再闪到焦点屏。）
+  showRecorderAtBottom() {
     if (!this.mainWindow || this.mainWindow.isDestroyed()) return;
+    const follow = this._isFollowFocusEnabled();
+    // STEP 1：即时摆位 + 显示（不 await 任何异步解析）。
     try {
-      await this.positionPillForRecording();
+      if (follow) {
+        // 跟随输入框（opt-in，默认关）：先用「缓存输入框锚点/光标」摆首帧，STEP2 再 AX 精确贴框。
+        let placed = this._positionByCachedFieldAnchor();
+        if (!placed) placed = this._positionByCursor();
+        if (!placed) {
+          this.positionMainWindowBottomCenter(this._cursorDisplay() || this._lastFocusDisplay, "instant");
+        }
+      } else {
+        // 默认：光标附近，一次到位、零跳动（同步、不走 AX、无 STEP2 位移）。
+        if (!this._positionByCursor()) {
+          this.positionMainWindowBottomCenter(this._cursorDisplay() || this._lastFocusDisplay, "instant");
+        }
+      }
     } catch (e) {
-      // positionPillForRecording 内部已兜底，这里再保险一层。
+      // 摆位失败不致命：仍先把胶囊显示出来。
     }
-    if (!this.mainWindow || this.mainWindow.isDestroyed()) return;
     try {
       this.mainWindow.showInactive();
     } catch (e) {
       // 忽略
+    }
+    // STEP 2：仅「跟随输入框」模式才异步 AX 贴框（非默认路径）；默认光标模式不触发，故零跳动。
+    // 不 await、不抛出：positionPillForRecording 内部已逐级兜底。
+    if (follow) {
+      Promise.resolve()
+        .then(() => this.positionPillForRecording())
+        .catch(() => {
+          // 定位失败不影响已显示的胶囊。
+        });
     }
   }
 
