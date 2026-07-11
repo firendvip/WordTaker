@@ -236,9 +236,9 @@ export default function CatSkinFx({ micState, audioLevel = 0, isBusy = false, ha
         setView("none"); setFx(null); x = C;
         if (active) {
           mode = "enter"; t0 = now; setView("run");
-          // 出现改为瞬间：去掉由小跑入放大，仅保留一次轻微 opacity 淡入。
-          runWrap.style.animation = "none"; void runWrap.offsetWidth;
-          runWrap.style.animation = "cs-appear-fade 150ms ease";
+          // 出现改为瞬间：无淡入、无跑入放大，出现即满不透明（与提示音同步的即时感）。
+          runWrap.style.animation = "none";
+          runWrap.style.opacity = "1";
         }
       } else if (mode === "enter") {
         // 瞬间到位、满尺寸（不再 0.32→1.0 放大、不再侧边跑入）。

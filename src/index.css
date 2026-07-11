@@ -791,8 +791,7 @@ body {
 }
 /* ===== 透明小黑猫皮肤 ===== */
 .cat-skin{position:absolute;inset:0;overflow:visible;pointer-events:auto;-webkit-app-region:drag;background:transparent}
-/* 小猫出现：仅轻微淡入，无缩放/跑入（由 CatSkin/CatSkinFx 在 enter 时一次性触发） */
-@keyframes cs-appear-fade{from{opacity:0}to{opacity:1}}
+/* 小猫出现：瞬间显示，无淡入/缩放/跑入（CatSkin/CatSkinFx 在 enter 时直接置 opacity:1） */
 .cs-runner{position:absolute;bottom:6px;left:0;transform-origin:center bottom;will-change:transform;pointer-events:none}
 .cs-sleeper{position:absolute;bottom:6px;will-change:transform;pointer-events:none}
 .cs-notes{position:absolute;bottom:22px;left:0;pointer-events:none}
