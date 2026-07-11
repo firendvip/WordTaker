@@ -100,11 +100,8 @@ body {
    胶囊常驻投影见 .recorder-pill 的 filter；消失时窗口 hide，投影随之一起消失，两端对称。
    只动 filter/drop-shadow（合成器友好），绝不用 transform/scale，尺寸瞬间到位。 */
 .pill-appear {
-  animation: pill-appear-pop 90ms ease-out both;
-}
-@keyframes pill-appear-pop {
-  from { filter: drop-shadow(0 0 1px rgba(0, 0, 0, 0.5)); }
-  to   { filter: drop-shadow(0 3px 7px rgba(0, 0, 0, 0.5)); }
+  /* 胶囊瞬间出现：去掉入场动画（原 90ms 阴影 pop），常驻阴影随 .recorder-pill 立即到位，与声音同步零延迟 */
+  animation: none;
 }
 .recorder-pill {
   position: relative;

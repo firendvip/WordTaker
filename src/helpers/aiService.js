@@ -37,7 +37,7 @@ async function fetchWithRetry(url, options = {}) {
 }
 
 // 阶梯提醒阈值（云端剩余字数跨过时各提醒一次；充值回升后天然重新武装）。
-const QUOTA_ALERT_THRESHOLDS = [1000, 500, 100];
+const QUOTA_ALERT_THRESHOLDS = [1500, 500, 100];
 // 「上一次记录的剩余」持久化键；默认给一个很大的数，保证首次不误报。
 const QUOTA_ALERT_PREV_KEY = 'quota_alert_prev_remaining';
 const QUOTA_ALERT_PREV_DEFAULT = 1e12;
@@ -73,6 +73,20 @@ class AiService {
       if (Notification) new Notification({ title: title || '弦外小猫', body: body || '', silent: false }).show();
     } catch (e) {
       this.logger.warn && this.logger.warn('提醒触发失败:', e?.message || e);
+    }
+  }
+
+  // 只弹「系统通知弹窗」、不触发托盘闪烁（额度阶梯提醒专用：用户要求托盘不闪、改为弹窗通知）。
+  _notifySystem(title, body) {
+    try {
+      const { Notification } = require('electron');
+      if (Notification && Notification.isSupported && Notification.isSupported()) {
+        new Notification({ title: title || '弦外小猫', body: body || '', silent: false }).show();
+      } else if (Notification) {
+        new Notification({ title: title || '弦外小猫', body: body || '', silent: false }).show();
+      }
+    } catch (e) {
+      this.logger.warn && this.logger.warn('系统通知触发失败:', e?.message || e);
     }
   }
 
@@ -117,7 +131,18 @@ class AiService {
         if (prev > T && cur <= T) crossed = crossed == null ? T : Math.min(crossed, T);
       }
       if (crossed != null) {
-        this._notify('弦外小猫', `云端剩余字数不足 ${crossed} 字（当前 ${cur} 字），可到 设置→账户 充值。`);
+        // 三档各自文案（跨过 1500/500/100 时对应提醒）
+        const QUOTA_ALERT_MESSAGES = {
+          1500: `云端 AI 剩余不足 1500 字（当前 ${cur} 字），可在 设置→账户 查看或购买/兑换字数包。`,
+          500: `云端 AI 剩余不足 500 字（当前 ${cur} 字），建议及时补充，以免影响使用。`,
+          100: `云端 AI 剩余不足 100 字（当前 ${cur} 字），用尽后将自动切换到本地模型。`,
+        };
+        const QUOTA_ALERT_TITLES = { 1500: '云端字数快用完了', 500: '云端字数仅剩不多', 100: '云端字数即将用尽' };
+        // 额度提醒：只弹系统通知、不闪托盘（用户要求）
+        this._notifySystem(
+          QUOTA_ALERT_TITLES[crossed] || '弦外小猫',
+          QUOTA_ALERT_MESSAGES[crossed] || `云端剩余字数不足 ${crossed} 字（当前 ${cur} 字），可到 设置→账户 充值。`
+        );
       }
       this.databaseManager.setSetting(QUOTA_ALERT_PREV_KEY, cur);
     } catch (e) {
