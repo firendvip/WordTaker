@@ -222,9 +222,13 @@ function RecorderApp() {
         await safePaste(result.text);
       }
     } finally {
-      // 粘贴完成后隐藏胶囊（不再常驻前台）
+      // 粘贴完成后隐藏胶囊（不再常驻前台）。连说：仅当本段仍是「最新段」时才收起——
+      // 若旧段尾段完成时用户已再唤醒开了新段，胶囊归新段所有，旧段不得抢着隐藏。
+      const canHide = typeof result?.canHideRecorder === 'function'
+        ? result.canHideRecorder()
+        : true;
       try {
-        if (window.electronAPI && window.electronAPI.hideRecorder) {
+        if (canHide && window.electronAPI && window.electronAPI.hideRecorder) {
           await window.electronAPI.hideRecorder();
         }
       } catch (e) {
@@ -432,7 +436,9 @@ function RecorderApp() {
       return;
     }
 
-    if (!isRecording && !isRecordingProcessing) {
+    if (!isRecording) {
+      // 连说 / 尾段再唤醒：只要「当前没在录音」就允许开新段——即使上一段还在转写/润色/粘贴
+      // (isRecordingProcessing)，新段也立即开录，旧段尾段在后台并行收尾（见 useRecording 按段隔离）。
       // 引擎还在加载：先给可见反馈，再照常开始录音并缓冲，绝不丢按键。
       if (!modelStatus.isReady) {
         toast.info("🤖 引擎加载中，已开始录音，将在就绪后自动转写…");

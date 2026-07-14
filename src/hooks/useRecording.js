@@ -54,12 +54,15 @@ export const useRecording = ({ onTranscriptionCompleteRef, onAIOptimizationCompl
   const recEndTsRef = useRef(0);
   const memCheckTimerRef = useRef(null);
 
-  // 添加防重复处理机制
-  const processingRef = useRef({ isProcessingAudio: false, lastProcessTime: 0 });
   // 取消标记：为 true 时停止录音不进行识别（用于 Esc 取消）
   const cancelledRef = useRef(false);
-  // 代次：每段音频处理自增；异步 LLM 完成时若代次已变，说明有更新的录音，作废本次粘贴
-  const generationRef = useRef(0);
+  // 连说 / 尾段再唤醒：每次录音 = 一个独立「段(session)」。用户结束一段后、胶囊消失前可再唤醒
+  // 开新段，新段立即录音，旧段的收尾（转写→润色→粘贴）在后台并行完成、互不干扰。
+  // segCounterRef 递增发号；latestSegIdRef 记录「当前/最新」段——共享 UI 状态(isProcessing/
+  // isOptimizing)与隐藏胶囊只跟随最新段，旧段尾段流程静默收尾，不抢最新段的胶囊。
+  // 段间出字顺序天然由主进程 转写/润色/粘贴 的 FIFO 队列保证（旧段先入队→先出字），无需额外排序。
+  const segCounterRef = useRef(0);
+  const latestSegIdRef = useRef(0);
 
   // 使用模型状态Hook
   const modelStatus = useModelStatus();
@@ -263,6 +266,12 @@ export const useRecording = ({ onTranscriptionCompleteRef, onAIOptimizationCompl
 
       mediaRecorderRef.current = mediaRecorder;
 
+      // 本段段号：onstop 与后续管线用它判断自己是否仍是「最新段」，据此决定是否驱动
+      // 共享 UI 状态 / 隐藏胶囊（旧段尾段流程静默完成，不抢最新段的胶囊）。
+      const segId = ++segCounterRef.current;
+      latestSegIdRef.current = segId;
+      const isLatestSeg = () => latestSegIdRef.current === segId;
+
       // 设置事件处理器
       mediaRecorder.ondataavailable = (event) => {
         if (event.data.size > 0) {
@@ -271,8 +280,11 @@ export const useRecording = ({ onTranscriptionCompleteRef, onAIOptimizationCompl
       };
 
       mediaRecorder.onstop = async () => {
-        // 端到端埋点 t0：录音真正结束的时刻（所有停止起因的唯一收口）。纯记录，不改任何行为。
-        recEndTsRef.current = Date.now();
+        // 端到端埋点 t0：录音真正结束的时刻。按段快照(segRecEndTs)随本段下传，避免尾段再唤醒时
+        // 被新段的 onstop 覆盖（连说下 recEndTsRef 会被后一段刷新）。
+        const segRecEndTs = Date.now();
+        recEndTsRef.current = segRecEndTs;
+        // 停止的是「当前录音」→ 关闭录音态（连说下新段尚未开始，此刻本段必为最新段）。
         setIsRecording(false);
         // 录音结束：停止实时电平分析并释放 AudioContext（不泄漏）
         stopAudioAnalysis();
@@ -280,11 +292,11 @@ export const useRecording = ({ onTranscriptionCompleteRef, onAIOptimizationCompl
         // 已取消（Esc）：丢弃音频，不识别、不粘贴
         if (cancelledRef.current) {
           audioChunksRef.current = [];
-          setIsProcessing(false);
+          if (isLatestSeg()) setIsProcessing(false);
           return;
         }
 
-        setIsProcessing(true);
+        if (isLatestSeg()) setIsProcessing(true);
 
         try {
           // 创建音频Blob
@@ -307,20 +319,21 @@ export const useRecording = ({ onTranscriptionCompleteRef, onAIOptimizationCompl
             if (window.electronAPI && window.electronAPI.log) {
               window.electronAPI.log('info', '空录音（0 字节），跳过识别');
             }
-            if (window.electronAPI && window.electronAPI.hideRecorder) {
+            // 连说：仅当本段仍是最新段时才收起胶囊——用户可能已再唤醒开了新段，胶囊归新段所有。
+            if (isLatestSeg() && window.electronAPI && window.electronAPI.hideRecorder) {
               try { await window.electronAPI.hideRecorder(); } catch (e) { /* 忽略 */ }
             }
             return;
           }
 
-          setAudioData(audioBlob);
+          if (isLatestSeg()) setAudioData(audioBlob);
 
-          // 处理音频
-          await processAudio(audioBlob);
+          // 处理音频（按段下传：段号 + 本段录音结束时刻）
+          await processAudio(audioBlob, segId, segRecEndTs);
         } catch (err) {
           setError(`音频处理失败: ${err.message}`);
         } finally {
-          setIsProcessing(false);
+          if (isLatestSeg()) setIsProcessing(false);
         }
       };
 
@@ -333,6 +346,9 @@ export const useRecording = ({ onTranscriptionCompleteRef, onAIOptimizationCompl
       // 开始录音
       mediaRecorder.start(1000); // 每秒收集一次数据
       setIsRecording(true);
+      // 连说：新段开始，清掉上一段尾段流程可能残留的处理/润色态，让胶囊回到「录音中」。
+      setIsProcessing(false);
+      setIsOptimizing(false);
       recordStartedAtRef.current = Date.now();
 
       // 内存感知动态保护（WS6）：每 ~5 秒预测内存峰值，仅在临界时自动停止，尽量给久。
@@ -405,18 +421,12 @@ export const useRecording = ({ onTranscriptionCompleteRef, onAIOptimizationCompl
     }
   }, [isRecording]);
 
-  // 处理音频
-  const processAudio = useCallback(async (audioBlob) => {
-    // 并发守卫：上一段还在处理时忽略本次，避免重复识别/重复粘贴/重复入库
-    if (processingRef.current.isProcessingAudio) {
-      if (window.electronAPI && window.electronAPI.log) {
-        window.electronAPI.log('warn', '上一段音频仍在处理中，忽略本次重复处理');
-      }
-      return;
-    }
-    processingRef.current.isProcessingAudio = true;
-    // 本次处理的代次；后面异步粘贴前会校验它是否仍是最新
-    const myGen = ++generationRef.current;
+  // 处理音频（按段隔离：segId=本段段号，recEndTs=本段录音结束时刻）。
+  // 连说：不再有「上一段处理中就丢弃本段」的全局并发锁——每段各自独立走完管线，
+  // 段间转写/润色/粘贴由主进程 FIFO 队列串行、互不串扰且天然保序。
+  const processAudio = useCallback(async (audioBlob, segId, recEndTs) => {
+    // 本段是否仍是「最新段」——决定是否驱动共享 UI 状态 / 隐藏胶囊。
+    const isLatestSeg = () => latestSegIdRef.current === segId;
 
     const tlog = (msg) => {
       if (window.electronAPI && window.electronAPI.log) window.electronAPI.log('info', msg);
@@ -451,11 +461,10 @@ export const useRecording = ({ onTranscriptionCompleteRef, onAIOptimizationCompl
           // 未识别到有效语音：不提交大模型、不粘贴、不入库，直接收起胶囊
           if (!raw_text || !raw_text.trim()) {
             tlog('[计时] 未识别到有效语音，跳过LLM与粘贴');
-            if (window.electronAPI && window.electronAPI.hideRecorder) {
+            // 连说：仅当本段仍是最新段时才收起胶囊（用户可能已再唤醒开新段）。
+            if (isLatestSeg() && window.electronAPI && window.electronAPI.hideRecorder) {
               try { await window.electronAPI.hideRecorder(); } catch (e) {}
             }
-            // 本路径不会启动异步粘贴链，立即释放并发守卫（ROB-2）
-            processingRef.current.isProcessingAudio = false;
             return { success: true, text: '', skipped: true };
           }
 
@@ -474,8 +483,8 @@ export const useRecording = ({ onTranscriptionCompleteRef, onAIOptimizationCompl
             onTranscriptionCompleteRef?.current({ ...transcriptionResult, enhanced_by_ai: false });
           }
 
-          // 异步处理 LLM 与保存（只保存一次）
-          setIsOptimizing(true);
+          // 异步处理 LLM 与保存（只保存一次）。连说：润色态只在本段仍为最新段时驱动 UI。
+          if (isLatestSeg()) setIsOptimizing(true);
           setTimeout(async () => {
             const log = (level, ...args) => {
               if (window.electronAPI && window.electronAPI.log) {
@@ -497,9 +506,8 @@ export const useRecording = ({ onTranscriptionCompleteRef, onAIOptimizationCompl
 
               let finalData = { ...transcriptionData };
               let emit;
-              // 端到端埋点：快照本条录音的结束时刻（避免期间新录音覆盖 ref）。
-              // e2e_total_ms = 真正粘贴完成时刻 − recEndTs。仅测量、异步补写、失败静默。
-              const recEndTs = recEndTsRef.current;
+              // 端到端埋点：recEndTs 为本段录音结束时刻（onstop 已按段快照并随参数下传，
+              // 连说下不会被后一段覆盖）。e2e_total_ms = 真正粘贴完成时刻 − recEndTs。仅测量、异步补写、失败静默。
               // 润色标识：当前引擎 + 完整润色耗时（含本地首次加载模型的一次性开销）。
               // 耗时口径 = 从发起润色到拿到结果的完整等待时间。仅在实际走了润色时写入。
               const polishEngine = getS('polish_engine', 'cloud');
@@ -706,10 +714,10 @@ export const useRecording = ({ onTranscriptionCompleteRef, onAIOptimizationCompl
               }
 
               // 先出字（最高优先级）：尽快把结果贴到光标处，绝不被数据库写入挡住。
-              // 若期间已有更新的录音，作废本次粘贴（入库仍保留），避免贴出过期内容。
-              if (myGen !== generationRef.current) {
-                log('info', '已被更新的录音取代，跳过本次粘贴');
-              } else if (onAIOptimizationCompleteRef?.current) {
+              // 连说：每段都是用户有意的独立一段，均须粘贴（不再「新段取消旧段粘贴」）。段间保序
+              // 由主进程粘贴 FIFO 队列保证。隐藏胶囊的所有权交给 App：仅当本段仍是最新段时才允许收起。
+              if (onAIOptimizationCompleteRef?.current) {
+                emit.canHideRecorder = () => latestSegIdRef.current === segId;
                 const doneP = onAIOptimizationCompleteRef?.current(emit);
                 // 端到端 t_end（非流式）：handleAIOptimizationComplete 为 async，其返回 Promise 在
                 // safePaste 的 pasteText 完成后 resolve（整段真正落屏）。仅观测、不 await、不阻塞出字；
@@ -780,30 +788,27 @@ export const useRecording = ({ onTranscriptionCompleteRef, onAIOptimizationCompl
                   paste: false,
                   llm_failed: true,
                   error: err.message,
+                  // 连说：异常收尾路径同样把「是否可隐藏胶囊」的判定交给 App（仅最新段可收起）。
+                  canHideRecorder: () => latestSegIdRef.current === segId,
                 });
               }
             } finally {
-              setIsOptimizing(false);
-              // 异步粘贴/入库链全部结束后才释放并发守卫，避免新录音抢在粘贴链前插队（ROB-2）
-              processingRef.current.isProcessingAudio = false;
+              // 连说：润色态只在本段仍为最新段时清除，避免误清最新段(新段)的 UI。
+              if (isLatestSeg()) setIsOptimizing(false);
             }
           }, 0);
 
-          // 注意：此处不清并发守卫——真正的粘贴链在上面的 setTimeout 里，结束时才清（ROB-2）
           return { ...transcriptionResult, enhanced_by_ai: false };
         } else {
           throw new Error(transcriptionResult.error || '语音识别失败');
         }
       } else {
-        // Web环境模拟：不启动异步粘贴链，立即释放守卫
+        // Web环境模拟
         const mockResult = { success: true, text: '模拟识别结果。', confidence: 0.95, duration: 3.5 };
         if (onTranscriptionCompleteRef?.current) onTranscriptionCompleteRef?.current(mockResult);
-        processingRef.current.isProcessingAudio = false;
         return mockResult;
       }
     } catch (err) {
-      // 出错路径不会有在途粘贴链，释放守卫后再抛出
-      processingRef.current.isProcessingAudio = false;
       throw new Error(`音频处理失败: ${err.message}`);
     }
   }, []);
