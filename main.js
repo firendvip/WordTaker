@@ -751,30 +751,36 @@ ipcMain.handle('hide-recorder', () => {
   return { success: true };
 });
 
-// 多猫并存：取首猫「左上角」锚点 + 所在屏 workArea，供渲染层定位首猫。
-// 返回的 {x,y} 已是首猫左上角（topLeft:true），渲染层直接使用、不再二次偏移。
-// 优先用胶囊窗口「当前位置」（fire() 唤醒时已按 pill_follow_focus 摆好——跟随输入框/跟随光标皆已就位），
-// 从而尊重 follow-focus、避免把首猫强行拉回光标造成跳动；窗口不可用时回退光标推导左上角。
+// 多猫并存：取「本次新堆栈首猫」的左上角锚点 + 所在屏 workArea，供渲染层定位首猫。
+// 返回 {x,y} 已是首猫左上角（topLeft:true），渲染层直接使用、不再二次偏移。
+// 【本 handler 只在「新堆栈的首猫」时被渲染层调用（App 里 !workAreaRef.current 才调）】，故必须以
+// 【当前光标屏】为准新鲜定位——绝不能沿用「窗口当前坐标」：尾段续说会保活窗口、多屏下窗口常停在
+// 用户没在看的别的屏/陈旧槽位，若沿用其坐标，首猫会渲染到视野外（=「唤醒后小猫完全不显示」的回归真因）。
+// 唯一例外：用户显式开启「跟随输入框」(pill_follow_focus) 且窗口当前就在光标所在屏时，沿用窗口位置以贴合输入框。
 ipcMain.handle('get-recorder-anchor', () => {
   try {
     const { screen } = require('electron');
-    const win = windowManager.mainWindow;
-    if (win && !win.isDestroyed() && win.isVisible()) {
-      const b = win.getBounds();
-      const disp = screen.getDisplayNearestPoint({ x: b.x, y: b.y });
-      const wa = disp.workArea;
-      return {
-        x: b.x, y: b.y, topLeft: true,
-        workArea: { x: wa.x, y: wa.y, width: wa.width, height: wa.height },
-      };
-    }
-    // 回退：窗口尚不可见时用光标推导左上角（水平居中光标、下移 CURSOR_GAP_PX=24，与 _positionByCursor 一致）。
     const pt = screen.getCursorScreenPoint();
-    const disp = screen.getDisplayNearestPoint(pt);
-    const wa = disp.workArea;
+    const cursorDisp = screen.getDisplayNearestPoint(pt);
+    const cwa = cursorDisp.workArea;
+    // 跟随输入框模式：窗口已由 fire()→showRecorderAtBottom 贴到焦点框；仅当它确在光标屏时才沿用（避免陈旧/别屏）。
+    let followFocus = false;
+    try { followFocus = !!(windowManager._isFollowFocusEnabled && windowManager._isFollowFocusEnabled()); } catch (_) {}
+    if (followFocus) {
+      const win = windowManager.mainWindow;
+      if (win && !win.isDestroyed() && win.isVisible()) {
+        const b = win.getBounds();
+        const winDisp = screen.getDisplayNearestPoint({ x: b.x, y: b.y });
+        if (winDisp.id === cursorDisp.id) {
+          const wwa = winDisp.workArea;
+          return { x: b.x, y: b.y, topLeft: true, workArea: { x: wwa.x, y: wwa.y, width: wwa.width, height: wwa.height } };
+        }
+      }
+    }
+    // 默认（跟随光标）：以光标屏新鲜定位——水平居中光标、下移 CURSOR_GAP_PX=24（与 _positionByCursor 一致）。
     return {
       x: pt.x - 90, y: pt.y + 24, topLeft: true,
-      workArea: { x: wa.x, y: wa.y, width: wa.width, height: wa.height },
+      workArea: { x: cwa.x, y: cwa.y, width: cwa.width, height: cwa.height },
     };
   } catch (e) {
     logger.warn('get-recorder-anchor 失败，回退默认工作区:', e?.message || e);

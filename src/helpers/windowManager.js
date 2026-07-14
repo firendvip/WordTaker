@@ -367,9 +367,9 @@ class WindowManager {
       const disp = screen.getDisplayNearestPoint({ x: Math.round(rect.x), y: Math.round(rect.y) });
       const clamped = this.clampRectToWorkArea(rect, disp.workArea);
       this.mainWindow.setBounds(clamped);
-      if (!this.mainWindow.isVisible()) {
-        this.mainWindow.showInactive();
-      }
+      // 始终 showInactive（幂等，不抢焦点）：渲染层只在「有猫」时调本方法，故此处必让窗口可见——
+      // 即便 fire() 的 isVisible 守卫或某次 hide 竞态导致窗口处于「陈旧不可见/别屏」态，也能自愈显示到位。
+      this.mainWindow.showInactive();
     } catch (error) {
       // 定位失败不影响录音
     }
