@@ -1,6 +1,7 @@
 import { useEffect, useRef } from "react";
 
-const K = "#1b1b1f";
+// 猫主色默认值（多猫并存时每只猫由 color 参数决定，默认黑）。
+const DEFAULT_K = "#1b1b1f";
 const VOICE_THR = 0.35;
 const HOLD = 1000;
 const ENTER_MS = 1400;
@@ -8,14 +9,16 @@ const RETURN_MS = 800;
 const WALK_W = 0.022;
 const PROC_W = 0.04;
 
-function eye(cx) {
+function eye(cx, K) {
   return `<ellipse cx="${cx}" cy="13" rx="2.6" ry="3.1" fill="#FDE047"/><ellipse cx="${cx + 0.3}" cy="13.5" rx="1" ry="1.9" fill="${K}"/><circle cx="${cx - 0.8}" cy="11.6" r=".7" fill="#fff"/>`;
 }
-const RUN_SVG = `<svg width="32" height="23" viewBox="0 0 46 32" xmlns="http://www.w3.org/2000/svg" style="display:block"><path class="cs-tail" d="M9 22 C 3 20, 3 11, 7 8" fill="none" stroke="${K}" stroke-width="3.6" stroke-linecap="round"/><rect class="cs-leg cs-lb" x="12" y="24" width="3" height="5" rx="1.5" fill="${K}"/><rect class="cs-leg cs-la" x="17" y="24" width="3" height="5" rx="1.5" fill="${K}"/><rect class="cs-leg cs-lb" x="23" y="24" width="3" height="5" rx="1.5" fill="${K}"/><rect class="cs-leg cs-la" x="28" y="24" width="3" height="5" rx="1.5" fill="${K}"/><ellipse cx="20" cy="21" rx="10" ry="7" fill="${K}"/><circle cx="32" cy="13" r="10" fill="${K}"/><path d="M25 6 L27 1 L31 5 Z" fill="${K}"/><path d="M39 6 L37 1 L33 5 Z" fill="${K}"/><g>${eye(28.4)}${eye(35.6)}</g><path d="M31 16 h2 l-1 1.2 z" fill="#F472B6"/></svg>`;
-const SLEEP_SVG = `<svg width="36" height="20" viewBox="0 0 44 24" xmlns="http://www.w3.org/2000/svg" style="display:block"><path d="M38 16 C 42 14, 42 20, 37.5 18.5" fill="none" stroke="${K}" stroke-width="3.6" stroke-linecap="round"/><ellipse cx="24" cy="16" rx="15" ry="7.5" fill="${K}"/><circle cx="11" cy="15" r="7.5" fill="${K}"/><path d="M6 9 L8 4 L12 8 Z" fill="${K}"/><path d="M7.5 14.8 q1.4 1.4 2.8 0" fill="none" stroke="#FDE047" stroke-width="1" stroke-linecap="round"/><path d="M12.5 14.8 q1.3 1.2 2.6 0" fill="none" stroke="#FDE047" stroke-width="1" stroke-linecap="round"/></svg>`;
+// SVG 按主色 K 生成（多猫并存：每只猫颜色不同）。
+function runSvg(K) { return `<svg width="32" height="23" viewBox="0 0 46 32" xmlns="http://www.w3.org/2000/svg" style="display:block"><path class="cs-tail" d="M9 22 C 3 20, 3 11, 7 8" fill="none" stroke="${K}" stroke-width="3.6" stroke-linecap="round"/><rect class="cs-leg cs-lb" x="12" y="24" width="3" height="5" rx="1.5" fill="${K}"/><rect class="cs-leg cs-la" x="17" y="24" width="3" height="5" rx="1.5" fill="${K}"/><rect class="cs-leg cs-lb" x="23" y="24" width="3" height="5" rx="1.5" fill="${K}"/><rect class="cs-leg cs-la" x="28" y="24" width="3" height="5" rx="1.5" fill="${K}"/><ellipse cx="20" cy="21" rx="10" ry="7" fill="${K}"/><circle cx="32" cy="13" r="10" fill="${K}"/><path d="M25 6 L27 1 L31 5 Z" fill="${K}"/><path d="M39 6 L37 1 L33 5 Z" fill="${K}"/><g>${eye(28.4, K)}${eye(35.6, K)}</g><path d="M31 16 h2 l-1 1.2 z" fill="#F472B6"/></svg>`; }
+function sleepSvg(K) { return `<svg width="36" height="20" viewBox="0 0 44 24" xmlns="http://www.w3.org/2000/svg" style="display:block"><path d="M38 16 C 42 14, 42 20, 37.5 18.5" fill="none" stroke="${K}" stroke-width="3.6" stroke-linecap="round"/><ellipse cx="24" cy="16" rx="15" ry="7.5" fill="${K}"/><circle cx="11" cy="15" r="7.5" fill="${K}"/><path d="M6 9 L8 4 L12 8 Z" fill="${K}"/><path d="M7.5 14.8 q1.4 1.4 2.8 0" fill="none" stroke="#FDE047" stroke-width="1" stroke-linecap="round"/><path d="M12.5 14.8 q1.3 1.2 2.6 0" fill="none" stroke="#FDE047" stroke-width="1" stroke-linecap="round"/></svg>`; }
 function easeOut(t) { return 1 - (1 - t) * (1 - t); }
 
-export default function CatSkin({ micState, audioLevel = 0, isBusy = false }) {
+export default function CatSkin({ micState, audioLevel = 0, isBusy = false, color }) {
+  const K = color || DEFAULT_K;
   const rootRef = useRef(null);
   const recRef = useRef(false);
   const lvlRef = useRef(0);
@@ -28,6 +31,9 @@ export default function CatSkin({ micState, audioLevel = 0, isBusy = false }) {
     const root = rootRef.current;
     if (!root) return;
     root.innerHTML = "";
+    // 按本猫主色生成 SVG（color 在整只猫生命周期内固定，故 [] 依赖捕获挂载时值即可）。
+    const RUN_SVG = runSvg(K);
+    const SLEEP_SVG = sleepSvg(K);
     const sleepWrap = document.createElement("div"); sleepWrap.className = "cs-sleeper"; sleepWrap.innerHTML = SLEEP_SVG; sleepWrap.style.display = "none";
     const runWrap = document.createElement("div"); runWrap.className = "cs-runner"; const flip = document.createElement("div"); flip.innerHTML = RUN_SVG; runWrap.appendChild(flip); runWrap.style.display = "none";
     const notes = document.createElement("div"); notes.className = "cs-notes"; notes.innerHTML = '<span class="cs-note" style="color:#7DB4FF">♪</span><span class="cs-note" style="left:6px;color:#F7A8CB;animation-delay:.6s">♫</span>'; notes.style.display = "none";

@@ -51,6 +51,7 @@ export function RecorderPill({
   pillSkin = "music",
   showPolishBubble = false,
   polishCharCount = 0,
+  color,
   disabled,
   onToggle,
   onOpenSettings,
@@ -200,11 +201,12 @@ export function RecorderPill({
         isBusy={isBusy}
         showPolishBubble={showPolishBubble}
         polishCharCount={polishCharCount}
+        color={color}
       />
     );
   }
   if (pillSkin === "cat") {
-    return <CatSkin micState={micState} audioLevel={audioLevel} isBusy={isBusy} />;
+    return <CatSkin micState={micState} audioLevel={audioLevel} isBusy={isBusy} color={color} />;
   }
 
   return (

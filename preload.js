@@ -80,6 +80,10 @@ contextBridge.exposeInMainWorld("electronAPI", {
   reloadTranslateTrigger: () => ipcRenderer.invoke("reload-translate-trigger"),
   // 隐藏胶囊（粘贴/取消后调用）
   hideRecorder: () => ipcRenderer.invoke("hide-recorder"),
+  // 多猫并存：取胶囊锚点（光标点 + 光标屏 workArea）
+  getRecorderAnchor: () => ipcRenderer.invoke("get-recorder-anchor"),
+  // 多猫并存：设置胶囊窗口几何（渲染层算好的猫堆叠 union bbox）
+  setRecorderBounds: (bounds) => ipcRenderer.invoke("set-recorder-bounds", bounds),
   // 通知主进程录音开始/结束（用于按需注册 Esc 取消键）
   setRecorderState: (recording) => ipcRenderer.send("recorder-state", recording),
   // 监听取消录音事件（Esc 触发）

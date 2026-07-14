@@ -356,6 +356,25 @@ class WindowManager {
     }
   }
 
+  // 多猫并存：把胶囊窗口设为渲染层算好的「猫堆叠 union bbox」。
+  //  - 入参已在主进程 IPC 侧校验（数字、正尺寸、合理上限）。
+  //  - 夹紧到 (x,y) 所在显示器的 workArea；窗口 hidden 时 showInactive（不抢焦点）。
+  //  - resizable:false 不阻止 setBounds（仅禁用户拖拽），与既有 setPillHeightForSkin 的 setSize 同理。
+  setRecorderBounds(rect) {
+    if (!this.mainWindow || this.mainWindow.isDestroyed()) return;
+    try {
+      const { screen } = require("electron");
+      const disp = screen.getDisplayNearestPoint({ x: Math.round(rect.x), y: Math.round(rect.y) });
+      const clamped = this.clampRectToWorkArea(rect, disp.workArea);
+      this.mainWindow.setBounds(clamped);
+      if (!this.mainWindow.isVisible()) {
+        this.mainWindow.showInactive();
+      }
+    } catch (error) {
+      // 定位失败不影响录音
+    }
+  }
+
   // 纯函数：把窗口矩形夹紧到 workArea 内（四边都不出界）。返回一个全新的矩形对象，不改入参。
   // rect / workArea 形如 { x, y, width, height }。
   clampRectToWorkArea(rect, workArea) {

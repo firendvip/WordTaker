@@ -1,6 +1,7 @@
 import { useEffect, useRef } from "react";
 
-const K = "#1b1b1f";
+// 猫主色默认值（多猫并存时每只猫由 color 参数决定，默认黑）。
+const DEFAULT_K = "#1b1b1f";
 const VOICE_THR = 0.35;
 const LOUD_THR = 0.7;
 const HOLD = 1000;
@@ -42,11 +43,12 @@ const ZZZ_BOTTOM = 22; // 距窗口底部（px），紧贴趴睡猫头上方
 function rand(min, max) { return min + Math.random() * (max - min); }
 function pick(arr) { return arr[(Math.random() * arr.length) | 0]; }
 
-function eye(cx) {
+function eye(cx, K) {
   return `<ellipse cx="${cx}" cy="13" rx="2.6" ry="3.1" fill="#FDE047"/><ellipse cx="${cx + 0.3}" cy="13.5" rx="1" ry="1.9" fill="${K}"/><circle cx="${cx - 0.8}" cy="11.6" r=".7" fill="#fff"/>`;
 }
-const RUN_SVG = `<svg width="32" height="23" viewBox="0 0 46 32" xmlns="http://www.w3.org/2000/svg" style="display:block"><path class="cs-tail" d="M9 22 C 3 20, 3 11, 7 8" fill="none" stroke="${K}" stroke-width="3.6" stroke-linecap="round"/><rect class="cs-leg cs-lb" x="12" y="24" width="3" height="5" rx="1.5" fill="${K}"/><rect class="cs-leg cs-la" x="17" y="24" width="3" height="5" rx="1.5" fill="${K}"/><rect class="cs-leg cs-lb" x="23" y="24" width="3" height="5" rx="1.5" fill="${K}"/><rect class="cs-leg cs-la" x="28" y="24" width="3" height="5" rx="1.5" fill="${K}"/><ellipse cx="20" cy="21" rx="10" ry="7" fill="${K}"/><circle cx="32" cy="13" r="10" fill="${K}"/><path d="M25 6 L27 1 L31 5 Z" fill="${K}"/><path d="M39 6 L37 1 L33 5 Z" fill="${K}"/><g>${eye(28.4)}${eye(35.6)}</g><path d="M31 16 h2 l-1 1.2 z" fill="#F472B6"/></svg>`;
-const SLEEP_SVG = `<svg width="36" height="20" viewBox="0 0 44 24" xmlns="http://www.w3.org/2000/svg" style="display:block"><path d="M38 16 C 42 14, 42 20, 37.5 18.5" fill="none" stroke="${K}" stroke-width="3.6" stroke-linecap="round"/><ellipse cx="24" cy="16" rx="15" ry="7.5" fill="${K}"/><circle cx="11" cy="15" r="7.5" fill="${K}"/><path d="M6 9 L8 4 L12 8 Z" fill="${K}"/><path d="M7.5 14.8 q1.4 1.4 2.8 0" fill="none" stroke="#FDE047" stroke-width="1" stroke-linecap="round"/><path d="M12.5 14.8 q1.3 1.2 2.6 0" fill="none" stroke="#FDE047" stroke-width="1" stroke-linecap="round"/></svg>`;
+// SVG 按主色 K 生成（多猫并存：每只猫颜色不同）。
+function runSvg(K) { return `<svg width="32" height="23" viewBox="0 0 46 32" xmlns="http://www.w3.org/2000/svg" style="display:block"><path class="cs-tail" d="M9 22 C 3 20, 3 11, 7 8" fill="none" stroke="${K}" stroke-width="3.6" stroke-linecap="round"/><rect class="cs-leg cs-lb" x="12" y="24" width="3" height="5" rx="1.5" fill="${K}"/><rect class="cs-leg cs-la" x="17" y="24" width="3" height="5" rx="1.5" fill="${K}"/><rect class="cs-leg cs-lb" x="23" y="24" width="3" height="5" rx="1.5" fill="${K}"/><rect class="cs-leg cs-la" x="28" y="24" width="3" height="5" rx="1.5" fill="${K}"/><ellipse cx="20" cy="21" rx="10" ry="7" fill="${K}"/><circle cx="32" cy="13" r="10" fill="${K}"/><path d="M25 6 L27 1 L31 5 Z" fill="${K}"/><path d="M39 6 L37 1 L33 5 Z" fill="${K}"/><g>${eye(28.4, K)}${eye(35.6, K)}</g><path d="M31 16 h2 l-1 1.2 z" fill="#F472B6"/></svg>`; }
+function sleepSvg(K) { return `<svg width="36" height="20" viewBox="0 0 44 24" xmlns="http://www.w3.org/2000/svg" style="display:block"><path d="M38 16 C 42 14, 42 20, 37.5 18.5" fill="none" stroke="${K}" stroke-width="3.6" stroke-linecap="round"/><ellipse cx="24" cy="16" rx="15" ry="7.5" fill="${K}"/><circle cx="11" cy="15" r="7.5" fill="${K}"/><path d="M6 9 L8 4 L12 8 Z" fill="${K}"/><path d="M7.5 14.8 q1.4 1.4 2.8 0" fill="none" stroke="#FDE047" stroke-width="1" stroke-linecap="round"/><path d="M12.5 14.8 q1.3 1.2 2.6 0" fill="none" stroke="#FDE047" stroke-width="1" stroke-linecap="round"/></svg>`; }
 const FX_HTML = {
   bulb: '<span class="cs-fxbulb cs-fx-bob"><svg width="14" height="16" viewBox="0 0 14 16"><circle cx="7" cy="7" r="5.5" fill="#FDE047"/><rect x="4.5" y="12" width="5" height="2.6" rx="1" fill="#9CA3AF"/><line x1="7" y1="0" x2="7" y2="1.6" stroke="#FDE047" stroke-width="1" stroke-linecap="round"/><line x1="0.6" y1="3.2" x2="2" y2="4.2" stroke="#FDE047" stroke-width="1" stroke-linecap="round"/><line x1="13.4" y1="3.2" x2="12" y2="4.2" stroke="#FDE047" stroke-width="1" stroke-linecap="round"/></svg></span>',
   sparkle: '<span class="cs-fxstar cs-fx-tw"><svg width="14" height="14" viewBox="0 0 14 14"><path d="M7 0 L8.4 5.6 L14 7 L8.4 8.4 L7 14 L5.6 8.4 L0 7 L5.6 5.6 Z" fill="#FCD34D"/></svg></span>',
@@ -59,7 +61,8 @@ const BUBBLE_SHOW_DELAY = 5000; // 仅当 AI 润色处理时长超过此值（ms
 const BUBBLE_UP_Y = -26; // 气泡相对锚点的垂直偏移（px，置于头顶上方）
 const BUBBLE_CHAR_DENOM = 120; // 进度估算分母（无法预知总长，温和逼近）
 
-export default function CatSkinFx({ micState, audioLevel = 0, isBusy = false, hasError = false, showPolishBubble = false, polishCharCount = 0 }) {
+export default function CatSkinFx({ micState, audioLevel = 0, isBusy = false, hasError = false, showPolishBubble = false, polishCharCount = 0, color }) {
+  const K = color || DEFAULT_K;
   const rootRef = useRef(null);
   const recRef = useRef(false);
   const lvlRef = useRef(0);
@@ -78,6 +81,9 @@ export default function CatSkinFx({ micState, audioLevel = 0, isBusy = false, ha
     const root = rootRef.current;
     if (!root) return;
     root.innerHTML = "";
+    // 按本猫主色生成 SVG（color 在整只猫生命周期内固定，故 [] 依赖捕获挂载时值即可）。
+    const RUN_SVG = runSvg(K);
+    const SLEEP_SVG = sleepSvg(K);
     const sleepWrap = document.createElement("div"); sleepWrap.className = "cs-sleeper"; sleepWrap.innerHTML = SLEEP_SVG; sleepWrap.style.display = "none";
     const runWrap = document.createElement("div"); runWrap.className = "cs-runner"; const flip = document.createElement("div"); flip.innerHTML = RUN_SVG; runWrap.appendChild(flip); runWrap.style.display = "none";
     const fx = document.createElement("div"); fx.className = "cs-fx"; fx.style.display = "none";

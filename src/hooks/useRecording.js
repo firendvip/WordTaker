@@ -29,8 +29,20 @@ const MEM_ABSOLUTE_BUDGET_BYTES = 1.2 * 1024 ** 3; // 与 1.2GB 取小
 
 // 连说保序等待上限：等上一段收尾(润色+粘贴)完成的最长时间。超过则放行本段，最坏退回「可能乱序」
 // 而非「永久不出字」——防止某段 LLM/网络/本地模型卡死时头阻塞后续所有连说段。
-// 取值偏大以容忍本地模型首次加载(数十秒)，避免正常慢被误判为卡死而乱序。
-const PASTE_ORDER_MAX_WAIT_MS = 30000;
+// 多猫并存：前猫收尾>5s 即放行本猫继续粘贴（活性优先，避免头阻塞冻结整条连说）。
+const PASTE_ORDER_MAX_WAIT_MS = 5000;
+
+// 多猫并存：同屏最多 10 只小猫。
+const MAX_CATS = 10;
+// 单猫最长存活兜底：无论后端(本地/云端/流式 LLM)是否卡死不返回，超过此时长强制移除该猫+回收颜色，
+// 杜绝「管线永不 settle → runPipeline finally 不跑 → 猫永久常驻+占色+占名额」的僵尸。取值宽松，
+// 只兜底极端卡死，不误杀正常慢操作（含本地模型首次加载数十秒）。
+const SESSION_MAX_MS = 180000; // 3 分钟
+// 每猫独立深色系主色。优先级 = 数组序（黑第一），同屏互异，猫完成即回收该色，新猫取最低空闲序。
+const CAT_COLORS = [
+  '#1b1b1f', '#1e3a5f', '#3d1f4d', '#1f4d3d', '#5c2a1e',
+  '#4d1f2e', '#2e4d1f', '#1f3d4d', '#4d3d1f', '#3d2e4d',
+];
 
 /**
  * 录音功能Hook
@@ -46,6 +58,12 @@ export const useRecording = ({ onTranscriptionCompleteRef, onAIOptimizationCompl
   const [audioLevel, setAudioLevel] = useState(0);
   // 频谱声波：BAND_COUNT 个 0..1 的频段电平，每根柱子独立起伏
   const [audioBands, setAudioBands] = useState(createZeroBands);
+
+  // 多猫并存：可见会话列表（驱动渲染）。每元素 { id, color, phase, bands }。
+  //   phase: 'recording' | 'transcribing' | 'polishing' | 'pasting'
+  //   仅允许 1 只 phase==='recording'（录音互斥，toggle 语义天然保证）。
+  // 该列表叠加在既有分段管线之上，不改管线主体：按 segId 在管线各点更新对应 session。
+  const [sessions, setSessions] = useState([]);
 
   const mediaRecorderRef = useRef(null);
   const audioChunksRef = useRef([]);
@@ -76,6 +94,73 @@ export const useRecording = ({ onTranscriptionCompleteRef, onAIOptimizationCompl
   // 导致旧段被误「复活」转写粘贴。onstop 用 (cancelledRef || cancelledSegIdRef===本段) 判定。
   const cancelledSegIdRef = useRef(0);
 
+  // 多猫并存：会话列表的 ref 镜像（供 startRecording 同步读取 activeCount，不等 setState）。
+  const sessionsRef = useRef([]);
+  // 颜色占用表（长度 10 的布尔）：allocColor 取最低空闲序 → 黑优先、同屏互异；freeColor 回收。
+  const colorPoolRef = useRef(new Array(MAX_CATS).fill(false));
+  // 每猫存活兜底定时器：id→timer。addSession 设、removeSession 清；超 SESSION_MAX_MS 未收尾则强制移除。
+  const watchdogTimersRef = useRef(new Map());
+
+  // 分配一只新猫的颜色：取最低空闲下标并标记占用（黑=下标0 优先）。理论不会溢出（上限已在唤醒处拦截）。
+  const allocColor = () => {
+    const pool = colorPoolRef.current;
+    for (let i = 0; i < MAX_CATS; i++) {
+      if (!pool[i]) { pool[i] = true; return CAT_COLORS[i]; }
+    }
+    return CAT_COLORS[0];
+  };
+
+  // 会话列表不可变更新（ref 镜像 + setState 同步）。回收颜色统一在 removeSession 内按色值置空占用表。
+  const addSession = (session) => {
+    sessionsRef.current = [...sessionsRef.current, session];
+    setSessions(sessionsRef.current);
+    // 存活兜底：极端卡死时也保证本猫最终被移除（不误杀正常慢操作，见 SESSION_MAX_MS）。
+    try {
+      const timer = setTimeout(() => {
+        if (sessionsRef.current.some((s) => s.id === session.id)) {
+          if (window.electronAPI?.log) {
+            window.electronAPI.log('warn', `猫 ${session.id} 超 ${SESSION_MAX_MS}ms 未收尾，兜底强制移除(疑似后端卡死)`);
+          }
+          removeSession(session.id);
+        }
+      }, SESSION_MAX_MS);
+      watchdogTimersRef.current.set(session.id, timer);
+    } catch (_) {}
+  };
+  const updateSessionPhase = (id, phase) => {
+    let changed = false;
+    const next = sessionsRef.current.map((s) => {
+      if (s.id === id) { changed = true; return { ...s, phase }; }
+      return s;
+    });
+    if (!changed) return;
+    sessionsRef.current = next;
+    setSessions(next);
+  };
+  const setSessionBands = (id, bands) => {
+    let changed = false;
+    const next = sessionsRef.current.map((s) => {
+      if (s.id === id) { changed = true; return { ...s, bands }; }
+      return s;
+    });
+    if (!changed) return;
+    sessionsRef.current = next;
+    setSessions(next);
+  };
+  // 移除某只猫并回收其颜色（幂等：找不到即 no-op，杜绝重复回收/僵尸猫）。
+  // useCallback([]) 稳定身份：仅操作 ref + stable setState，且被 App 用作依赖，避免每帧重建触发无谓 effect。
+  const removeSession = useCallback((id) => {
+    // 先清存活兜底定时器（幂等：无论 session 是否还在都清，避免定时器泄漏）。
+    const t = watchdogTimersRef.current.get(id);
+    if (t) { try { clearTimeout(t); } catch (_) {} watchdogTimersRef.current.delete(id); }
+    const target = sessionsRef.current.find((s) => s.id === id);
+    if (!target) return;
+    const idx = CAT_COLORS.indexOf(target.color);
+    if (idx >= 0) colorPoolRef.current[idx] = false;
+    sessionsRef.current = sessionsRef.current.filter((s) => s.id !== id);
+    setSessions(sessionsRef.current);
+  }, []);
+
   // 使用模型状态Hook
   const modelStatus = useModelStatus();
 
@@ -101,9 +186,20 @@ export const useRecording = ({ onTranscriptionCompleteRef, onAIOptimizationCompl
 
   // 开始录音
   const startRecording = useCallback(async () => {
+    // 本次唤醒新建猫的段号：出错兜底时据此移除会话（防止建了猫却因异常留下僵尸）。
+    let addedSegId = 0;
     try {
       setError(null);
       cancelledRef.current = false;
+
+      // 多猫上限：已有 10 只在场时不再新建第 11 只，明确提示用户等前面的说完。
+      // 提前 return（不 getUserMedia / 不 MediaRecorder / 不建会话），完全不影响已有猫。
+      if (sessionsRef.current.length >= MAX_CATS) {
+        try {
+          window.electronAPI?.showNotification?.('弦外小猫', '最多同时 10 只小猫，请等前面的说完');
+        } catch (_) {}
+        return;
+      }
 
       // Fire-and-forget: warm up TLS/TCP to relay/direct LLM while user speaks
       try { window.electronAPI?.prewarmLLM?.(); } catch (_) {}
@@ -256,7 +352,8 @@ export const useRecording = ({ onTranscriptionCompleteRef, onAIOptimizationCompl
               lastEmit = now;
               if (bandsChanged) {
                 lastBands = rounded;
-                setAudioBands(rounded);
+                // 多猫：实时频段写入「当前录音猫」的 bands（按 segId）。仅一只在录，开销不变。
+                setSessionBands(segId, rounded);
               }
               if (levelChanged) {
                 lastLevel = maxBand;
@@ -306,6 +403,8 @@ export const useRecording = ({ onTranscriptionCompleteRef, onAIOptimizationCompl
         if (cancelledRef.current || cancelledSegIdRef.current === segId) {
           audioChunksRef.current = [];
           if (isLatestSeg()) setIsProcessing(false);
+          // 多猫：取消即移除本猫 + 回收颜色（其它猫不受影响；空则由 App 隐藏窗口）。
+          removeSession(segId);
           return;
         }
 
@@ -327,26 +426,31 @@ export const useRecording = ({ onTranscriptionCompleteRef, onAIOptimizationCompl
               if (window.electronAPI && window.electronAPI.log) {
                 window.electronAPI.log('info', `空录音但未达最小驻留(${elapsedMs}ms<${MIN_RECORDER_RESIDENCE_MS}ms)，忽略隐藏，避免麦克风首帧未就绪被误判为空录音`);
               }
+              // 多猫：录音已停且 0 字节，本猫无后续（不会再有音频喂入），必须移除并回收颜色，
+              // 否则永久停在 recording 相=僵尸猫+占色+占 MAX_CATS 名额（旧单猫留窗合理、多猫下不成立）。
+              removeSession(segId);
               return;
             }
             if (window.electronAPI && window.electronAPI.log) {
               window.electronAPI.log('info', '空录音（0 字节），跳过识别');
             }
-            // 连说：仅当本段仍是最新段时才收起胶囊——用户可能已再唤醒开了新段，胶囊归新段所有。
-            if (isLatestSeg() && window.electronAPI && window.electronAPI.hideRecorder) {
-              try { await window.electronAPI.hideRecorder(); } catch (e) { /* 忽略 */ }
-            }
+            // 多猫：空录音移除本猫（其它猫不受影响；空则由 App 隐藏窗口）。不再直接 hideRecorder。
+            removeSession(segId);
             return;
           }
 
           if (isLatestSeg()) setAudioData(audioBlob);
 
+          // 多猫：进入转写阶段（本猫 phase='transcribing'）。
+          updateSessionPhase(segId, 'transcribing');
           // 处理音频（按段下传：段号 + 本段录音结束时刻）
           await processAudio(audioBlob, segId, segRecEndTs);
         } catch (err) {
           // 连说：仅最新段的错误才提示用户；旧段尾段出错只记日志，不打断正在进行的新段。
           if (isLatestSeg()) setError(`音频处理失败: ${err.message}`);
           else if (window.electronAPI?.log) window.electronAPI.log('error', '旧段音频处理失败(不提示，不影响新段):', err?.message || err);
+          // 多猫：转写/处理抛错（未进入 runPipeline，App 不会收尾），此处移除本猫防僵尸。
+          removeSession(segId);
         } finally {
           if (isLatestSeg()) setIsProcessing(false);
         }
@@ -366,6 +470,9 @@ export const useRecording = ({ onTranscriptionCompleteRef, onAIOptimizationCompl
       // 开始录音
       mediaRecorder.start(1000); // 每秒收集一次数据
       setIsRecording(true);
+      // 多猫：录音真正开始 → 分配颜色并入列一只「录音中」的猫（用 segId 作为 id，供管线各点更新）。
+      addedSegId = segId;
+      addSession({ id: segId, color: allocColor(), phase: 'recording', bands: createZeroBands() });
       // 连说：新段开始，清掉上一段尾段流程可能残留的处理/润色态，让胶囊回到「录音中」。
       setIsProcessing(false);
       setIsOptimizing(false);
@@ -422,6 +529,8 @@ export const useRecording = ({ onTranscriptionCompleteRef, onAIOptimizationCompl
     } catch (err) {
       setError(`无法开始录音: ${err.message}`);
       setIsRecording(false);
+      // 多猫：若本次已入列猫却在启动后异常，移除它 + 回收颜色，绝不留僵尸猫。
+      if (addedSegId) removeSession(addedSegId);
     }
   }, [modelStatus.isReady, modelStatus.isLoading, modelStatus.error]);
 
@@ -478,13 +587,11 @@ export const useRecording = ({ onTranscriptionCompleteRef, onAIOptimizationCompl
         if (transcriptionResult.success) {
           const raw_text = transcriptionResult.text;
 
-          // 未识别到有效语音：不提交大模型、不粘贴、不入库，直接收起胶囊
+          // 未识别到有效语音：不提交大模型、不粘贴、不入库，移除本猫
           if (!raw_text || !raw_text.trim()) {
             tlog('[计时] 未识别到有效语音，跳过LLM与粘贴');
-            // 连说：仅当本段仍是最新段时才收起胶囊（用户可能已再唤醒开新段）。
-            if (isLatestSeg() && window.electronAPI && window.electronAPI.hideRecorder) {
-              try { await window.electronAPI.hideRecorder(); } catch (e) {}
-            }
+            // 多猫：无语音移除本猫（其它猫不受影响；空则由 App 隐藏窗口）。不再直接 hideRecorder。
+            removeSession(segId);
             return { success: true, text: '', skipped: true };
           }
 
@@ -505,6 +612,8 @@ export const useRecording = ({ onTranscriptionCompleteRef, onAIOptimizationCompl
 
           // 异步处理 LLM 与保存（只保存一次）。连说：润色态只在本段仍为最新段时驱动 UI。
           if (isLatestSeg()) setIsOptimizing(true);
+          // 多猫：进入润色阶段（本猫 phase='polishing'）。
+          updateSessionPhase(segId, 'polishing');
 
           // 连说保序：转写侧 FIFO 串行 → 此处按【说话顺序】到达，同步抢占一个有序粘贴槽。
           // 本段的收尾（润色+粘贴）须等上一段粘贴完成后再进行；录音本身不受此影响、仍可并行开新段。
@@ -754,8 +863,12 @@ export const useRecording = ({ onTranscriptionCompleteRef, onAIOptimizationCompl
               // 先出字（最高优先级）：尽快把结果贴到光标处，绝不被数据库写入挡住。
               // 连说：每段都是用户有意的独立一段，均须粘贴（不再「新段取消旧段粘贴」）。段间保序
               // 由主进程粘贴 FIFO 队列保证。隐藏胶囊的所有权交给 App：仅当本段仍是最新段时才允许收起。
+              // 多猫：进入出字阶段（本猫 phase='pasting'）。
+              updateSessionPhase(segId, 'pasting');
               if (onAIOptimizationCompleteRef?.current) {
                 emit.canHideRecorder = () => latestSegIdRef.current === segId;
+                // 多猫：把本猫段号带给 App，供其在「粘贴完成后」移除本猫（收尾时机对齐既有 hide）。
+                emit.segId = segId;
                 const doneP = onAIOptimizationCompleteRef?.current(emit);
                 // 端到端 t_end（非流式）：handleAIOptimizationComplete 为 async，其返回 Promise 在
                 // safePaste 的 pasteText 完成后 resolve（整段真正落屏）。仅观测、不 await、不阻塞出字；
@@ -828,6 +941,8 @@ export const useRecording = ({ onTranscriptionCompleteRef, onAIOptimizationCompl
                   error: err.message,
                   // 连说：异常收尾路径同样把「是否可隐藏胶囊」的判定交给 App（仅最新段可收起）。
                   canHideRecorder: () => latestSegIdRef.current === segId,
+                  // 多猫：异常收尾同样带段号，App 收尾后移除本猫。
+                  segId,
                 });
               }
             } finally {
@@ -835,6 +950,9 @@ export const useRecording = ({ onTranscriptionCompleteRef, onAIOptimizationCompl
               if (isLatestSeg()) setIsOptimizing(false);
               // 释放有序粘贴槽：放行下一段的收尾（务必在本段粘贴/入库都结束后）。
               try { _releasePaste(); } catch (_) {}
+              // 多猫安全网：仅当 App 收尾回调不可用（如卸载）时在此移除本猫，防僵尸。
+              // 正常路径由 App 在「粘贴完成后」移除（收尾时机对齐既有 hide），此处不重复。
+              if (!onAIOptimizationCompleteRef?.current) removeSession(segId);
             }
           }, 0);
 
@@ -988,6 +1106,10 @@ export const useRecording = ({ onTranscriptionCompleteRef, onAIOptimizationCompl
     audioData,
     audioLevel,
     audioBands,
+    // 多猫：可见会话列表（{id,color,phase,bands}），驱动 App 渲染 N 只小猫。
+    sessions,
+    // 多猫：App 在「粘贴完成后」调用它移除本猫 + 回收颜色（幂等）。
+    removeSession,
     startRecording,
     stopRecording,
     cancelRecording,

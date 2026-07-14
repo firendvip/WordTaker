@@ -15,6 +15,23 @@ import { playWake, playEnd, warmupAudio } from "./utils/sounds";
 // 动态导入设置页面组件
 const SettingsPage = React.lazy(() => import('./settings.jsx').then(module => ({ default: module.SettingsPage })));
 
+// 多猫并存：布局常量（与 useRecording 的 MAX_CATS/颜色池配套）。
+const SLOT_W = 180;         // 每猫槽宽（= 胶囊窗口宽）
+const SLOT_H = 88;          // 每猫槽高（cat 皮肤高，头顶特效完整可见）
+const GAP = 10;             // 猫间竖直间距
+const CAT0_Y_OFFSET = 24;   // 首猫相对光标点下移量（与 windowManager CURSOR_GAP_PX 对齐）
+
+// 会话 phase → RecorderPill/CatSkin 的 micState。
+function phaseToMicState(phase) {
+  switch (phase) {
+    case 'recording': return 'recording';
+    case 'transcribing': return 'processing';
+    case 'polishing':
+    case 'pasting': return 'optimizing';
+    default: return 'idle';
+  }
+}
+
 // 顶层路由：在调用任何 hooks 之前就分流。设置页与录音页各自是独立组件，
 // 各自无条件地在顶部调用自己的 hooks，杜绝"条件性调用 hooks"（HOOK-1）。
 export default function App() {
@@ -132,6 +149,8 @@ function RecorderApp() {
     isOptimizing,
     audioLevel,
     audioBands,
+    sessions,
+    removeSession,
     startRecording,
     stopRecording,
     cancelRecording,
@@ -150,6 +169,17 @@ function RecorderApp() {
   // 防止刚唤醒就 start→立即 stop→空音频→胶囊消失。
   const recordingStartRef = useRef(0);
   const PASTE_DEBOUNCE_TIME = 1000; // 1秒内相同文本不重复粘贴
+
+  // 多猫并存：位置分配（旧猫原地不动，新猫下方堆叠，放不下翻上方）。
+  // layoutRef: id→{x,y}（屏幕坐标，左上角）；workAreaRef: 本次 stack 的工作区（首猫时取，清空后重置）；
+  // baseXRef: 全体猫共用的 x（=首猫 x）；cat0YRef: 首猫 y；hadCatsRef: 是否曾有猫（用于「空则隐藏」）。
+  const layoutRef = useRef(new Map());
+  const workAreaRef = useRef(null);
+  const baseXRef = useRef(0);
+  const cat0YRef = useRef(0);
+  const hadCatsRef = useRef(false);
+  // 渲染用的每猫窗口内相对坐标（仅在「猫集合(id)变化」时更新，避免每帧频谱刷新触发重排/几何 IPC）。
+  const [catBoxes, setCatBoxes] = useState([]); // [{ id, left, top }]
 
   // 安全粘贴函数
   const safePaste = useCallback(async (text) => {
@@ -222,20 +252,16 @@ function RecorderApp() {
         await safePaste(result.text);
       }
     } finally {
-      // 粘贴完成后隐藏胶囊（不再常驻前台）。连说：仅当本段仍是「最新段」时才收起——
-      // 若旧段尾段完成时用户已再唤醒开了新段，胶囊归新段所有，旧段不得抢着隐藏。
-      const canHide = typeof result?.canHideRecorder === 'function'
-        ? result.canHideRecorder()
-        : true;
-      try {
-        if (canHide && window.electronAPI && window.electronAPI.hideRecorder) {
-          await window.electronAPI.hideRecorder();
-        }
-      } catch (e) {
-        // 忽略
+      // 多猫：粘贴完成后移除本猫 + 回收颜色（其它猫不受影响）。窗口隐藏由「sessions 空」的几何 effect
+      // 统一驱动——最后一只猫消失时才 hideRecorder，故不再在此直接 hideRecorder。
+      if (typeof result?.segId === 'number' && removeSession) {
+        removeSession(result.segId);
+      } else if (window.electronAPI && window.electronAPI.hideRecorder) {
+        // 兜底：极端情况下无段号（不应发生），退回旧的隐藏行为，绝不留可见空窗。
+        try { await window.electronAPI.hideRecorder(); } catch (e) { /* 忽略 */ }
       }
     }
-  }, [safePaste]);
+  }, [safePaste, removeSession]);
 
   // 录音状态上报主进程（用于按需注册 Esc 取消键）
   useEffect(() => {
@@ -303,8 +329,9 @@ function RecorderApp() {
     const off = window.electronAPI.onCancelRecording(() => {
       // 取消也即刻给声音反馈（沿用结束喵；旧实现由 isRecording 变化的 effect 播）
       if (isRecording) playCue(false);
+      // 多猫：Esc 只取消「当前录音猫」（cancelRecording→onstop 移除该猫），其它猫不受影响。
+      // 不再直接 hideRecorder——窗口隐藏交给「sessions 空」的几何 effect（仅最后一只消失时才隐藏）。
       cancelRecording();
-      if (window.electronAPI.hideRecorder) window.electronAPI.hideRecorder();
     });
     return () => {
       if (typeof off === "function") off();
@@ -355,6 +382,91 @@ function RecorderApp() {
       onAIOptimizationCompleteRef.current = null;
     };
   }, [handleRecordingComplete, handleAIOptimizationComplete]);
+
+  // 多猫几何：仅在「猫集合(id 序列)」变化时重排 + 发送窗口 bounds（phase/频段刷新不触发，避免每帧 IPC）。
+  const sessionIdsKey = sessions.map((s) => s.id).join(',');
+  useEffect(() => {
+    let cancelled = false;
+    const clamp = (v, lo, hi) => Math.min(Math.max(v, lo), Math.max(lo, hi));
+    (async () => {
+      // 无猫：清空布局；仅当之前有猫时才隐藏窗口（避免挂载即空、或 转英文/模型提示 等旧单胶囊场景被误隐藏）。
+      if (sessions.length === 0) {
+        layoutRef.current = new Map();
+        workAreaRef.current = null;
+        baseXRef.current = 0;
+        cat0YRef.current = 0;
+        setCatBoxes([]);
+        if (hadCatsRef.current) {
+          hadCatsRef.current = false;
+          try { await window.electronAPI?.hideRecorder?.(); } catch (_) {}
+        }
+        return;
+      }
+      hadCatsRef.current = true;
+
+      // 首猫：取锚点。anchor.{x,y} 已是首猫左上角（main 侧优先用窗口当前位置，尊重 pill_follow_focus，
+      // 跟随输入框/跟随光标均已就位），此处直接 clamp 使用、不再二次偏移（避免把首猫拉回光标造成跳动）。
+      if (!workAreaRef.current) {
+        let anchor = null;
+        try { anchor = await window.electronAPI?.getRecorderAnchor?.(); } catch (_) {}
+        if (cancelled) return;
+        const wa = (anchor && anchor.workArea) || { x: 0, y: 0, width: 1440, height: 900 };
+        const ax = anchor && Number.isFinite(anchor.x) ? anchor.x : wa.x + wa.width / 2 - SLOT_W / 2;
+        const ay = anchor && Number.isFinite(anchor.y) ? anchor.y : wa.y;
+        workAreaRef.current = wa;
+        baseXRef.current = Math.round(clamp(ax, wa.x, wa.x + wa.width - SLOT_W));
+        cat0YRef.current = Math.round(clamp(ay, wa.y, wa.y + wa.height - SLOT_H));
+      }
+
+      const wa = workAreaRef.current;
+      const baseX = baseXRef.current;
+      const layout = layoutRef.current;
+
+      // 为「尚无位置」的猫分配 y（按 id 升序=唤醒序）。旧猫位置不动。
+      const pending = sessions.filter((s) => !layout.has(s.id)).sort((a, b) => a.id - b.id);
+      for (const s of pending) {
+        let y;
+        if (layout.size === 0) {
+          y = cat0YRef.current; // 首猫
+        } else {
+          const ys = [...layout.values()].map((p) => p.y);
+          const below = Math.max(...ys) + SLOT_H + GAP;
+          const above = Math.min(...ys) - GAP - SLOT_H;
+          if (below + SLOT_H <= wa.y + wa.height) y = below;        // 下方放得下 → 堆下方
+          else if (above >= wa.y) y = above;                        // 否则翻上方
+          else y = clamp(below, wa.y, wa.y + wa.height - SLOT_H);   // 极端兜底（cap 10 一般不触发）
+        }
+        layout.set(s.id, { x: baseX, y });
+      }
+
+      // 清理已消失猫的位置（不移动其它猫）。
+      const alive = new Set(sessions.map((s) => s.id));
+      for (const id of [...layout.keys()]) if (!alive.has(id)) layout.delete(id);
+
+      // union bounds：宽=SLOT_W，高=最低底边−最高顶边。
+      const ys = [...layout.values()].map((p) => p.y);
+      if (ys.length === 0) return;
+      const minY = Math.min(...ys);
+      const maxBottom = Math.max(...ys) + SLOT_H;
+      const unionX = baseX;
+      const unionY = minY;
+      const height = maxBottom - minY;
+      try {
+        await window.electronAPI?.setRecorderBounds?.({ x: unionX, y: unionY, width: SLOT_W, height });
+      } catch (_) {}
+      if (cancelled) return;
+
+      // 每猫窗口内相对坐标。
+      const boxes = sessions.map((s) => {
+        const p = layout.get(s.id);
+        return { id: s.id, left: p.x - unionX, top: p.y - unionY };
+      });
+      setCatBoxes(boxes);
+    })();
+    return () => { cancelled = true; };
+    // 依赖 sessionIdsKey：仅猫集合变化才重排；phase/bands 刷新不重跑几何。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sessionIdsKey]);
 
   // 处理复制文本
   const handleCopyText = async (text) => {
@@ -641,22 +753,66 @@ function RecorderApp() {
 
   const micProps = getMicButtonProps();
 
+  // 无猫：保留旧「单胶囊」渲染——用于 转英文进度 / 模型未就绪提示 / 唤醒未录音 等既有场景，
+  // 几何仍由主进程 showRecorderAtBottom 管理，行为与多猫前完全一致（单猫回归零变化）。
+  if (sessions.length === 0) {
+    return (
+      <RecorderPill
+        micState={micState}
+        audioLevel={audioLevel}
+        audioBands={audioBands}
+        modelStatus={modelStatus}
+        hotkeyLabel={triggerLabel}
+        translateState={translatePhase}
+        pillSkin={pillSkin}
+        showPolishBubble={showPolishBubble}
+        polishCharCount={polishCharCount}
+        disabled={micProps.disabled}
+        onToggle={toggleRecording}
+        onOpenSettings={handleOpenSettings}
+        onOpenHistory={handleOpenHistory}
+        onDownloadModels={handleDownloadModels}
+      />
+    );
+  }
+
+  // 多猫：遍历 sessions 渲染 N 只猫，每只按其窗口内相对坐标绝对定位。
+  // 点击任意猫 = toggle 当前录音（与单猫一致）；颜色/phase 各猫独立。
   return (
-    <RecorderPill
-      micState={micState}
-      audioLevel={audioLevel}
-      audioBands={audioBands}
-      modelStatus={modelStatus}
-      hotkeyLabel={triggerLabel}
-      translateState={translatePhase}
-      pillSkin={pillSkin}
-      showPolishBubble={showPolishBubble}
-      polishCharCount={polishCharCount}
-      disabled={micProps.disabled}
-      onToggle={toggleRecording}
-      onOpenSettings={handleOpenSettings}
-      onOpenHistory={handleOpenHistory}
-      onDownloadModels={handleDownloadModels}
-    />
+    <div style={{ position: "relative", width: "100%", height: "100%" }}>
+      {sessions.map((s) => {
+        // 首猫：窗口已由 showRecorderAtBottom 摆到光标下方(180×88)，其窗口内坐标即 (0,0)，
+        // 故 box 未就绪时用 (0,0) 让首猫瞬间出现（单猫回归零延迟）；后续猫则等几何 effect 算好再渲染。
+        const box =
+          catBoxes.find((b) => b.id === s.id) ||
+          (sessions.length === 1 ? { id: s.id, left: 0, top: 0 } : null);
+        if (!box) return null; // 后续猫：几何 effect（异步取锚点）尚未就绪，暂不渲染，避免错位
+        const isRec = s.phase === "recording";
+        return (
+          <div
+            key={s.id}
+            style={{ position: "absolute", left: box.left, top: box.top, width: SLOT_W, height: SLOT_H }}
+          >
+            <RecorderPill
+              micState={phaseToMicState(s.phase)}
+              audioLevel={isRec ? audioLevel : 0}
+              audioBands={s.bands}
+              color={s.color}
+              modelStatus={modelStatus}
+              hotkeyLabel={triggerLabel}
+              translateState={translatePhase}
+              pillSkin={pillSkin}
+              showPolishBubble={s.phase === "polishing" || s.phase === "pasting"}
+              polishCharCount={polishCharCount}
+              disabled={micProps.disabled}
+              onToggle={toggleRecording}
+              onOpenSettings={handleOpenSettings}
+              onOpenHistory={handleOpenHistory}
+              onDownloadModels={handleDownloadModels}
+            />
+          </div>
+        );
+      })}
+    </div>
   );
 }

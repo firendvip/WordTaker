@@ -374,11 +374,14 @@ function setupRecordingTrigger() {
       // 修复回归：之前每次触发（含"结束键"那一次）都会重新 showRecorderAtBottom，
       // 结束键那一拍会把正在被隐藏的胶囊重新定位（可能落到别的显示器/屏幕外）并重显，
       // 与隐藏竞态 → 表现为"唤醒后胶囊自己消失"。结束/取消时不再重定位胶囊。
-      if (!isRecording) {
-        // 定位到焦点输入框下方（跟随焦点）或屏幕底部居中，再显示（不抢焦点）。
-        windowManager.showRecorderAtBottom();
-      }
       const win = windowManager.mainWindow;
+      if (!isRecording) {
+        // 多猫并存：仅当窗口 hidden（当前无猫在场）时才 showRecorderAtBottom——首猫瞬间出现在光标下方。
+        // 窗口已显示（已有猫）时不重定位：新猫的几何由渲染层 setRecorderBounds 统一驱动（旧猫原地不动）。
+        if (!win || win.isDestroyed() || !win.isVisible()) {
+          windowManager.showRecorderAtBottom();
+        }
+      }
       if (win && !win.isDestroyed()) {
         win.webContents.send('hotkey-triggered', { trigger });
         logger.info('录音触发 → 已发送 hotkey-triggered', trigger);
@@ -748,6 +751,62 @@ ipcMain.handle('hide-recorder', () => {
   return { success: true };
 });
 
+// 多猫并存：取首猫「左上角」锚点 + 所在屏 workArea，供渲染层定位首猫。
+// 返回的 {x,y} 已是首猫左上角（topLeft:true），渲染层直接使用、不再二次偏移。
+// 优先用胶囊窗口「当前位置」（fire() 唤醒时已按 pill_follow_focus 摆好——跟随输入框/跟随光标皆已就位），
+// 从而尊重 follow-focus、避免把首猫强行拉回光标造成跳动；窗口不可用时回退光标推导左上角。
+ipcMain.handle('get-recorder-anchor', () => {
+  try {
+    const { screen } = require('electron');
+    const win = windowManager.mainWindow;
+    if (win && !win.isDestroyed() && win.isVisible()) {
+      const b = win.getBounds();
+      const disp = screen.getDisplayNearestPoint({ x: b.x, y: b.y });
+      const wa = disp.workArea;
+      return {
+        x: b.x, y: b.y, topLeft: true,
+        workArea: { x: wa.x, y: wa.y, width: wa.width, height: wa.height },
+      };
+    }
+    // 回退：窗口尚不可见时用光标推导左上角（水平居中光标、下移 CURSOR_GAP_PX=24，与 _positionByCursor 一致）。
+    const pt = screen.getCursorScreenPoint();
+    const disp = screen.getDisplayNearestPoint(pt);
+    const wa = disp.workArea;
+    return {
+      x: pt.x - 90, y: pt.y + 24, topLeft: true,
+      workArea: { x: wa.x, y: wa.y, width: wa.width, height: wa.height },
+    };
+  } catch (e) {
+    logger.warn('get-recorder-anchor 失败，回退默认工作区:', e?.message || e);
+    return { x: 0, y: 0, topLeft: true, workArea: { x: 0, y: 0, width: 1440, height: 900 } };
+  }
+});
+
+// 多猫并存：设置胶囊窗口几何（渲染层算好的猫堆叠 union bbox）。入参严格校验后 clamp + setBounds。
+ipcMain.handle('set-recorder-bounds', (event, bounds) => {
+  try {
+    const b = bounds || {};
+    const nums = [b.x, b.y, b.width, b.height];
+    if (nums.some((n) => typeof n !== 'number' || !Number.isFinite(n))) {
+      return { success: false };
+    }
+    // 尺寸必须为正且不荒谬（防渲染层异常值把窗口拉爆/推出屏）。
+    if (b.width <= 0 || b.height <= 0 || b.width > 20000 || b.height > 20000) {
+      return { success: false };
+    }
+    windowManager.setRecorderBounds({
+      x: Math.round(b.x),
+      y: Math.round(b.y),
+      width: Math.round(b.width),
+      height: Math.round(b.height),
+    });
+    return { success: true };
+  } catch (e) {
+    logger.warn('set-recorder-bounds 失败:', e?.message || e);
+    return { success: false };
+  }
+});
+
 // 读取录音触发键的 { key, taps }（用于冲突检测）；非 modifier-tap 时返回 null。
 function getRecordingTriggerModifier() {
   const trig = databaseManager.getSetting('recording_trigger', null);
@@ -775,8 +834,10 @@ function fireCancel() {
   }
   const win = windowManager.mainWindow;
   if (win && !win.isDestroyed()) win.webContents.send('cancel-recording');
-  windowManager.hideMainWindow();
-  // Esc 取消即会话结束：幂等收口（与 hide-recorder 两路只生效一次）。
+  // 多猫并存：Esc 只取消「当前录音猫」，绝不在此直接隐藏整窗（否则其它并存猫会一起消失）。
+  // 渲染层收到 cancel-recording 后移除该猫；窗口隐藏交给渲染层「sessions 空」时调 hide-recorder。
+  // 若这就是最后一只猫，渲染层随即 hide-recorder → hideMainWindow + endSession（幂等）。
+  // Esc 取消即录音结束：此处仍幂等收口会话级键位（释放 Esc、重挂转英文）。
   endSession();
 }
 function registerCancelKey() {
