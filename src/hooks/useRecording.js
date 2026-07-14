@@ -27,6 +27,11 @@ const CONVERT_PEAK_MULTIPLIER = 3; // 转换期峰值 ≈ 3 × WAV字节
 const MEM_FRACTION_BUDGET = 0.6; // 安全预算上限：可用内存的 60%
 const MEM_ABSOLUTE_BUDGET_BYTES = 1.2 * 1024 ** 3; // 与 1.2GB 取小
 
+// 连说保序等待上限：等上一段收尾(润色+粘贴)完成的最长时间。超过则放行本段，最坏退回「可能乱序」
+// 而非「永久不出字」——防止某段 LLM/网络/本地模型卡死时头阻塞后续所有连说段。
+// 取值偏大以容忍本地模型首次加载(数十秒)，避免正常慢被误判为卡死而乱序。
+const PASTE_ORDER_MAX_WAIT_MS = 30000;
+
 /**
  * 录音功能Hook
  * 提供录音、停止录音、音频处理等功能
@@ -63,6 +68,13 @@ export const useRecording = ({ onTranscriptionCompleteRef, onAIOptimizationCompl
   // 段间出字顺序天然由主进程 转写/润色/粘贴 的 FIFO 队列保证（旧段先入队→先出字），无需额外排序。
   const segCounterRef = useRef(0);
   const latestSegIdRef = useRef(0);
+  // 连说保序：段间「润色+粘贴」收尾阶段按【说话顺序】串行的 promise 链。转写侧本就 FIFO 串行，
+  // 但云端润色并发/快慢会让短的后一段先返回→先粘贴→出字颠倒（流式还会交错成乱码）。
+  // 每段在转写完成(按段序到达)时抢占一个有序槽：本段收尾须等上一段粘贴完成后再进行。
+  const pasteOrderChainRef = useRef(Promise.resolve());
+  // 连说取消：按段记录「被 Esc 取消的段号」，避免极速「Esc→再唤醒」时单例 cancelledRef 被新段清零
+  // 导致旧段被误「复活」转写粘贴。onstop 用 (cancelledRef || cancelledSegIdRef===本段) 判定。
+  const cancelledSegIdRef = useRef(0);
 
   // 使用模型状态Hook
   const modelStatus = useModelStatus();
@@ -289,8 +301,9 @@ export const useRecording = ({ onTranscriptionCompleteRef, onAIOptimizationCompl
         // 录音结束：停止实时电平分析并释放 AudioContext（不泄漏）
         stopAudioAnalysis();
 
-        // 已取消（Esc）：丢弃音频，不识别、不粘贴
-        if (cancelledRef.current) {
+        // 已取消（Esc）：丢弃音频，不识别、不粘贴。按段判定（cancelledRef 单例 + 本段被取消的段号），
+        // 防「极速 Esc→再唤醒」时单例标记被新段清零导致旧段误复活。
+        if (cancelledRef.current || cancelledSegIdRef.current === segId) {
           audioChunksRef.current = [];
           if (isLatestSeg()) setIsProcessing(false);
           return;
@@ -331,16 +344,23 @@ export const useRecording = ({ onTranscriptionCompleteRef, onAIOptimizationCompl
           // 处理音频（按段下传：段号 + 本段录音结束时刻）
           await processAudio(audioBlob, segId, segRecEndTs);
         } catch (err) {
-          setError(`音频处理失败: ${err.message}`);
+          // 连说：仅最新段的错误才提示用户；旧段尾段出错只记日志，不打断正在进行的新段。
+          if (isLatestSeg()) setError(`音频处理失败: ${err.message}`);
+          else if (window.electronAPI?.log) window.electronAPI.log('error', '旧段音频处理失败(不提示，不影响新段):', err?.message || err);
         } finally {
           if (isLatestSeg()) setIsProcessing(false);
         }
       };
 
       mediaRecorder.onerror = (event) => {
-        setError(`录音错误: ${event.error?.message || '未知错误'}`);
-        setIsRecording(false);
-        setIsProcessing(false);
+        // 连说：仅本段仍是最新段时才翻动全局录音/处理态与错误提示，避免旧段 recorder 报错误关新段。
+        if (isLatestSeg()) {
+          setError(`录音错误: ${event.error?.message || '未知错误'}`);
+          setIsRecording(false);
+          setIsProcessing(false);
+        } else if (window.electronAPI?.log) {
+          window.electronAPI.log('warn', '旧段 recorder 报错(忽略，不影响新段):', event.error?.message || '');
+        }
       };
 
       // 开始录音
@@ -485,6 +505,13 @@ export const useRecording = ({ onTranscriptionCompleteRef, onAIOptimizationCompl
 
           // 异步处理 LLM 与保存（只保存一次）。连说：润色态只在本段仍为最新段时驱动 UI。
           if (isLatestSeg()) setIsOptimizing(true);
+
+          // 连说保序：转写侧 FIFO 串行 → 此处按【说话顺序】到达，同步抢占一个有序粘贴槽。
+          // 本段的收尾（润色+粘贴）须等上一段粘贴完成后再进行；录音本身不受此影响、仍可并行开新段。
+          const _prevPaste = pasteOrderChainRef.current;
+          let _releasePaste;
+          pasteOrderChainRef.current = new Promise((r) => { _releasePaste = r; });
+
           setTimeout(async () => {
             const log = (level, ...args) => {
               if (window.electronAPI && window.electronAPI.log) {
@@ -529,6 +556,17 @@ export const useRecording = ({ onTranscriptionCompleteRef, onAIOptimizationCompl
                     return null;
                   });
               }
+
+              // 连说保序：等上一段的收尾（润色+粘贴）完成后再进行本段——保证段间出字顺序 = 说话顺序，
+              // 并杜绝流式 appendChunk 在多段间交错。落库(savePromise)已在上面不阻塞地先发，历史不受影响。
+              // 加超时降级：上一段若卡死(LLM/网络/本地模型无响应)，最多等 PASTE_ORDER_MAX_WAIT_MS 即放行本段，
+              // 最坏退回「可能乱序」而非「后续段永久不出字」（活性优先，避免头阻塞冻结整条连说）。
+              try {
+                await Promise.race([
+                  _prevPaste,
+                  new Promise((r) => setTimeout(r, PASTE_ORDER_MAX_WAIT_MS)),
+                ]);
+              } catch (_) {}
 
               if (copywriting) {
                 // —— 流式上屏由设置开关控制（默认关闭）：
@@ -795,6 +833,8 @@ export const useRecording = ({ onTranscriptionCompleteRef, onAIOptimizationCompl
             } finally {
               // 连说：润色态只在本段仍为最新段时清除，避免误清最新段(新段)的 UI。
               if (isLatestSeg()) setIsOptimizing(false);
+              // 释放有序粘贴槽：放行下一段的收尾（务必在本段粘贴/入库都结束后）。
+              try { _releasePaste(); } catch (_) {}
             }
           }, 0);
 
@@ -902,6 +942,8 @@ export const useRecording = ({ onTranscriptionCompleteRef, onAIOptimizationCompl
   // 取消录音（Esc）：丢弃本次音频，不识别不粘贴
   const cancelRecording = useCallback(() => {
     cancelledRef.current = true;
+    // 按段记录被取消的段号（=当前最新段），airtight 防「Esc→再唤醒」竞态误复活旧段。
+    cancelledSegIdRef.current = latestSegIdRef.current;
     if (mediaRecorderRef.current) {
       try {
         mediaRecorderRef.current.stop();
