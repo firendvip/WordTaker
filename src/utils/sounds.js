@@ -207,25 +207,49 @@ const SCHEMES = {
     },
   },
   meow: {
-    // 唤起：真实 CC0 猫叫样本，轻微升调播放（rate 1.06）使其更亮更奶更撒娇；
-    // 解码失败时回退到合成撒娇喵（明亮上扬「喵~↗」）。音量与结束一致（同 v）。
+    // 唤起：真实 CC0 猫叫样本，**原速播放（rate 1.0）** —— 原先 1.06 升调会对 96kbps 单声道样本
+    // 做线性重采样、放大 MP3 压缩噪点/金属感（"音质怪"主因），故改回原速、保真优先。
+    // 解码失败时回退到合成撒娇喵。音量与结束一致（同 v）。
     wake(v) {
-      if (playMeowSample(v, 0, 1.06)) return;
+      if (playMeowSample(v, 0, 1.0)) return;
       meow({ vol: v, base: 1, down: false });
     },
-    // 结束：同一只猫，音区不压低——用 rate 0.99（几乎原速，绝不低沉）+ 更短促，
-    // 与唤起在"亮度/时长"上形成可分辨差异，而非靠"降调低沉"。
-    // 音量与唤起保持一致（同 v）。解码失败时回退到高音区撒娇变体
-    // （down:true = 高亮里"轻微下行再上翘"，与 wake 可分辨且同样不低沉）。
+    // 结束：同一只猫，rate 0.97（近原速、几乎不变调，仅与唤起形成极细微可分辨差异，绝不低沉）。
+    // 解码失败时回退到高音区撒娇变体（down:true = 高亮里"轻微下行再上翘"，与 wake 可分辨且不低沉）。
     end(v) {
-      if (playMeowSample(v, 0, 0.99)) return;
+      if (playMeowSample(v, 0, 0.97)) return;
       meow({ vol: v, base: 1, dur: 0.3, down: true });
     },
   },
 };
 
+// 静音保活：一个 gain=0 的常驻循环源常连 destination，让 AudioContext 图始终"有活干"，
+// 防止 Chromium/Electron 在空闲(~30s 无发声节点)后自动挂起 context。
+// 效果：唤醒时 ac.state 恒为 "running"，无需 await resume() → 消除"唤醒到出声"的可感滞后
+// （原先零散唤醒常撞上已挂起态，每次都要吃几十~上百 ms 的设备图恢复延迟）。
+let _keepAlive = null;
+function startKeepAlive() {
+  const ac = ctx();
+  if (!ac || _keepAlive) return;
+  try {
+    const buf = ac.createBuffer(1, Math.max(1, Math.round(ac.sampleRate * 0.5)), ac.sampleRate); // 0.5s 全 0 静音
+    const src = ac.createBufferSource();
+    src.buffer = buf;
+    src.loop = true;
+    const g = ac.createGain();
+    g.gain.value = 0; // 完全静音，仅用于保活，不发声
+    src.connect(g);
+    g.connect(ac.destination);
+    src.start();
+    _keepAlive = { src, g };
+  } catch (e) {
+    // 保活失败不影响播放，仅可能退回"偶发 resume 延迟"
+  }
+}
+
 // 触发动作来自全局快捷键（非页面内用户手势），AudioContext 可能处于 suspended。
 // 必须 await resume() 后再排程音符，否则首个提示音会被丢弃 —— 这是"没声音"的根因。
+// resume 成功后立即挂静音保活，之后不再被挂起（后续唤醒无 resume 延迟）。
 async function ensureRunning() {
   const ac = ctx();
   if (!ac) return null;
@@ -236,6 +260,7 @@ async function ensureRunning() {
       // 忽略
     }
   }
+  startKeepAlive();
   return ac;
 }
 
@@ -288,14 +313,24 @@ function playMeowSample(vol, when = 0, rate = 1) {
   try {
     const src = ac.createBufferSource();
     src.buffer = _meowBuf;
-    src.playbackRate.setValueAtTime(rate, ac.currentTime + when);
+    const t0 = ac.currentTime + when;
+    src.playbackRate.setValueAtTime(rate, t0);
     const g = ac.createGain();
     // rate<1 时样本听感偏闷偏弱，按 1/sqrt(rate) 适度回补，保证与唤起响度相当
     const loudnessComp = rate < 1 ? 1 / Math.sqrt(rate) : 1;
-    g.gain.setValueAtTime(clampVol(vol) * loudnessComp, ac.currentTime + when);
+    const vv = clampVol(vol) * loudnessComp;
+    // 淡入淡出包络：原先 gain 硬起硬停，起点非零交叉会有轻微 click（"音质怪"次因）。
+    // ~8ms 淡入 + 结尾 ~30ms 淡出，消除起止爆音。播放时长 = 样本时长 / rate。
+    const playDur = _meowBuf.duration / rate;
+    const fadeIn = 0.008;
+    const fadeOut = Math.min(0.03, playDur * 0.3);
+    g.gain.setValueAtTime(0.0001, t0);
+    g.gain.linearRampToValueAtTime(vv, t0 + Math.min(fadeIn, playDur * 0.5));
+    g.gain.setValueAtTime(vv, t0 + Math.max(0, playDur - fadeOut));
+    g.gain.linearRampToValueAtTime(0.0001, t0 + playDur);
     src.connect(g);
     g.connect(ac.destination);
-    src.start(ac.currentTime + when);
+    src.start(t0);
     src.onended = () => {
       try {
         src.disconnect();
