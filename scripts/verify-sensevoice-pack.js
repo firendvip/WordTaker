@@ -4,18 +4,28 @@ const {
   verifyModelDirectory,
 } = require('./sensevoice-model');
 
+function resolveMacModelDir(context) {
+  const productFilename = context.packager?.appInfo?.productFilename;
+  if (!productFilename) {
+    throw new Error('无法确定 macOS 应用包名称，不能校验 SenseVoice 模型');
+  }
+  return path.join(
+    context.appOutDir,
+    `${productFilename}.app`,
+    'Contents',
+    'Resources',
+    'app.asar.unpacked',
+    'models',
+    'sensevoice',
+  );
+}
+
 async function verifySenseVoicePack(context) {
   // 本轮只建立 macOS 的模型准备/打包闭环。Windows 继续由既有 CI 下载与
   // Assert SenseVoice model packed 步骤负责；Linux 尚未声明内置 SenseVoice。
   if (context.electronPlatformName !== 'darwin') return;
 
-  const modelDir = path.join(
-    context.appOutDir,
-    'resources',
-    'app.asar.unpacked',
-    'models',
-    'sensevoice',
-  );
+  const modelDir = resolveMacModelDir(context);
   const result = await verifyModelDirectory(modelDir);
   if (!result.ok) {
     const details = result.invalid.map(({ name, reason }) => `${name}(${reason})`).join(', ');
@@ -25,3 +35,4 @@ async function verifySenseVoicePack(context) {
 }
 
 module.exports = verifySenseVoicePack;
+module.exports.resolveMacModelDir = resolveMacModelDir;
