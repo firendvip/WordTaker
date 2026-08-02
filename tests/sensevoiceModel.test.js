@@ -181,6 +181,25 @@ describe("SenseVoice model preparation", () => {
     })).resolves.toBeUndefined();
   });
 
+  it("resolves the real macOS .app Resources layout used by electron-builder", () => {
+    delete require.cache[require.resolve("../scripts/verify-sensevoice-pack.js")];
+    const { resolveMacModelDir } = require("../scripts/verify-sensevoice-pack.js");
+    const appOutDir = path.join(makeTempDir(), "mac-arm64");
+
+    expect(resolveMacModelDir({
+      appOutDir,
+      packager: { appInfo: { productFilename: "弦外小猫" } },
+    })).toBe(path.join(
+      appOutDir,
+      "弦外小猫.app",
+      "Contents",
+      "Resources",
+      "app.asar.unpacked",
+      "models",
+      "sensevoice",
+    ));
+  });
+
   it("keeps embedded Python dependency checks aligned with macOS full and Windows ONNX-only runtimes", () => {
     const EmbeddedPythonTester = require("../scripts/test-embedded-python.js");
     const tester = new EmbeddedPythonTester();
