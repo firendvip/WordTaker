@@ -1,7 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 const https = require('https');
-const { execSync } = require('child_process');
+const { execFileSync, execSync } = require('child_process');
 const { createWriteStream } = require('fs');
 const { pipeline } = require('stream');
 const { promisify } = require('util');
@@ -21,6 +21,9 @@ class EmbeddedPythonBuilder {
     this.armBuildDate = '20260623';
     this.pythonDir = path.join(__dirname, '..', 'python');
     this.forceReinstall = false;
+    // FunASR/torch 的首次动态库加载在 Apple Silicon 上可能超过 10 秒；
+    // 给真实 import 足够时间，避免把完整缓存误判为缺依赖后触发重装。
+    this.dependencyImportTimeoutMs = 300000;
 
     // 目标平台：默认当前平台，可用 --platform=win32|darwin|linux 覆盖（跨平台准备无意义，
     // 因为依赖里有原生轮子，但保留开关便于排错/CI 显式指定）。
@@ -360,7 +363,7 @@ class EmbeddedPythonBuilder {
     // 定义依赖列表 - 确保numpy等核心依赖被正确安装。
     // 每项: { spec: 包约束, extraArgs?: 额外 pip 参数 }。
     // 说明：纯 ONNX 模式（this.onnxOnly，即所有 Windows）在上面已 early-return，
-    // 故此处只是 macOS/Linux 的全量依赖（torch + funasr + funasr_onnx + librosa）。
+    // 故此处只是 macOS/Linux 的全量依赖（torch + funasr + librosa + ONNX runtime）。
     // torch 系用 CPU-only 轮子（--index-url .../whl/cpu），体积更小，ONNX 推理路径不需要 CUDA。
     const CPU_TORCH_INDEX = '--index-url https://download.pytorch.org/whl/cpu';
     const dependencies = [
@@ -376,9 +379,8 @@ class EmbeddedPythonBuilder {
       // modelscope 与 funasr 1.2.7 同期版本（funasr 声明 modelscope 不带版本约束，必须显式 pin）
       { spec: 'modelscope==1.23.2' },
       { spec: 'onnxruntime>=1.16.0' },   // ONNX 运行时（CPU）
-      { spec: 'funasr_onnx>=0.4.1' },    // SenseVoice ONNX 封装
       // 最后强制纠回 numpy：前面各包的「全依赖」安装可能把 numpy 抬到 2.x，
-      // 而 torch 2.0.1 / funasr_onnx 只兼容 numpy 1.x（==1.26.4 为已验证版本）。
+      // 而 torch 2.0.1 / funasr 1.2.7 只兼容 numpy 1.x（==1.26.4 为已验证版本）。
       { spec: 'numpy==1.26.4' },
     ];
 
@@ -477,7 +479,7 @@ class EmbeddedPythonBuilder {
 
   // 安装 llama-cpp-python（macOS arm64 Metal 预编译轮子）。
   // 说明：metal 轮子索引上个别版本存在损坏（Bad CRC-32），因此固定到一个已验证可用的版本，
-  // 并显式 --only-binary=:all: 确保不本机编译。numpy 保持仓库既有约束（<2，供 funasr_onnx）。
+  // 并显式 --only-binary=:all: 确保不本机编译。numpy 保持仓库既有约束（<2，供 torch/funasr）。
   async installLlamaCppMetal(pythonPath) {
     const sitePackagesPath = this.sitePackagesPath();
     const env = this.pythonEnv();
@@ -486,7 +488,7 @@ class EmbeddedPythonBuilder {
     const METAL_INDEX = '--extra-index-url https://abetlen.github.io/llama-cpp-python/whl/metal';
     console.log('🦙 安装 llama-cpp-python (Metal, arm64 预编译轮子)...');
     try {
-      // 先装本体（不带依赖，避免连带升级 numpy 破坏 funasr_onnx）
+      // 先装本体（不带依赖，避免连带升级 numpy 破坏 torch/funasr）
       execSync(
         `"${pythonPath}" -m pip install --target "${sitePackagesPath}" --no-cache-dir --only-binary=:all: --no-deps ${METAL_INDEX} "${LLAMA_SPEC}"`,
         { stdio: 'inherit', env }
@@ -496,7 +498,7 @@ class EmbeddedPythonBuilder {
         `"${pythonPath}" -m pip install --target "${sitePackagesPath}" --no-cache-dir "typing_extensions>=4.5.0" "diskcache>=5.6.1" "jinja2>=2.11.3" "MarkupSafe"`,
         { stdio: 'inherit', env }
       );
-      // 兜底：确保 numpy 仍是 funasr_onnx 要求的 <=1.26.4（若被意外升级则纠回）
+      // 兜底：确保 numpy 仍是 torch/funasr 已验证的 1.26.4（若被意外升级则纠回）
       execSync(
         `"${pythonPath}" -m pip install --target "${sitePackagesPath}" --no-cache-dir "numpy==1.26.4"`,
         { stdio: 'inherit', env }
@@ -517,14 +519,14 @@ class EmbeddedPythonBuilder {
       if (!this.isArm64) deps.push('llama_cpp');
       return deps;
     }
-    return ['numpy', 'torch', 'librosa', 'funasr', 'onnxruntime', 'funasr_onnx'];
+    return ['numpy', 'torch', 'librosa', 'funasr', 'onnxruntime', 'soundfile'];
   }
 
   // 文件系统校验某个依赖是否已落地：site-packages 下存在「包目录」或「<dep>*.dist-info」。
   // 用于 Windows-ARM64 交叉准备（不能执行 aarch64 解释器去 import）。
   depExistsOnDisk(dep, sitePackagesPath) {
     if (!fs.existsSync(sitePackagesPath)) return false;
-    // 直接存在包目录（如 numpy/、onnxruntime/、funasr_onnx/）
+    // 直接存在包目录（如 numpy/、onnxruntime/、soundfile/）
     if (fs.existsSync(path.join(sitePackagesPath, dep))) return true;
     // 否则看是否存在 <dep>*.dist-info 目录（pip 元数据，名称可能用 - 或 _）
     const prefix = dep.replace(/_/g, '-').toLowerCase();
@@ -607,18 +609,32 @@ class EmbeddedPythonBuilder {
       const criticalDeps = this.criticalDeps();
       const verifyEnv = this.pythonEnv();
 
-      for (const dep of criticalDeps) {
-        try {
-          execSync(`"${pythonPath}" -c "import ${dep}; print('${dep} OK')"`, {
-            stdio: 'pipe',
-            env: verifyEnv,
-            timeout: 10000 // 10秒超时
-          });
+      try {
+        // 单一解释器批量导入：避免逐包重复加载 torch/动态库，并用 execFileSync
+        // 绕过 shell 层在进程退出时偶发的 ETIMEDOUT 误判。
+        const importCode = [
+          'import os, sys',
+          ...criticalDeps.map((dep) => `import ${dep}; print('${dep} OK')`),
+          'sys.stdout.flush()',
+          // 某些 torch/funasr 版本会注册耗时 atexit/后台线程；全部真实 import
+          // 已完成后直接退出，避免把退出阶段卡顿误判成依赖缺失。
+          'os._exit(0)',
+        ].join('; ');
+        const output = execFileSync(pythonPath, ['-c', importCode], {
+          stdio: 'pipe',
+          env: verifyEnv,
+          timeout: this.dependencyImportTimeoutMs
+        }).toString();
+        for (const dep of criticalDeps) {
+          if (!output.includes(`${dep} OK`)) {
+            console.log(`❌ ${dep} 不可用：批量导入未返回成功标记`);
+            return false;
+          }
           console.log(`✅ ${dep} 可用`);
-        } catch (error) {
-          console.log(`❌ ${dep} 不可用: ${error.message}`);
-          return false;
         }
+      } catch (error) {
+        console.log(`❌ 嵌入式依赖批量导入失败: ${error.message}`);
+        return false;
       }
       
       console.log('✅ 现有环境验证完成，所有关键依赖都可用');

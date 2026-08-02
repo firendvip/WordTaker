@@ -16,9 +16,11 @@
     "prepare:python:uv": "uv sync && uv run python download_models.py",
     "prepare:python:embedded": "node scripts/prepare-embedded-python.js",
     "prepare:python:info": "node scripts/prepare-embedded-python.js --info",
-    "test:python": "node scripts/test-embedded-python.js",
+    "prepare:sensevoice": "node scripts/sensevoice-model.js --prepare",
+    "verify:sensevoice": "node scripts/sensevoice-model.js --verify",
+    "test:python": "node scripts/test-embedded-python.js && node scripts/sensevoice-model.js --verify",
     "test:python:info": "node scripts/test-embedded-python.js --info",
-    "prebuild:mac": "npm run prepare:python:embedded && npm run patch:uiohook && npm run build:renderer",
+    "prebuild:mac": "npm run prepare:python:embedded && npm run prepare:sensevoice && npm run patch:uiohook && npm run build:renderer",
     "build:mac": "node scripts/check-embedded-python.js && electron-builder --mac",
     "prebuild:win": "npm run prepare:python:embedded && npm run build:renderer",
     "build:win": "electron-builder --win",
@@ -119,6 +121,7 @@
   "build": {
     "appId": "com.kittyecho.app",
     "productName": "弦外小猫",
+    "afterPack": "scripts/verify-sensevoice-pack.js",
     "directories": {
       "output": "dist"
     },
@@ -141,7 +144,7 @@
       "!src/node_modules/**/*",
       "!python/**/*.pyc",
       "!python/**/__pycache__/**/*",
-      "!models/*.part",
+      "!models/**/*.part",
       "!models/**/*.gguf"
     ],
     "asarUnpack": [

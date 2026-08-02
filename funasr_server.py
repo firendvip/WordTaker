@@ -83,6 +83,7 @@ class FunASRServer:
         self.punc_model = None
         self.sensevoice_model = None   # 快速识别引擎（ONNX）
         self.sensevoice_tokens = None
+        self.sensevoice_unavailable_reason = None
         self.initialized = False
         self._init_lock = threading.Lock()  # 防止并发初始化导致重复加载模型
         self.running = True
@@ -143,44 +144,52 @@ class FunASRServer:
             return False
 
     def _load_sensevoice(self):
-        """加载 SenseVoice ONNX（快速识别引擎，自带标点/ITN）。失败则保持 None，自动回退 Paraformer。"""
+        """加载 SenseVoice ONNX；失败时保留可观测原因并允许 Paraformer 降级。"""
         try:
             import json as _json
             model_dir = os.path.join(
                 os.path.dirname(os.path.abspath(__file__)), "models", "sensevoice"
             )
-            if not os.path.exists(os.path.join(model_dir, "model_quant.onnx")):
-                logger.warning("未找到 SenseVoice ONNX 模型，跳过（将回退 Paraformer）")
+            required_files = ("model_quant.onnx", "tokens.json", "config.yaml", "am.mvn")
+            missing_files = [
+                name for name in required_files
+                if not os.path.isfile(os.path.join(model_dir, name))
+            ]
+            if missing_files:
+                self.sensevoice_unavailable_reason = (
+                    "SenseVoice 模型文件缺失: " + ", ".join(missing_files)
+                )
+                logger.warning(
+                    f"{self.sensevoice_unavailable_reason}；SenseVoice 请求将明确降级到 Paraformer"
+                )
                 return False
             logger.info("开始加载 SenseVoice ONNX 模型...")
 
             with open(os.path.join(model_dir, "tokens.json"), "r", encoding="utf-8") as f:
                 self.sensevoice_tokens = _json.load(f)
 
-            if self.onnx_only:
-                # 纯 ONNX 模式（如 Windows-ARM64）：funasr_onnx 依赖 kaldi-native-fbank/torch，
-                # 在 ARM 无可用 wheel。改用项目自带的纯 numpy 引擎（仅 numpy+onnxruntime+soundfile）。
-                # 该引擎与 funasr_onnx 的 fbank/LFR/CMVN/解码逐位对齐（已离线验证 token 完全一致）。
-                # 防御性地把本脚本所在目录加入 sys.path，确保能 import 同目录的引擎模块。
-                _self_dir = os.path.dirname(os.path.abspath(__file__))
-                if _self_dir not in sys.path:
-                    sys.path.insert(0, _self_dir)
-                from sensevoice_onnx_engine import SenseVoiceOnnxEngine
+            # 所有平台统一使用项目自带的纯 numpy 引擎。官方预导出的 ONNX 仓库只需
+            # model_quant/tokens/config/am.mvn；funasr_onnx.SenseVoiceSmall 还会隐式要求
+            # 该仓库不存在的 BPE 文件，导致 macOS 加载失败后回退 Paraformer。
+            # 纯 numpy 引擎仅依赖 numpy + onnxruntime + soundfile，并已用于 Windows。
+            _self_dir = os.path.dirname(os.path.abspath(__file__))
+            if _self_dir not in sys.path:
+                sys.path.insert(0, _self_dir)
+            from sensevoice_onnx_engine import SenseVoiceOnnxEngine
 
-                self.sensevoice_model = SenseVoiceOnnxEngine(
-                    model_dir, quantize=True, device_id="-1"
-                )
-                logger.info("SenseVoice 纯 numpy ONNX 引擎加载完成")
-            else:
-                from funasr_onnx import SenseVoiceSmall
-
-                self.sensevoice_model = SenseVoiceSmall(
-                    model_dir, batch_size=1, quantize=True, device_id="-1"
-                )
-                logger.info("SenseVoice ONNX 模型加载完成")
+            self.sensevoice_model = SenseVoiceOnnxEngine(
+                model_dir, quantize=True, device_id="-1"
+            )
+            logger.info("SenseVoice 纯 numpy ONNX 引擎加载完成")
+            self.sensevoice_unavailable_reason = None
             return True
         except Exception as e:
-            logger.error(f"SenseVoice 加载失败（将回退 Paraformer）: {str(e)}")
+            self.sensevoice_unavailable_reason = (
+                f"SenseVoice 加载失败: {type(e).__name__}: {str(e)}"
+            )
+            logger.error(
+                f"{self.sensevoice_unavailable_reason}；SenseVoice 请求将明确降级到 Paraformer"
+            )
             self.sensevoice_model = None
             return False
 
@@ -198,6 +207,47 @@ class FunASRServer:
         while text and text[-1] in "。.":
             text = text[:-1]
         return text
+
+    def _engine_status(self):
+        """返回当前真实可用引擎，不根据用户设置伪造状态。"""
+        available = []
+        if self.sensevoice_model is not None:
+            available.append("sensevoice")
+        if self.asr_model is not None:
+            available.append("paraformer")
+        return {
+            "available_engines": available,
+            "sensevoice_available": self.sensevoice_model is not None,
+            "sensevoice_unavailable_reason": self.sensevoice_unavailable_reason,
+            "paraformer_available": self.asr_model is not None,
+        }
+
+    def _resolve_transcription_engine(self, requested_engine):
+        """解析请求引擎为实际引擎，并返回非静默降级原因。"""
+        requested = str(requested_engine or "sensevoice").strip().lower()
+        invalid_reason = None
+        if requested not in ("sensevoice", "paraformer"):
+            invalid_reason = f"不支持的识别引擎请求: {requested}"
+            requested = "sensevoice"
+
+        if requested == "sensevoice":
+            if self.sensevoice_model is not None:
+                return requested, "sensevoice", invalid_reason
+            if self.asr_model is not None:
+                reason = self.sensevoice_unavailable_reason or "SenseVoice 引擎未加载"
+                if invalid_reason:
+                    reason = f"{invalid_reason}；{reason}"
+                return requested, "paraformer", reason
+            return requested, None, self.sensevoice_unavailable_reason or "没有可用的本地识别引擎"
+
+        if self.asr_model is not None:
+            return requested, "paraformer", invalid_reason
+        if self.sensevoice_model is not None:
+            reason = "Paraformer 引擎未加载，改用 SenseVoice ONNX"
+            if invalid_reason:
+                reason = f"{invalid_reason}；{reason}"
+            return requested, "sensevoice", reason
+        return requested, None, "没有可用的本地识别引擎"
 
     def _load_vad_model(self):
         """加载VAD模型"""
@@ -259,7 +309,11 @@ class FunASRServer:
         # 锁内做 double-check：等到锁的第二个调用方直接返回已初始化结果。
         with self._init_lock:
             if self.initialized:
-                return {"success": True, "message": "模型已初始化"}
+                return {
+                    "success": True,
+                    "message": "模型已初始化",
+                    "engine_status": self._engine_status(),
+                }
             return self._initialize_locked()
 
     def _initialize_onnx_only(self):
@@ -285,6 +339,7 @@ class FunASRServer:
         return {
             "success": True,
             "message": f"SenseVoice ONNX 初始化成功，耗时: {total_time:.2f}秒",
+            "engine_status": self._engine_status(),
         }
 
     def _initialize_locked(self):
@@ -361,6 +416,7 @@ class FunASRServer:
             return {
                 "success": True,
                 "message": f"FunASR模型并行初始化成功，耗时: {total_time:.2f}秒",
+                "engine_status": self._engine_status(),
             }
 
         except ImportError as e:
@@ -449,7 +505,15 @@ class FunASRServer:
                 merged.append((start_ms, end_ms))
         return merged
 
-    def _transcribe_long_audio(self, audio_path, default_options, engine, duration):
+    def _transcribe_long_audio(
+        self,
+        audio_path,
+        default_options,
+        engine,
+        duration,
+        requested_engine,
+        fallback_reason,
+    ):
         """长音频 VAD 分段转写：按语音段切片逐段识别后顺序拼接。
 
         成功返回结果 dict；任何环节失败返回 None，由调用方回退整段一次性逻辑。
@@ -535,7 +599,10 @@ class FunASRServer:
                 "confidence": 0.0,
                 "duration": duration,
                 "language": "zh-CN",
-                "model_type": "sensevoice-onnx-segmented",
+                "model_type": "sensevoice-onnx-numpy-segmented",
+                "requested_engine": requested_engine,
+                "actual_engine": "sensevoice",
+                "fallback_reason": fallback_reason,
             }
 
         # Paraformer 路径：拼接后统一补标点
@@ -567,7 +634,10 @@ class FunASRServer:
             "confidence": 0.0,
             "duration": duration,
             "language": "zh-CN",
-            "model_type": "pytorch-segmented",
+            "model_type": "paraformer-pytorch-segmented",
+            "requested_engine": requested_engine,
+            "actual_engine": "paraformer",
+            "fallback_reason": fallback_reason,
         }
 
     def _transcribe_segment_text(self, seg_path, engine, default_options):
@@ -633,12 +703,31 @@ class FunASRServer:
             if options:
                 default_options.update(options)
 
-            # —— 引擎选择：默认 SenseVoice（快），不可用时自动回退 Paraformer ——
-            engine = default_options.get("engine", "sensevoice")
-            # 纯 ONNX 模式没有 Paraformer 可用（asr_model 为 None），强制走 SenseVoice，
-            # 避免调用方显式传 engine=paraformer 时落到 self.asr_model.generate() 而静默失败。
-            if self.onnx_only:
-                engine = "sensevoice"
+            # —— 引擎选择：同时保留请求值、实际值与清晰降级原因 ——
+            requested_engine, engine, fallback_reason = self._resolve_transcription_engine(
+                default_options.get("engine", "sensevoice")
+            )
+            if engine is None:
+                logger.error(
+                    f"ASR 引擎不可用: requested={requested_engine}, reason={fallback_reason}"
+                )
+                return {
+                    "success": False,
+                    "error": fallback_reason,
+                    "type": "engine_unavailable",
+                    "requested_engine": requested_engine,
+                    "actual_engine": None,
+                    "fallback_reason": fallback_reason,
+                }
+            if fallback_reason:
+                logger.warning(
+                    f"ASR 引擎降级: requested={requested_engine}, actual={engine}, "
+                    f"reason={fallback_reason}"
+                )
+            else:
+                logger.info(
+                    f"ASR 引擎选择: requested={requested_engine}, actual={engine}"
+                )
 
             # —— 长音频 VAD 分段路径（WS5）——
             # 仅当时长 > 阈值且 VAD 模型可用时启用，把整段一次性推理拆成多段，降低内存峰值。
@@ -657,7 +746,12 @@ class FunASRServer:
                     f"[分段] 音频时长 {duration:.1f}s > {LONG_AUDIO_THRESHOLD_S}s，启用 VAD 分段转写"
                 )
                 seg_result = self._transcribe_long_audio(
-                    audio_path, default_options, engine, duration
+                    audio_path,
+                    default_options,
+                    engine,
+                    duration,
+                    requested_engine,
+                    fallback_reason,
                 )
                 if seg_result is not None:
                     return seg_result
@@ -680,7 +774,10 @@ class FunASRServer:
                     "confidence": 0.0,
                     "duration": duration,
                     "language": "zh-CN",
-                    "model_type": "sensevoice-onnx",
+                    "model_type": "sensevoice-onnx-numpy",
+                    "requested_engine": requested_engine,
+                    "actual_engine": "sensevoice",
+                    "fallback_reason": fallback_reason,
                 }
 
             # —— 否则走 Paraformer + 标点 ——
@@ -746,7 +843,10 @@ class FunASRServer:
                 ),
                 "duration": duration,
                 "language": "zh-CN",
-                "model_type": "pytorch",  # 标识使用的是pytorch版本
+                "model_type": "paraformer-pytorch",
+                "requested_engine": requested_engine,
+                "actual_engine": "paraformer",
+                "fallback_reason": fallback_reason,
             }
 
             # 生产环境：每10次转录后进行内存清理

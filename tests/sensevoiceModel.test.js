@@ -136,7 +136,8 @@ describe("SenseVoice model preparation", () => {
   it("aborts a download as soon as streamed bytes exceed the manifest size", async () => {
     const { downloadToFile } = await import(modelToolsPath);
     const outputPath = path.join(makeTempDir(), "oversized.part");
-    const httpGet = vi.fn((_url, callback) => {
+    const httpGet = vi.fn((_url, options, callback) => {
+      expect(options.headers["User-Agent"]).toContain("WordTaker");
       const request = new EventEmitter();
       request.setTimeout = vi.fn();
       request.destroy = vi.fn((error) => request.emit("error", error));
@@ -164,7 +165,10 @@ describe("SenseVoice model preparation", () => {
     expect(packageJson.scripts["prepare:sensevoice"]).toBe("node scripts/sensevoice-model.js --prepare");
     expect(packageJson.scripts["verify:sensevoice"]).toBe("node scripts/sensevoice-model.js --verify");
     expect(packageJson.scripts["prebuild:mac"]).toContain("npm run prepare:sensevoice");
+    expect(packageJson.scripts["prebuild:win"]).not.toContain("prepare:sensevoice");
+    expect(packageJson.scripts["prebuild:linux"]).not.toContain("prepare:sensevoice");
     expect(packageJson.build.afterPack).toBe("scripts/verify-sensevoice-pack.js");
+    expect(packageJson.build.files).toContain("!models/**/*.part");
   });
 
   it("limits the afterPack assertion to macOS so existing Windows/Linux flows stay unchanged", async () => {
@@ -175,5 +179,34 @@ describe("SenseVoice model preparation", () => {
       electronPlatformName: "linux",
       appOutDir: path.join(makeTempDir(), "missing-linux-app"),
     })).resolves.toBeUndefined();
+  });
+
+  it("keeps embedded Python dependency checks aligned with macOS full and Windows ONNX-only runtimes", () => {
+    const EmbeddedPythonTester = require("../scripts/test-embedded-python.js");
+    const tester = new EmbeddedPythonTester();
+
+    tester.isWindows = false;
+    expect(tester.dependencyNames()).toEqual(expect.arrayContaining([
+      "torch",
+      "librosa",
+      "funasr",
+      "onnxruntime",
+      "soundfile",
+    ]));
+    expect(tester.dependencyNames()).not.toContain("funasr_onnx");
+
+    tester.isWindows = true;
+    expect(tester.dependencyNames()).toEqual([
+      "sys",
+      "os",
+      "json",
+      "numpy",
+      "onnxruntime",
+      "soundfile",
+    ]);
+
+    const EmbeddedPythonBuilder = require("../scripts/prepare-embedded-python.js");
+    const builder = new EmbeddedPythonBuilder();
+    expect(builder.dependencyImportTimeoutMs).toBeGreaterThanOrEqual(60_000);
   });
 });
