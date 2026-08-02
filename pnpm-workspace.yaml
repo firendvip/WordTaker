@@ -1,6 +1,9 @@
 packages:
   - '.'
 
+overrides:
+  js-yaml: ^4.3.0
+
 allowBuilds:
   '@tailwindcss/oxide': set this to true or false
   better-sqlite3: set this to true or false
