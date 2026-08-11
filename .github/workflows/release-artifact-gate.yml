@@ -1,0 +1,276 @@
+name: Signed desktop artifact gate
+
+on:
+  workflow_dispatch:
+    inputs:
+      variant:
+        description: Desktop capability profile to sign and verify
+        required: true
+        type: choice
+        default: default
+        options:
+          - default
+          - passport-candidate
+
+permissions:
+  contents: read
+
+concurrency:
+  group: signed-desktop-${{ github.ref }}-${{ inputs.variant }}
+  cancel-in-progress: false
+
+jobs:
+  macos:
+    name: macOS ${{ matrix.arch }} signed artifact
+    environment: release-signing
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            arch: arm64
+          - runner: macos-15-intel
+            arch: x64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.5.3
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.22.0
+          cache: pnpm
+
+      - name: Require protected macOS signing inputs
+        shell: bash
+        env:
+          CSC_LINK: ${{ secrets.MACOS_CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.MACOS_CSC_KEY_PASSWORD }}
+          APPLE_API_KEY_CONTENT: ${{ secrets.APPLE_API_KEY_CONTENT }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
+          MACOS_SIGNER_SHA256: ${{ vars.MACOS_SIGNER_SHA256 }}
+        run: |
+          set -euo pipefail
+          for name in CSC_LINK CSC_KEY_PASSWORD APPLE_API_KEY_CONTENT APPLE_API_KEY_ID APPLE_API_ISSUER APPLE_TEAM_ID MACOS_SIGNER_SHA256; do
+            if [[ -z "${!name:-}" ]]; then
+              echo "Protected release-signing input is missing: $name" >&2
+              exit 1
+            fi
+          done
+          if [[ ! "$APPLE_TEAM_ID" =~ ^[A-Z0-9]{10}$ ]] || [[ ! "$MACOS_SIGNER_SHA256" =~ ^[A-Fa-f0-9]{64}$ ]]; then
+            echo "Pinned macOS signer identity is malformed" >&2
+            exit 1
+          fi
+          key_path="$RUNNER_TEMP/AuthKey_${APPLE_API_KEY_ID}.p8"
+          umask 077
+          printf '%s' "$APPLE_API_KEY_CONTENT" > "$key_path"
+          echo "APPLE_API_KEY=$key_path" >> "$GITHUB_ENV"
+
+      - name: Install and verify source dependencies
+        run: |
+          pnpm install --frozen-lockfile --ignore-scripts
+          pnpm run prepare:electron-runtime
+          pnpm exec electron-rebuild -f -w better-sqlite3 -w uiohook-napi
+          pnpm run verify:desktop-release
+          pnpm run test:auth:coverage
+          pnpm run test:desktop:coverage
+          pnpm test
+          pnpm lint
+          pnpm audit --audit-level high
+
+      - name: Prepare signed macOS package inputs
+        run: |
+          pnpm run prepare:python:embedded
+          pnpm run prepare:sensevoice
+          pnpm run patch:uiohook
+          pnpm run build:renderer
+
+      - name: Build signed and notarized DMG without publishing
+        shell: bash
+        env:
+          CSC_LINK: ${{ secrets.MACOS_CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.MACOS_CSC_KEY_PASSWORD }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          config=()
+          if [[ "${{ inputs.variant }}" == "passport-candidate" ]]; then
+            config=(--config electron-builder.passport-candidate.cjs)
+          fi
+          pnpm exec electron-builder "${config[@]}" --mac dmg --${{ matrix.arch }} \
+            --config.forceCodeSigning=true --publish never
+
+      # signed-artifact-gate.js sets WORDTAKER_PACKAGED_RUNTIME_SMOKE and performs these exact checks:
+      # codesign --verify --deep --strict, spctl --assess --type execute,
+      # xcrun stapler validate for both the mounted app and DMG, then starts the mounted app.
+      - name: Verify mounted signed DMG and packaged runtime
+        shell: bash
+        env:
+          APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
+          MACOS_SIGNER_SHA256: ${{ vars.MACOS_SIGNER_SHA256 }}
+        run: |
+          set -euo pipefail
+          artifact="$(find dist -maxdepth 1 -type f -name "KittyEcho-*-${{ matrix.arch }}.dmg" -print -quit)"
+          if [[ -z "$artifact" ]]; then
+            echo "Signed DMG was not produced" >&2
+            exit 1
+          fi
+          export GATE_PLATFORM=macos GATE_ARCH=${{ matrix.arch }} GATE_VARIANT=${{ inputs.variant }}
+          export GATE_ARTIFACT="$(cd "$(dirname "$artifact")" && pwd)/$(basename "$artifact")"
+          export GATE_RECEIPT="$RUNNER_TEMP/wordtaker-macos-${{ matrix.arch }}-receipt.json"
+          node - <<'NODE'
+          const fs = require("node:fs");
+          const cp = require("node:child_process");
+          const pkg = require("./package.json");
+          const manifest = {
+            platform: process.env.GATE_PLATFORM,
+            variant: process.env.GATE_VARIANT,
+            artifactPath: process.env.GATE_ARTIFACT,
+            receiptPath: process.env.GATE_RECEIPT,
+            version: pkg.version,
+            electronVersion: pkg.devDependencies.electron,
+            arch: process.env.GATE_ARCH,
+            commit: cp.execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim(),
+            tree: cp.execFileSync("git", ["rev-parse", "HEAD^{tree}"], { encoding: "utf8" }).trim(),
+            expectedTeamId: process.env.APPLE_TEAM_ID,
+            expectedSignerFingerprint: process.env.MACOS_SIGNER_SHA256,
+          };
+          fs.writeFileSync(process.env.RUNNER_TEMP + "/wordtaker-macos-manifest.json", JSON.stringify(manifest), { mode: 0o600 });
+          NODE
+          node scripts/signed-artifact-gate.js --manifest "$RUNNER_TEMP/wordtaker-macos-manifest.json"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: signed-gate-receipt-macos-${{ matrix.arch }}-${{ inputs.variant }}
+          path: ${{ runner.temp }}/wordtaker-macos-${{ matrix.arch }}-receipt.json
+          if-no-files-found: error
+          retention-days: 1
+
+  windows:
+    name: Windows ${{ matrix.arch }} signed artifact
+    environment: release-signing
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: windows-latest
+            arch: x64
+          - runner: windows-11-arm
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.5.3
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.22.0
+          cache: pnpm
+
+      - name: Require protected Windows signing inputs
+        shell: pwsh
+        env:
+          CSC_LINK: ${{ secrets.WINDOWS_CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.WINDOWS_CSC_KEY_PASSWORD }}
+          WINDOWS_SIGNER_SHA256: ${{ vars.WINDOWS_SIGNER_SHA256 }}
+        run: |
+          foreach ($name in @("CSC_LINK", "CSC_KEY_PASSWORD", "WINDOWS_SIGNER_SHA256")) {
+            if ([string]::IsNullOrWhiteSpace((Get-Item "Env:$name").Value)) {
+              throw "Protected release-signing input is missing: $name"
+            }
+          }
+          if ($env:WINDOWS_SIGNER_SHA256 -notmatch '^[A-Fa-f0-9]{64}$') {
+            throw "Pinned Windows signer SHA-256 is malformed"
+          }
+
+      - name: Install and verify source dependencies
+        run: |
+          pnpm install --frozen-lockfile --ignore-scripts
+          pnpm run prepare:electron-runtime
+          pnpm exec electron-rebuild -f -w better-sqlite3 -w uiohook-napi
+          pnpm run verify:desktop-release
+          pnpm run test:auth:coverage
+          pnpm run test:desktop:coverage
+          pnpm test
+          pnpm lint
+          pnpm audit --audit-level high
+
+      - name: Prepare signed Windows package inputs
+        run: |
+          pnpm run prepare:python:embedded
+          pnpm run prepare:sensevoice
+          pnpm run build:renderer
+
+      - name: Setup MSVC toolchain
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: ${{ matrix.arch }}
+
+      - name: Build native key injector
+        shell: cmd
+        run: cl /nologo /O1 /W3 build\win\sendkeys.c /Fe:build\win\sendkeys.exe /link user32.lib
+
+      - name: Build signed setup and portable without publishing
+        shell: pwsh
+        env:
+          CSC_LINK: ${{ secrets.WINDOWS_CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.WINDOWS_CSC_KEY_PASSWORD }}
+        run: |
+          $config = @()
+          if ("${{ inputs.variant }}" -eq "passport-candidate") {
+            $config = @("--config", "electron-builder.passport-candidate.cjs")
+          }
+          pnpm exec electron-builder @config --win "nsis:${{ matrix.arch }}" "portable:${{ matrix.arch }}" `
+            --config.forceCodeSigning=true --publish never
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      # The gate derives the installed executable from setup, checks all three files with
+      # Get-AuthenticodeSignature (including TimeStamperCertificate + SHA-256 signer),
+      # runs signtool verify /pa /all /v, starts installed + portable apps, then uninstalls.
+      - name: Verify installed and portable signed runtimes
+        shell: pwsh
+        env:
+          WINDOWS_SIGNER_SHA256: ${{ vars.WINDOWS_SIGNER_SHA256 }}
+        run: |
+          $setup = Get-ChildItem dist -File -Filter "KittyEcho-*-${{ matrix.arch }}-setup.exe" | Select-Object -First 1
+          $portable = Get-ChildItem dist -File -Filter "KittyEcho-*-${{ matrix.arch }}-portable.exe" | Select-Object -First 1
+          if (-not $setup -or -not $portable) { throw "Signed setup or portable artifact is missing" }
+          $package = Get-Content package.json | ConvertFrom-Json
+          $manifest = @{
+            platform = "windows"
+            variant = "${{ inputs.variant }}"
+            installerPath = $setup.FullName
+            portablePath = $portable.FullName
+            receiptPath = Join-Path $env:RUNNER_TEMP "wordtaker-windows-${{ matrix.arch }}-receipt.json"
+            version = $package.version
+            electronVersion = $package.devDependencies.electron
+            arch = "${{ matrix.arch }}"
+            commit = (git rev-parse HEAD).Trim()
+            tree = (git rev-parse 'HEAD^{tree}').Trim()
+            expectedSignerFingerprint = $env:WINDOWS_SIGNER_SHA256
+          }
+          $manifestPath = Join-Path $env:RUNNER_TEMP "wordtaker-windows-manifest.json"
+          $manifest | ConvertTo-Json | Set-Content -LiteralPath $manifestPath -Encoding utf8
+          node scripts/signed-artifact-gate.js --manifest $manifestPath
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: signed-gate-receipt-windows-${{ matrix.arch }}-${{ inputs.variant }}
+          path: ${{ runner.temp }}/wordtaker-windows-${{ matrix.arch }}-receipt.json
+          if-no-files-found: error
+          retention-days: 1

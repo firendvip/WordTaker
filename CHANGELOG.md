@@ -1,5 +1,22 @@
 # Changelog
 
+## [1.29.0] - 2026-08-11
+
+### Added
+
+- 新增望三统一通行证桌面候选链路：系统浏览器 Authorization Code + PKCE、精确回调、稳定 `(issuer, sub)` 身份映射，以及操作系统安全凭据存储。
+- 新增 macOS / Windows 已签名安装包验收门，校验签名者、时间戳、公证、最终安装产物与真实打包运行时证据；门禁只生成本地验收回执，不发布产物。
+
+### Changed
+
+- `code`、Access Token 与 Refresh Token 统一按 OAuth opaque 凭据处理，仅接受受限 ASCII 字符并执行长度上限校验；ID Token 继续严格验签，并通过 `userinfo.sub` 绑定身份。
+- Electron 固定升级到 43.3.0；桌面端用户可见版本统一来自运行时 `app.getVersion()`。
+- 默认发行包关闭统一通行证能力，不展示入口、不注册自定义协议、不迁移或改写凭据；仅显式 Passport candidate 包注册 `wangsan-wordtaker`。
+
+### Security
+
+- Access Token 仅保存在内存，轮换 Refresh Token 仅写入操作系统安全存储；保留旧 AIM 登录回退，并在同一账号证明失败时拒绝创建或切换业务身份。
+
 ## [1.28.0] - 2026-07-11
 
 ### Changed

@@ -1,6 +1,6 @@
 {
   "name": "kittyecho",
-  "version": "1.28.6",
+  "version": "1.29.0",
   "description": "WordTaker — 基于 FunASR 本地识别与 DeepSeek 润色的本地中文语音输入工具",
   "main": "main.js",
   "private": true,
@@ -39,6 +39,7 @@
     "test:desktop:coverage": "vitest run --config vitest.desktop.config.mjs --coverage",
     "prepare:electron-runtime": "node node_modules/electron/install.js",
     "verify:desktop-release": "node scripts/verify-desktop-release.js",
+    "verify:signed-artifact": "node scripts/signed-artifact-gate.js",
     "smoke:electron-runtime": "cross-env WORDTAKER_PACKAGED_RUNTIME_SMOKE=1 electron .",
     "preview": "cd src && vite preview",
     "clean": "node cleanup.js && rm -rf python",

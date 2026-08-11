@@ -54,9 +54,9 @@ function validateDesktopReleaseSnapshot(snapshot) {
   const electronVersion = devDependencies.electron;
   if (
     !/^\d+\.\d+\.\d+$/.test(String(electronVersion || "")) ||
-    !versionAtLeast(electronVersion, MIN_ELECTRON_VERSION)
+    electronVersion !== MIN_ELECTRON_VERSION
   ) {
-    issues.push(`Electron must be pinned at or above ${MIN_ELECTRON_VERSION}`);
+    issues.push(`Electron must be pinned exactly to ${MIN_ELECTRON_VERSION}`);
   }
 
   const builderVersion = devDependencies["electron-builder"];
@@ -98,7 +98,11 @@ function validateDesktopReleaseSnapshot(snapshot) {
     scripts["test:desktop:coverage"] !==
       "vitest run --config vitest.desktop.config.mjs --coverage" ||
     scripts["smoke:electron-runtime"] !==
-      "cross-env WORDTAKER_PACKAGED_RUNTIME_SMOKE=1 electron ."
+      "cross-env WORDTAKER_PACKAGED_RUNTIME_SMOKE=1 electron ." ||
+    !String(scripts["pack:passport-candidate"] || "").includes(
+      "electron-builder.passport-candidate.cjs",
+    ) ||
+    scripts["verify:signed-artifact"] !== "node scripts/signed-artifact-gate.js"
   ) {
     issues.push("desktop release verification scripts must be declared in package.json");
   }
@@ -135,8 +139,22 @@ function validateDesktopReleaseSnapshot(snapshot) {
   }
 
   const registeredSchemes = (build.protocols || []).flatMap((entry) => entry.schemes || []);
-  if (!registeredSchemes.includes(OAUTH_SCHEME)) {
-    issues.push(`electron-builder protocols must register ${OAUTH_SCHEME}`);
+  if (
+    registeredSchemes.length > 0
+    || build.extraMetadata?.wordtakerPassportCandidate === true
+  ) {
+    issues.push("default package must not register Passport protocols or candidate metadata");
+  }
+  if (
+    !includesAll(snapshot.candidateConfigSource, [
+      "wordtakerPassportCandidate: true",
+      "protocols:",
+      "Wangsan WordTaker OAuth",
+      OAUTH_SCHEME,
+    ])
+    || countOccurrences(snapshot.candidateConfigSource, OAUTH_SCHEME) !== 1
+  ) {
+    issues.push("Passport candidate package must register exactly one reviewed OAuth scheme");
   }
 
   for (const [target, config] of [
@@ -249,7 +267,7 @@ function validateDesktopReleaseSnapshot(snapshot) {
       "Verify packaged Electron runtime",
       "open -n -W",
       "security create-keychain",
-      OAUTH_SCHEME,
+      "Expected no wangsan-wordtaker scheme",
       "CFBundleShortVersionString",
       "CFBundleVersion",
     ])
@@ -276,6 +294,36 @@ function validateDesktopReleaseSnapshot(snapshot) {
     issues.push("Windows build guide must describe the manual validation workflow and signed release gate");
   }
 
+  const releaseWorkflow = String(snapshot.releaseGateWorkflow || "");
+  if (
+    !includesAll(releaseWorkflow, [
+      "workflow_dispatch:",
+      "permissions:",
+      "contents: read",
+      "environment: release-signing",
+      "persist-credentials: false",
+      "forceCodeSigning=true",
+      "codesign --verify --deep --strict",
+      "spctl --assess --type execute",
+      "xcrun stapler validate",
+      "MACOS_SIGNER_SHA256",
+      "APPLE_TEAM_ID",
+      "Get-AuthenticodeSignature",
+      "TimeStamperCertificate",
+      "WINDOWS_SIGNER_SHA256",
+      "signtool verify /pa /all /v",
+      "WORDTAKER_PACKAGED_RUNTIME_SMOKE",
+      "signed-artifact-gate.js",
+      "--publish never",
+    ])
+    || /(^|\n)\s*(push|pull_request|schedule):/m.test(releaseWorkflow)
+    || /contents:\s*write/i.test(releaseWorkflow)
+    || /action-gh-release|--publish\s+(always|onTagOrDraft)|continue-on-error:\s*true/i
+      .test(releaseWorkflow)
+  ) {
+    issues.push("signed artifact release gate must be manual, pinned, executable and non-publishing");
+  }
+
   if (!includesAll(snapshot.ipcSource, ["get-app-version", "app.getVersion()"])) {
     issues.push("main-process version IPC must return app.getVersion()");
   }
@@ -290,6 +338,18 @@ function validateDesktopReleaseSnapshot(snapshot) {
   }
   if (String(snapshot.viteConfigSource || "").includes("__APP_VERSION__")) {
     issues.push("__APP_VERSION__ is a forbidden second compile-time version source");
+  }
+  if (
+    !String(snapshot.changelogSource || "").includes(`## [${packageJson.version}]`)
+  ) {
+    issues.push("CHANGELOG must lead with the package.json release version");
+  }
+  if (
+    !includesAll(snapshot.appSource, ["syncRuntimeDocumentTitle", "getAppVersion"]) ||
+    !includesAll(snapshot.historySource, ["syncRuntimeDocumentTitle", "getAppVersion"]) ||
+    !includesAll(snapshot.windowManagerSource, ["_runtimeTitle", "app.getVersion()"])
+  ) {
+    issues.push("every user-visible version title must use the runtime app version source");
   }
 
   return issues;
@@ -314,7 +374,13 @@ async function inspectDesktopRelease(rootDir = path.resolve(__dirname, "..")) {
     ciWorkflow: await read(".github/workflows/ci.yml"),
     windowsWorkflow: await read(".github/workflows/build-windows.yml"),
     macWorkflow: await read(".github/workflows/build-macos.yml"),
+    releaseGateWorkflow: await read(".github/workflows/release-artifact-gate.yml"),
+    candidateConfigSource: await read("electron-builder.passport-candidate.cjs"),
+    changelogSource: await read("CHANGELOG.md"),
     mainSource: await read("main.js"),
+    appSource: await read("src/App.jsx"),
+    historySource: await read("src/history.jsx"),
+    windowManagerSource: await read("src/helpers/windowManager.js"),
     ipcSource: await read("src/helpers/ipcHandlers.js"),
     preloadSource: await read("preload.js"),
     settingsSource: await read("src/settings.jsx"),

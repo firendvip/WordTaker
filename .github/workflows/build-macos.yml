@@ -123,8 +123,8 @@ jobs:
             echo "CFBundleVersion mismatch: $actual_build_version != $expected_version" >&2
             exit 1
           fi
-          scheme_count="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleURLTypes' "$plist" | grep -Fc 'wangsan-wordtaker')"
-          if [[ "$scheme_count" != "1" ]]; then
-            echo "Expected exactly one wangsan-wordtaker scheme, found $scheme_count" >&2
+          scheme_count="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleURLTypes' "$plist" 2>/dev/null | grep -Fc 'wangsan-wordtaker' || true)"
+          if [[ "$scheme_count" != "0" ]]; then
+            echo "Expected no wangsan-wordtaker scheme in the default package, found $scheme_count" >&2
             exit 1
           fi
