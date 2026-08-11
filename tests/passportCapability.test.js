@@ -47,10 +47,16 @@ describe("default-off Passport capability", () => {
     expect(ipcRenderer.invoke).not.toHaveBeenCalled();
     expect(ipcRenderer.on).not.toHaveBeenCalled();
 
+    expect(() => createPassportPreloadApi({ enabled: true, ipcRenderer: null }))
+      .toThrow(/ipcRenderer/i);
     const api = createPassportPreloadApi({ enabled: true, ipcRenderer });
     api.authPassportLogin();
     api.authPassportAccount();
-    const cleanup = api.onPassportAuthResult(() => undefined);
+    const callback = vi.fn();
+    const cleanup = api.onPassportAuthResult(callback);
+    const listener = ipcRenderer.on.mock.calls[0][1];
+    listener({}, { success: true });
+    expect(callback).toHaveBeenCalledWith({ success: true });
     cleanup();
     expect(ipcRenderer.invoke).toHaveBeenNthCalledWith(1, "auth-passport-login");
     expect(ipcRenderer.invoke).toHaveBeenNthCalledWith(2, "auth-passport-account");

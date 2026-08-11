@@ -2267,6 +2267,20 @@ describe("PassportAuthManager", () => {
     expect(refreshing.manager.loadJwks).not.toHaveBeenCalled();
   });
 
+  it("caches discovery signing keys until an explicit refresh is requested", async () => {
+    const context = fixture();
+    const discovered = await context.manager.loadDiscovery();
+    const first = await context.manager.loadJwks(discovered);
+    const cached = await context.manager.loadJwks(discovered);
+    expect(cached).toBe(first);
+    expect(context.fetchFn.mock.calls.filter(([url]) => url.endsWith("/discovered/jwks")))
+      .toHaveLength(1);
+
+    await context.manager.loadJwks(discovered, { force: true });
+    expect(context.fetchFn.mock.calls.filter(([url]) => url.endsWith("/discovered/jwks")))
+      .toHaveLength(2);
+  });
+
   it("runs scheduled refresh failure handling without leaking sensitive values", async () => {
     const scheduled = [];
     const context = fixture({
