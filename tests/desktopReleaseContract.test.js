@@ -147,7 +147,7 @@ function secureSnapshot(overrides = {}) {
       'target: "nsis"',
     ].join("\n"),
     candidateInstallerSource: [
-      '!include "installer.nsh"',
+      '!include "${BUILD_RESOURCES_DIR}\\installer.nsh"',
       "!macro customInstall",
       'WriteRegStr HKCU "Software\\Classes\\wangsan-wordtaker" "URL Protocol" ""',
       'WriteRegStr HKCU "Software\\Classes\\wangsan-wordtaker\\shell\\open\\command" ""',

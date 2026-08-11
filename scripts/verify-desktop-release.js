@@ -162,7 +162,7 @@ function validateDesktopReleaseSnapshot(snapshot) {
     );
   }
   if (!includesAll(snapshot.candidateInstallerSource, [
-    '!include "installer.nsh"',
+    '!include "${BUILD_RESOURCES_DIR}\\installer.nsh"',
     "!macro customInstall",
     "WriteRegStr HKCU",
     "Software\\Classes\\wangsan-wordtaker",
