@@ -266,6 +266,7 @@ describe("Passport to AIM stable mapping", () => {
     expect(context.passportAuthManager.ensureSessionReady).not.toHaveBeenCalled();
     expect(context.tokenStore.markPassportAimApiAccepted).not.toHaveBeenCalled();
     expect(context.passportAuthManager.invalidatePassportSession).not.toHaveBeenCalled();
+    expect(context.tokenStore.setLegacy).not.toHaveBeenCalled();
   });
 
   it("fails closed for a sensitive mapping proof when forced central verification fails", async () => {

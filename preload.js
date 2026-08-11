@@ -6,7 +6,10 @@ const {
 } = require("./src/helpers/passportCapability");
 
 const passportCapability = resolvePassportCapability({
-  isPackaged: process.env.NODE_ENV !== "development",
+  // Electron sets process.defaultApp only when running through the default
+  // development app. NODE_ENV is caller-controlled and must not decide whether
+  // a packaged preload exposes authentication channels.
+  isPackaged: process.defaultApp !== true,
   packageMetadata,
   environmentValue: process.env.WORDTAKER_PASSPORT_ENABLED,
 });

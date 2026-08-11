@@ -175,7 +175,7 @@ function createPassportAimMapper({
         : authProvider === "legacy" && businessAccount
           ? { ...businessAccount, authProvider: "legacy" }
           : businessAccount;
-      if (authProvider === "legacy" && legacy && account) {
+      if (allowPassport && authProvider === "legacy" && legacy && account) {
         if (!tokenStore.setLegacy({ accessToken: legacy.accessToken, account })) {
           return {
             success: false,

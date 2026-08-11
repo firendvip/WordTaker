@@ -14,6 +14,8 @@ const { PassportAuthManager } = require("../src/helpers/passportAuthManager.js")
 const PASSPORT_USER_ID = "b118e5a6-1258-4d1d-9e42-a25306d3085a";
 const CENTRAL_SESSION_ID = "f430586a-5aad-49a1-85f8-1bb4102f32a6";
 const NOW_MS = 1_800_000_000_000;
+const INITIAL_ACCESS_TOKEN = `opaque-access~${"A".repeat(43)}`;
+const REFRESHED_ACCESS_TOKEN = `opaque-access~${"B".repeat(43)}`;
 
 function jsonResponse(body, status = 200) {
   return {
@@ -200,14 +202,7 @@ function fixture({
       if (isRefresh) {
         refreshCalls += 1;
         return jsonResponse({
-          access_token: signedJwt(privateKey, {
-            ...base,
-            exp: now / 1000 + 900,
-            token_use: "access",
-            scope: REQUESTED_SCOPE,
-            sid: CENTRAL_SESSION_ID,
-            jti: "3793bbfa-7c55-47b4-adb3-cb95f47ef915",
-          }),
+          access_token: REFRESHED_ACCESS_TOKEN,
           refresh_token: `opaque-refresh~${"S".repeat(43)}`,
           token_type: "Bearer",
           expires_in: 900,
@@ -215,14 +210,7 @@ function fixture({
         });
       }
       return jsonResponse({
-        access_token: signedJwt(privateKey, {
-          ...base,
-          exp: now / 1000 + 900,
-          token_use: "access",
-          scope: REQUESTED_SCOPE,
-          sid: CENTRAL_SESSION_ID,
-          jti: "8cb4dcc4-8a53-4440-8a2e-b12103b55fde",
-        }),
+        access_token: INITIAL_ACCESS_TOKEN,
         id_token: signedJwt(privateKey, {
           ...base,
           exp: now / 1000 + 300,
@@ -862,9 +850,9 @@ describe("PassportAuthManager", () => {
     const [oldOutcome, readyOutcome] = await Promise.all([oldRefresh, sessionReady]);
     expect(oldOutcome.error).toMatchObject({ code: "AUTH_CANCELLED" });
     expect(requestsBeforeRelease).toBe(1);
-    expect(readyOutcome.value).toMatchObject({ provider: "passport" });
+    expect(readyOutcome.error).toMatchObject({ code: "AUTH_IN_PROGRESS" });
     expect(context.store.getPassport().refreshToken).toBe(`opaque-refresh~${"S".repeat(43)}`);
-    expect(context.getUserinfoCalls()).toBe(1);
+    expect(context.getUserinfoCalls()).toBe(0);
   });
 
   it("re-evaluates a settled stale refresh without reviving or replaying its family", async () => {
@@ -1080,6 +1068,39 @@ describe("PassportAuthManager", () => {
     });
   });
 
+  it("publishes a refreshed opaque access token only after userinfo proves the same subject", async () => {
+    const context = fixture();
+    await completeLogin(context);
+    const originalFetch = context.manager.fetchFn;
+    const userinfoEntered = deferred();
+    const releaseUserinfo = deferred();
+    let refreshStarted = false;
+    context.manager.fetchFn = vi.fn(async (url, options = {}) => {
+      const body = new URLSearchParams(options.body || "");
+      if (url.endsWith("/discovered/token") && body.get("grant_type") === "refresh_token") {
+        refreshStarted = true;
+      }
+      if (refreshStarted && url.endsWith("/discovered/userinfo")) {
+        userinfoEntered.resolve();
+        await releaseUserinfo.promise;
+      }
+      return originalFetch(url, options);
+    });
+
+    const refreshing = context.manager.refresh();
+    await userinfoEntered.promise;
+    expect(context.store.getPassport()).toMatchObject({
+      refreshToken: `opaque-refresh~${"S".repeat(43)}`,
+      accessToken: INITIAL_ACCESS_TOKEN,
+    });
+    releaseUserinfo.resolve();
+    await expect(refreshing).resolves.toMatchObject({ success: true, profileVerified: true });
+    expect(context.store.getPassport()).toMatchObject({
+      refreshToken: `opaque-refresh~${"S".repeat(43)}`,
+      accessToken: REFRESHED_ACCESS_TOKEN,
+    });
+  });
+
   it("does not let an older refresh cleanup clear a newer single-flight owner", async () => {
     const context = fixture({ storeOptions: { passport: seededPassport() } });
     const releaseOldRefresh = deferred();
@@ -1136,6 +1157,7 @@ describe("PassportAuthManager", () => {
     });
     expect(context.store.getPassport()).toMatchObject({
       refreshToken: `opaque-refresh~${"S".repeat(43)}`,
+      accessToken: "persisted-access-token",
     });
     expect(scheduled.some(({ delay }) => delay === 60_000)).toBe(true);
   });
@@ -1468,7 +1490,7 @@ describe("PassportAuthManager", () => {
       provider: "passport",
     });
     expect(context.getRefreshCalls()).toBe(1);
-    expect(context.store.getPassport()?.accessToken).toMatch(/^eyJ/);
+    expect(context.store.getPassport()?.accessToken).toBe(REFRESHED_ACCESS_TOKEN);
   });
 
   it("uses refresh userinfo as the forced profile proof instead of requesting it twice", async () => {
@@ -1782,7 +1804,7 @@ describe("PassportAuthManager", () => {
     await staleRejected;
     expect(context.store.getPassport()).toMatchObject({
       refreshToken: `opaque-refresh~${"S".repeat(43)}`,
-      accessToken: expect.stringMatching(/^eyJ/),
+      accessToken: REFRESHED_ACCESS_TOKEN,
     });
     expect(context.store.clearPassport).not.toHaveBeenCalled();
   });

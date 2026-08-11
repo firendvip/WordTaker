@@ -713,8 +713,9 @@ class PassportAuthManager {
         throw new PassportAuthError("INVALID_TOKEN_RESPONSE", "refresh token 未轮换");
       }
       // A refresh token is one-time. Persist its rotated successor immediately
-      // after the exact token endpoint returns a structurally valid response;
-      // JWKS/network verification below must never leave the consumed RT behind.
+      // after the token endpoint returns a structurally valid response. Keep the
+      // accompanying opaque access token private until userinfo proves that it
+      // still belongs to the established (issuer, sub).
       this.commitRefreshRotation(current, rotated.refreshToken);
       rotationCommitted = true;
       const passportUserId = current.account.passport_user_id;
@@ -728,32 +729,7 @@ class PassportAuthManager {
       ) {
         throw new PassportAuthError("AUTH_CANCELLED", "认证操作已取消");
       }
-      const rotatedSession = {
-        ...latest,
-        accessToken: rotated.accessToken,
-        expiresAt,
-        scope: rotated.scope,
-        centralSessionId: latest.centralSessionId,
-      };
-      // Commit the one-time refresh rotation before any secondary profile I/O.
-      // If userinfo is temporarily unavailable, the valid rotated family is
-      // still recoverable instead of leaving an already-consumed old RT on disk.
-      if (epoch === this.authEpoch) {
-        this.storePassportSession(rotatedSession, epoch);
-      } else {
-        // A newer browser transaction owns the epoch, but the old token call
-        // already consumed its RT. Commit only the verified access token while
-        // the exact rotated family and subject remain unchanged; never touch
-        // the newer pending transaction or overwrite a newly committed family.
-        if (this.tokenStore.setPassport(rotatedSession) !== true) {
-          throw new PassportAuthError(
-            "SECURE_STORAGE_REQUIRED",
-            "系统安全凭据存储不可用，无法保持统一登录",
-          );
-        }
-        throw new PassportAuthError("AUTH_CANCELLED", "认证操作已取消");
-      }
-      this.scheduleRefresh(expiresAt);
+      this.assertAuthEpoch(epoch);
       const profile = await this.fetchUserInfo(
         discovery,
         rotated.accessToken,
@@ -761,15 +737,24 @@ class PassportAuthManager {
       );
       this.assertAuthEpoch(epoch);
       const profiledSession = this.tokenStore.getPassport();
-      if (!profiledSession || profiledSession.account.passport_user_id !== passportUserId) {
+      if (
+        !profiledSession ||
+        profiledSession.refreshToken !== rotated.refreshToken ||
+        profiledSession.account.passport_user_id !== passportUserId
+      ) {
         throw new PassportAuthError("AUTH_CANCELLED", "认证操作已取消");
       }
       const account = this.accountForProfile(profile, profiledSession.account);
       this.storePassportSession({
         ...profiledSession,
+        accessToken: rotated.accessToken,
+        expiresAt,
+        scope: rotated.scope,
+        centralSessionId: profiledSession.centralSessionId,
         profileCheckedAt: now,
         account,
       }, epoch);
+      this.scheduleRefresh(expiresAt);
       this.scheduleProfileRecheck(now);
       const authState = this.tokenStore.getAuthState();
       const result = {
@@ -817,9 +802,10 @@ class PassportAuthManager {
         }
         await this.invalidatePassportSession();
       } else if (error?.retryable && this.tokenStore.getPassport()) {
-        // The rotated RT was already committed. Keep it and retry the profile
-        // proof without waiting until the next 13-minute access refresh.
-        this.scheduleProfileRecheck(0, true);
+        // The rotated RT was committed, but its opaque access token was never
+        // published. Retry the refresh family; a profile-only retry could only
+        // inspect the previous access token and would not prove the candidate.
+        this.scheduleRefresh(Number(this.now()) + REFRESH_EARLY_MS + REFRESH_RETRY_MS);
       }
       throw error;
     }

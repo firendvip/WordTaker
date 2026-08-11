@@ -39,6 +39,9 @@ describe("Electron passport integration contract", () => {
     expect(preload).toContain("createPassportPreloadApi");
     expect(`${preload}\n${capability}`).not.toMatch(/getAccessToken|getRefreshToken|getIdToken/);
     expect(`${preload}\n${capability}`).not.toContain("client_secret");
+    const capabilitySetup = preload.slice(0, preload.indexOf("// 暴露安全的API"));
+    expect(capabilitySetup).toContain("process.defaultApp !== true");
+    expect(capabilitySetup).not.toContain("process.env.NODE_ENV");
   });
 
   it("makes unified browser login primary while retaining clearly labelled legacy AIM fallback", () => {
