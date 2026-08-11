@@ -1,8 +1,8 @@
 import { useEffect, useRef } from "react";
+import { catHorizontalPosition, resolveCatMotion } from "../utils/recorderAnimation";
+import QuotaExhaustedBubble from "./QuotaExhaustedBubble";
 
 const K = "#1b1b1f";
-const VOICE_THR = 0.35;
-const HOLD = 1000;
 const ENTER_MS = 1400;
 const RETURN_MS = 800;
 const WALK_W = 0.022;
@@ -15,14 +15,24 @@ const RUN_SVG = `<svg width="32" height="23" viewBox="0 0 46 32" xmlns="http://w
 const SLEEP_SVG = `<svg width="36" height="20" viewBox="0 0 44 24" xmlns="http://www.w3.org/2000/svg" style="display:block"><path d="M38 16 C 42 14, 42 20, 37.5 18.5" fill="none" stroke="${K}" stroke-width="3.6" stroke-linecap="round"/><ellipse cx="24" cy="16" rx="15" ry="7.5" fill="${K}"/><circle cx="11" cy="15" r="7.5" fill="${K}"/><path d="M6 9 L8 4 L12 8 Z" fill="${K}"/><path d="M7.5 14.8 q1.4 1.4 2.8 0" fill="none" stroke="#FDE047" stroke-width="1" stroke-linecap="round"/><path d="M12.5 14.8 q1.3 1.2 2.6 0" fill="none" stroke="#FDE047" stroke-width="1" stroke-linecap="round"/></svg>`;
 function easeOut(t) { return 1 - (1 - t) * (1 - t); }
 
-export default function CatSkin({ micState, audioLevel = 0, isBusy = false }) {
+export default function CatSkin({
+  micState,
+  isBusy = false,
+  awake = false,
+  reducedMotion = false,
+  showQuotaExhaustedBubble = false,
+  onQuotaBubbleShown,
+  onQuotaBubbleDismiss,
+}) {
   const rootRef = useRef(null);
   const recRef = useRef(false);
-  const lvlRef = useRef(0);
   const busyRef = useRef(false);
+  const awakeRef = useRef(false);
+  const reducedMotionRef = useRef(false);
   useEffect(() => { recRef.current = micState === "recording"; }, [micState]);
-  useEffect(() => { lvlRef.current = audioLevel || 0; }, [audioLevel]);
   useEffect(() => { busyRef.current = !!isBusy; }, [isBusy]);
+  useEffect(() => { awakeRef.current = !!awake; }, [awake]);
+  useEffect(() => { reducedMotionRef.current = !!reducedMotion; }, [reducedMotion]);
 
   useEffect(() => {
     const root = rootRef.current;
@@ -43,7 +53,7 @@ export default function CatSkin({ micState, audioLevel = 0, isBusy = false }) {
     z1.style.left = (C + 8) + "px"; z1.style.top = "2px";
     z2.style.left = (C + 14) + "px"; z2.style.top = "0px";
 
-    let mode = "idle", x = C, wp = 0, t0 = performance.now(), xRet = C, lastVoice = 0, hasEntered = false, view = "";
+    let mode = "idle", x = C, wp = 0, t0 = performance.now(), xRet = C, hasEntered = false, view = "";
     function setView(v) {
       if (view === v) return; view = v;
       runWrap.style.display = v === "run" ? "block" : "none";
@@ -58,11 +68,26 @@ export default function CatSkin({ micState, audioLevel = 0, isBusy = false }) {
     let raf, cancelled = false;
     function frame(now) {
       if (cancelled) return;
-      const rec = recRef.current, busy = busyRef.current, lvl = lvlRef.current;
-      if (lvl > VOICE_THR) lastVoice = now;
-      const voice = now - lastVoice < HOLD;
-      const active = rec || busy;
-      const want = busy ? "process" : (active && voice ? "walk" : "rest");
+      const rec = recRef.current, busy = busyRef.current, awakeNow = awakeRef.current;
+      const active = awakeNow || rec || busy;
+      const want = resolveCatMotion({
+        isRecording: rec,
+        isBusy: busy,
+        reducedMotion: reducedMotionRef.current,
+      });
+
+      if (want === "static") {
+        showN(false);
+        if (active) {
+          setView("run");
+          x = C;
+          renderRun(1, 1);
+        } else {
+          setView("none");
+        }
+        raf = requestAnimationFrame(frame);
+        return;
+      }
 
       if (mode === "idle") {
         setView("none"); showN(false); x = C; hasEntered = false;
@@ -79,7 +104,7 @@ export default function CatSkin({ micState, audioLevel = 0, isBusy = false }) {
         else { mode = want === "rest" ? "settle" : want; t0 = now; xRet = x; }
       } else if (mode === "walk" || mode === "process") {
         if (!active || want === "rest") { mode = "settle"; t0 = now; xRet = x; showN(false); }
-        else { mode = want; showN(mode === "process"); wp += mode === "process" ? PROC_W : WALK_W; x = C + AMP * Math.sin(wp); renderRun(1, Math.cos(wp) >= 0 ? 1 : -1); if (mode === "process") notes.style.transform = `translateX(${x - 22}px)`; }
+        else { mode = want; showN(mode === "process"); wp += mode === "process" ? PROC_W : WALK_W; x = catHorizontalPosition({ center: C, amplitude: AMP, phase: wp }); renderRun(1, Math.cos(wp) >= 0 ? 1 : -1); if (mode === "process") notes.style.transform = `translateX(${x - 22}px)`; }
       } else if (mode === "settle") {
         if (active && want !== "rest") { mode = want; wp = 0; setView("run"); }
         else {
@@ -98,5 +123,14 @@ export default function CatSkin({ micState, audioLevel = 0, isBusy = false }) {
     return () => { cancelled = true; cancelAnimationFrame(raf); root.innerHTML = ""; };
   }, []);
 
-  return <div ref={rootRef} className="cat-skin" aria-hidden="true" />;
+  return (
+    <>
+      <div ref={rootRef} className="cat-skin" aria-hidden="true" />
+      <QuotaExhaustedBubble
+        visible={showQuotaExhaustedBubble}
+        onShown={onQuotaBubbleShown}
+        onDismiss={onQuotaBubbleDismiss}
+      />
+    </>
+  );
 }

@@ -931,18 +931,33 @@ function unregisterCancelKey() {
 // 避免 hide-recorder 与 fireCancel 两路重复执行 unregisterCancelKey / setupTranslateTrigger。
 // 含义：处理阶段(转写/润色)期间不会被调用，从而保持转英文停用 + 取消键注册，
 // 杜绝处理阶段误触转英文/取消导致胶囊被抢占或隐藏。
+function broadcastRecorderSessionState() {
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (!win.isDestroyed()) {
+      win.webContents.send('recorder-state-changed', { isRecording, isBusy });
+    }
+  }
+}
+
 function endSession() {
   if (!isBusy) return; // 幂等：已结束则直接返回
+  isRecording = false;
   isBusy = false;
   unregisterCancelKey();
   // 会话结束后重新挂回转英文触发器。
   try {
     setupTranslateTrigger();
   } catch (_) { /* 忽略 */ }
+  broadcastRecorderSessionState();
 }
 
 // 渲染层在录音开始/结束时通知主进程，用于按需注册/注销 Esc 取消键
 ipcMain.on('recorder-state', (event, recording) => {
+  const recorderContents = windowManager.mainWindow?.webContents;
+  if (recorderContents && event.sender.id !== recorderContents.id) {
+    logger.warn('忽略非录音主窗口发送的 recorder-state，防止控制面板覆盖会话状态');
+    return;
+  }
   // 记录录音状态：转英文键在录音中让位（见 handleTranslateHotkey）。
   isRecording = !!recording;
   if (recording) {
@@ -961,6 +976,18 @@ ipcMain.on('recorder-state', (event, recording) => {
     // 只把 isRecording 置 false；不在此 unregisterCancelKey、不在此重挂转英文。
     // 会话级清理统一交由 endSession()（在 hide-recorder / fireCancel 处调用）。
   }
+  broadcastRecorderSessionState();
+});
+
+ipcMain.handle('get-recorder-session-state', () => ({ isRecording, isBusy }));
+
+ipcMain.handle('set-quota-bubble-visible', (event, visible) => {
+  const recorderContents = windowManager.mainWindow?.webContents;
+  if (!recorderContents || event.sender.id !== recorderContents.id) {
+    return { success: false };
+  }
+  windowManager.setQuotaBubbleVisible(visible === true);
+  return { success: true };
 });
 
 // 初始化数据库：损坏/锁定等同步异常会在任何窗口出现前崩主进程，

@@ -82,6 +82,20 @@ contextBridge.exposeInMainWorld("electronAPI", {
   hideRecorder: () => ipcRenderer.invoke("hide-recorder"),
   // 通知主进程录音开始/结束（用于按需注册 Esc 取消键）
   setRecorderState: (recording) => ipcRenderer.send("recorder-state", recording),
+  getRecorderSessionState: () => ipcRenderer.invoke("get-recorder-session-state"),
+  onRecorderStateChanged: (callback) => {
+    const listener = (_event, state) => callback(state);
+    ipcRenderer.on("recorder-state-changed", listener);
+    return () => ipcRenderer.removeListener("recorder-state-changed", listener);
+  },
+  onRecorderWindowVisibilityChanged: (callback) => {
+    const listener = (_event, visible) => callback(visible);
+    ipcRenderer.on("recorder-window-visibility-changed", listener);
+    return () =>
+      ipcRenderer.removeListener("recorder-window-visibility-changed", listener);
+  },
+  setQuotaBubbleVisible: (visible) =>
+    ipcRenderer.invoke("set-quota-bubble-visible", Boolean(visible)),
   // 监听取消录音事件（Esc 触发）
   onCancelRecording: (callback) => {
     ipcRenderer.on("cancel-recording", callback);

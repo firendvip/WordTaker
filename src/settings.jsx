@@ -16,6 +16,12 @@ import {
   describeWakeTrigger,
   wakeTriggersEqual,
 } from "./utils/shortcutOptions";
+import { syncRuntimeDocumentTitle } from "./utils/appTitle";
+
+void syncRuntimeDocumentTitle({
+  getAppVersion: window.electronAPI?.getAppVersion,
+  documentRef: document,
+});
 
 const SettingsPage = () => {
   const [settings, setSettings] = useState({

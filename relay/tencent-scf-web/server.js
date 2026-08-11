@@ -12,6 +12,11 @@
 const http = require("http");
 const fs = require("fs");
 const path = require("path");
+const {
+  ACTIVE_MODES,
+  normalizeMode,
+  pickSystemPrompt: pickConfiguredSystemPrompt,
+} = require("./promptPolicy");
 
 const PORT = Number(process.env.PORT) || 9000;
 const DEFAULT_BASE_URL = "https://api.deepseek.com";
@@ -36,10 +41,9 @@ const HEARTBEAT_TIMEOUT_MS = 30000;
 // 的 gitignored 文件 prompts.local.json 读取，其内容是 JSON：
 //   {"copywriting":"...","gaoeq":"...","normal":"...","translate-en":"..."}
 // 该文件随函数代码一起部署，但不进公开仓库、不进客户端安装包。
-// 进程启动时解析一次；读取/解析失败一律降级为空映射，pickSystemPrompt 再回退到
-// 一段非机密的通用指令。（兼容兜底：文件缺失但仍设置了 PROMPTS_B64 时也尝试解码。）
-const GENERIC_FALLBACK_PROMPT =
-  "请把下面标记内的中文文本润色得通顺、准确，直接输出结果，不要解释。";
+// 进程启动时解析一次；读取/解析失败一律降级为空映射，promptPolicy 再按模式
+// 选择安全兜底。normal 不允许回退到更激进的 copywriting，以免静默改变用户原话。
+// （兼容兜底：文件缺失但仍设置了 PROMPTS_B64 时也尝试解码。）
 
 function loadPrompts() {
   try {
@@ -63,16 +67,15 @@ function loadPrompts() {
 
 const PROMPTS = loadPrompts();
 
-// 按请求的 mode 选择 system 提示；缺失时回退到 copywriting，仍缺失则回退到通用非机密指令。
+// 按请求的 mode 选择 system 提示。normal 会先校验“最小修改 + 防注入”契约；
+// 私有提示词缺失或不合格时使用公开安全兜底，绝不误用 copywriting。
 function pickSystemPrompt(mode) {
-  return PROMPTS[mode] || PROMPTS.copywriting || GENERIC_FALLBACK_PROMPT;
+  return pickConfiguredSystemPrompt(PROMPTS, mode);
 }
 
 // 当前对外提供的全部「活跃」模式，与 pickSystemPrompt 的分支一一对应。
 // 心跳保活会对这里的每个模式各发一次极小同前缀请求，预热 DeepSeek 的
 // 提示词缓存（prompt cache）；将来新增模式只需在此追加即可自动被保活。
-const ACTIVE_MODES = ["copywriting", "normal", "gaoeq", "translate-en"];
-
 // 词转词（word_map）约束。
 const WORD_MAP_MAX_ENTRIES = 200;
 const WORD_MAP_MAX_TERM_CHARS = 50;
@@ -275,7 +278,7 @@ async function handlePost(req, res, body) {
   // 已停用输入长度上限：任意长度文本都允许润色（去除长文本被 413 拦截后回退直贴原文的 BUG）。
 
   const wantStream = payload.stream === true;
-  const mode = typeof payload.mode === "string" ? payload.mode : "copywriting";
+  const mode = normalizeMode(payload.mode);
   const wordMap = sanitizeWordMap(payload.word_map);
   const baseUrl = env.DEEPSEEK_BASE_URL || DEFAULT_BASE_URL;
 

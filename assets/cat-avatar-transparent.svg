@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <title>弦外小猫透明背景头像</title>
+  <g fill="#1B1B1F">
+    <path d="M311,117 L515,340 L246,420 Z"/>
+    <path d="M712,117 L777,420 L508,340 Z"/>
+    <ellipse cx="511.5" cy="587" rx="336.5" ry="300"/>
+  </g>
+  <g fill="#F472B6" opacity="0.85">
+    <path d="M358,197 L429,289 L332,335 Z"/>
+    <path d="M665,197 L691,335 L594,289 Z"/>
+  </g>
+  <g>
+    <ellipse cx="396" cy="560.5" rx="71" ry="90.5" fill="#FDE047"/>
+    <ellipse cx="627" cy="560.5" rx="71" ry="90.5" fill="#FDE047"/>
+    <ellipse cx="405.5" cy="570" rx="25.5" ry="49" fill="#1B1B1F"/>
+    <ellipse cx="636.5" cy="570" rx="25.5" ry="49" fill="#1B1B1F"/>
+    <circle cx="379.5" cy="521.5" r="13.5" fill="#FFFFFF"/>
+    <circle cx="610.5" cy="521.5" r="13.5" fill="#FFFFFF"/>
+  </g>
+  <path d="M475,696 L548,696 L511.5,742 Z" fill="#F472B6"/>
+  <path d="M800.5,91 C805.5,146 825.5,206 922,213.5 C825.5,221 805.5,281 800.5,336 C795.5,281 775.5,221 679,213.5 C775.5,206 795.5,146 800.5,91 Z" fill="#FCD34D"/>
+</svg>

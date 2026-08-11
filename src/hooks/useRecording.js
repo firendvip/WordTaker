@@ -1,5 +1,6 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
 import { useModelStatus } from './useModelStatus';
+import { shouldSkipPolish } from '../utils/skipPolish';
 
 // 频谱声波：把音频频谱拆成 BAND_COUNT 个独立频段，驱动胶囊里每根柱子各自起伏。
 export const BAND_COUNT = 13;
@@ -490,10 +491,12 @@ export const useRecording = ({ onTranscriptionCompleteRef, onAIOptimizationCompl
                 (window.electronAPI.getAllSettings ? await window.electronAPI.getAllSettings() : null) || {};
               const getS = (k, d) => (_settings[k] !== undefined ? _settings[k] : d);
 
-              // 文案模式：识别后必走 LLM，贴"模型结果"；旧版优化模式作为兼容回退
-              let copywriting = getS('copywriting_mode_enabled', true);
-              let useAI = getS('enable_ai_optimization', true);
-              // 强制全部走 AI 润色：不再对短句静默跳过润色（每条转写都必须经过润色/替换）。
+              const copywriting = getS('copywriting_mode_enabled', true);
+              const useAI = getS('enable_ai_optimization', true);
+              const bypassShortText = shouldSkipPolish(raw_text);
+              if (bypassShortText) {
+                log('info', `短文本（${[...raw_text.trim()].length}字）跳过模型与提示词，直接使用转录原文`);
+              }
 
               let finalData = { ...transcriptionData };
               let emit;
@@ -522,7 +525,7 @@ export const useRecording = ({ onTranscriptionCompleteRef, onAIOptimizationCompl
                   });
               }
 
-              if (copywriting) {
+              if (!bypassShortText && copywriting) {
                 // —— 流式上屏由设置开关控制（默认关闭）：
                 //    仅当 llm_streaming_enabled 为 true 时才走流式(processTextStream，边生成边贴)；
                 //    关闭时走下方非流式主路径(processText)，拿到整段结果后一次性粘贴。——
@@ -674,7 +677,7 @@ export const useRecording = ({ onTranscriptionCompleteRef, onAIOptimizationCompl
                   };
                 }
                 } // end if(!streamed)
-              } else if (useAI) {
+              } else if (!bypassShortText && useAI) {
                 // —— 兼容：旧版可选润色 ——
                 let result = null;
                 try {

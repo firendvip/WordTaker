@@ -364,7 +364,7 @@ class LLMManager {
     }
   }
 
-  // 就绪后拉取后端下发的两个 mode 提示词并经 stdin 注入 llm_server。
+  // 就绪后拉取后端下发的各 mode 提示词并经 stdin 注入 llm_server。
   // 完全异步、best-effort：网络/后端不可用（离线、旧后端 404、超时）是常态，
   // 任何失败仅记 info/warn 并降级为 llm_server 内置精简提示词，绝不抛错到主流程。
   async _injectBackendPrompts(engine) {
@@ -378,7 +378,7 @@ class LLMManager {
       return;
     }
 
-    for (const mode of ["polish", "translate_en"]) {
+    for (const mode of ["normal", "polish", "translate_en"]) {
       try {
         const data = await backendClient.getLocalPrompt(mode);
         const prompt = data && typeof data.systemPrompt === "string" ? data.systemPrompt : "";

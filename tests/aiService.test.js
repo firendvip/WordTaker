@@ -7,15 +7,81 @@ const makeDB = (settings) => ({
 });
 
 describe("AiService.processTextWithAI", () => {
-  it("未配置中转且无 API key 时返回错误", async () => {
+  it("6 字及以下直接返回原文，不读取模型设置或调用模型", async () => {
+    const getSetting = vi.fn();
+    const fetchMock = vi.fn();
+    const llmManager = { polish: vi.fn() };
+    vi.stubGlobal("fetch", fetchMock);
+    const svc = new AiService({
+      databaseManager: { getSetting },
+      logger,
+      llmManager,
+    });
+
+    const r = await svc.processTextWithAI("嗯那个", "copywriting");
+
+    expect(r).toEqual({
+      success: true,
+      text: "嗯那个",
+      engine: "passthrough",
+    });
+    expect(getSetting).not.toHaveBeenCalled();
+    expect(llmManager.polish).not.toHaveBeenCalled();
+    expect(fetchMock).not.toHaveBeenCalled();
+    vi.unstubAllGlobals();
+  });
+
+  it("6 字及以下的流式请求同样原文直出，不调用模型", async () => {
+    const getSetting = vi.fn();
+    const onDelta = vi.fn();
+    const llmManager = { polish: vi.fn() };
+    const svc = new AiService({
+      databaseManager: { getSetting },
+      logger,
+      llmManager,
+    });
+
+    const r = await svc.processTextStreamRouted("一二三四五六", "normal", "", onDelta);
+
+    expect(r).toEqual({
+      success: true,
+      text: "一二三四五六",
+      engine: "passthrough",
+    });
+    expect(onDelta).toHaveBeenCalledOnce();
+    expect(onDelta).toHaveBeenCalledWith("一二三四五六");
+    expect(getSetting).not.toHaveBeenCalled();
+    expect(llmManager.polish).not.toHaveBeenCalled();
+  });
+
+  it("转英文不受短文本绕过规则影响", async () => {
+    const llmManager = {
+      polish: vi.fn(async () => ({ success: true, text: "hello" })),
+    };
+    const svc = new AiService({
+      databaseManager: makeDB({ polish_engine: "local-4b" }),
+      logger,
+      llmManager,
+    });
+
+    const r = await svc.processTextWithAI("你好", "translate-en");
+
+    expect(r).toEqual({ success: true, text: "hello", engine: "local-4b" });
+    expect(llmManager.polish).toHaveBeenCalledWith("local-4b", "你好", "translate-en", null);
+  });
+
+  it("云端不可用且未配置中转时返回明确错误", async () => {
     const svc = new AiService({
       databaseManager: makeDB({ polish_engine: "cloud", llm_relay_enabled: false, ai_api_key: "" }),
       logger,
     });
-    const r = await svc.processTextWithAI("你好", "copywriting");
+    const r = await svc.processViaRelayFallback(
+      "这是一条超过六字的文本",
+      "copywriting",
+      "云端不可用",
+    );
     expect(r.success).toBe(false);
-    // 严格只走云端中继：未配置 relay 时直接返回「未配置云端中继」错误（不再走直连 API key 分支）。
-    expect(r.error).toMatch(/中继|relay/i);
+    expect(r.error).toMatch(/云端服务暂不可用/);
   });
 
   it("启用中转时只发送 {text, mode} 并带访问令牌头", async () => {
@@ -35,7 +101,11 @@ describe("AiService.processTextWithAI", () => {
       }),
       logger,
     });
-    const r = await svc.processTextWithAI("那个我觉得不错", "copywriting");
+    const r = await svc.processTextViaRelay(
+      "那个我觉得不错",
+      "copywriting",
+      "https://relay.test",
+    );
 
     expect(r).toEqual({ success: true, text: "润色后的文本" });
     expect(fetchMock).toHaveBeenCalledTimes(1);
@@ -56,7 +126,7 @@ describe("AiService.processTextWithAI", () => {
       databaseManager: makeDB({ polish_engine: "cloud", llm_relay_enabled: true, llm_relay_url: "https://relay.test" }),
       logger,
     });
-    const r = await svc.processTextWithAI("hi", "copywriting");
+    const r = await svc.processTextWithAI("this is longer than six", "copywriting");
     expect(r.success).toBe(false);
     vi.unstubAllGlobals();
   });
@@ -73,7 +143,7 @@ describe("AiService.processTextWithAI", () => {
       llmManager,
     });
     const r = await svc.processTextWithAI("那个我我觉得可以", "copywriting");
-    expect(r).toEqual({ success: true, text: "本地润色结果" });
+    expect(r).toEqual({ success: true, text: "本地润色结果", engine: "local-4b" });
     expect(llmManager.polish).toHaveBeenCalledWith("local-4b", "那个我我觉得可以", "copywriting", null);
     // 无兜底：绝不因本地成功/失败而回退到中转
     expect(fetchMock).not.toHaveBeenCalled();
@@ -91,7 +161,7 @@ describe("AiService.processTextWithAI", () => {
       logger,
       llmManager,
     });
-    const r = await svc.processTextWithAI("hi", "copywriting");
+    const r = await svc.processTextWithAI("this is longer than six", "copywriting");
     expect(r.success).toBe(false);
     expect(fetchMock).not.toHaveBeenCalled();
     vi.unstubAllGlobals();

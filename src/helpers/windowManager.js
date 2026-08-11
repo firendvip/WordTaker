@@ -16,10 +16,13 @@ const PILL_WIDTH_PX = 180;
 const PILL_HEIGHT_DEFAULT_PX = 44;
 // 小黑猫皮肤（cat / catfx）高度：留出头顶空间让音符/ZZZ 完整可见。
 const PILL_HEIGHT_CAT_PX = 88;
+// 云端额度气泡展示时的临时高度：保证三行文案与关闭按钮不被透明窗口裁剪。
+const PILL_HEIGHT_CAT_QUOTA_PX = 132;
 
 // 给定皮肤对应的窗口高度。
-function pillHeightForSkin(skin) {
-  return skin === "catfx" || skin === "cat" ? PILL_HEIGHT_CAT_PX : PILL_HEIGHT_DEFAULT_PX;
+function pillHeightForSkin(skin, quotaBubbleVisible = false) {
+  if (skin !== "catfx" && skin !== "cat") return PILL_HEIGHT_DEFAULT_PX;
+  return quotaBubbleVisible ? PILL_HEIGHT_CAT_QUOTA_PX : PILL_HEIGHT_CAT_PX;
 }
 
 // 「跟随焦点」时读取焦点输入框 AX 位置/尺寸的超时（毫秒）：比窗口查询更短，
@@ -51,6 +54,8 @@ class WindowManager {
     this.historyWindow = null;
     this.settingsWindow = null;
     this.logger = logger;
+    this._pillSkin = "music";
+    this._quotaBubbleVisible = false;
     // 上次成功解析到的「焦点窗口所在屏」：osascript 超时/失败时复用它，
     // 而不是立刻回退到光标屏（否则胶囊会"跟随鼠标"）。
     this._lastFocusDisplay = null;
@@ -172,6 +177,11 @@ class WindowManager {
     return { icon: iconPath, autoHideMenuBar: true };
   }
 
+  _runtimeTitle() {
+    const version = String(app.getVersion() || "").trim();
+    return version ? `弦外小猫 ${version}` : "弦外小猫";
+  }
+
   async createMainWindow() {
     if (this.mainWindow) {
       this.mainWindow.focus();
@@ -187,6 +197,7 @@ class WindowManager {
     } catch (e) {
       // 读取失败按默认皮肤处理
     }
+    this._pillSkin = initialSkin;
 
     // 紧凑"胶囊"录音条：frameless + 透明 + 置顶 + 不抢焦点（避免抢走目标输入框的焦点导致粘贴失败）
     // backgroundColor 显式设全透明（#00000000）：BrowserWindow 默认背景是 #FFF，
@@ -194,7 +205,7 @@ class WindowManager {
     // 涂满整窗 → 表现为"白色横条"。显式全透明底可消除该白底回退，mac 行为不变。
     this.mainWindow = new BrowserWindow({
       width: PILL_WIDTH_PX,
-      height: pillHeightForSkin(initialSkin),
+      height: pillHeightForSkin(initialSkin, this._quotaBubbleVisible),
       frame: false,
       transparent: true,
       backgroundColor: "#00000000",
@@ -344,9 +355,10 @@ class WindowManager {
   // 按皮肤调整胶囊窗口高度：cat/catfx 用 88px（头顶特效完整可见），其它用 44px。
   // 改尺寸后重新底部居中定位，保持底边距屏底恒定（公式用当前高度，故底边不变）。
   setPillHeightForSkin(skin) {
+    this._pillSkin = skin || "music";
     if (!this.mainWindow || this.mainWindow.isDestroyed()) return;
     try {
-      const h = pillHeightForSkin(skin);
+      const h = pillHeightForSkin(this._pillSkin, this._quotaBubbleVisible);
       const [, curH] = this.mainWindow.getSize();
       if (curH === h) return;
       this.mainWindow.setSize(PILL_WIDTH_PX, h);
@@ -355,6 +367,11 @@ class WindowManager {
     } catch (error) {
       // 调整失败不影响录音
     }
+  }
+
+  setQuotaBubbleVisible(visible) {
+    this._quotaBubbleVisible = visible === true;
+    this.setPillHeightForSkin(this._pillSkin);
   }
 
   // 纯函数：把窗口矩形夹紧到 workArea 内（四边都不出界）。返回一个全新的矩形对象，不改入参。
@@ -608,6 +625,7 @@ class WindowManager {
     }
     try {
       this.mainWindow.showInactive();
+      this.mainWindow.webContents.send("recorder-window-visibility-changed", true);
     } catch (e) {
       // 忽略
     }
@@ -626,6 +644,8 @@ class WindowManager {
   hideMainWindow() {
     if (this.mainWindow && !this.mainWindow.isDestroyed()) {
       try {
+        this.mainWindow.webContents.send("recorder-window-visibility-changed", false);
+        this.setQuotaBubbleVisible(false);
         this.mainWindow.hide();
       } catch (e) {
         // 忽略
@@ -643,6 +663,7 @@ class WindowManager {
       width: 800,
       height: 600,
       show: false,
+      title: this._runtimeTitle(),
       ...this._winIconOption(),
       webPreferences: {
         nodeIntegration: false,
@@ -654,7 +675,6 @@ class WindowManager {
     this._wireRendererDiagnostics(this.controlPanelWindow, "controlPanel");
 
     const isDev = process.env.NODE_ENV === "development";
-
     if (isDev) {
       await this.controlPanelWindow.loadURL("http://localhost:5173?panel=control");
     } else {
@@ -681,7 +701,7 @@ class WindowManager {
       width: 1000,
       height: 700,
       show: false,
-      title: "",
+      title: this._runtimeTitle(),
       alwaysOnTop: true,
       ...this._winIconOption(),
       webPreferences: {
@@ -722,7 +742,7 @@ class WindowManager {
       width: 700,
       height: 600,
       show: false,
-      title: "",
+      title: this._runtimeTitle(),
       alwaysOnTop: true,
       ...this._winIconOption(),
       webPreferences: {

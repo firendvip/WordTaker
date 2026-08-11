@@ -9,6 +9,8 @@ import {
 } from "lucide-react";
 import CatSkin from "./CatSkin";
 import CatSkinFx from "./CatSkinFx";
+import { usePrefersReducedMotion } from "../hooks/usePrefersReducedMotion";
+import { voiceInkBarHeight } from "../utils/recorderAnimation";
 
 // 静音 / 录音：胶囊中部一行轻柔“呼吸”的彩色音符（音量越大整行越淡）
 const ROW_GLYPHS = ['♪','♫','♬','♩','♫','♪','♬'];
@@ -49,14 +51,19 @@ export function RecorderPill({
   hotkeyLabel,
   translateState = "idle",
   pillSkin = "music",
+  catAwake = false,
   showPolishBubble = false,
   polishCharCount = 0,
+  showQuotaExhaustedBubble = false,
+  onQuotaBubbleShown,
+  onQuotaBubbleDismiss,
   disabled,
   onToggle,
   onOpenSettings,
   onOpenHistory,
   onDownloadModels,
 }) {
+  const reducedMotion = usePrefersReducedMotion();
   // 假进度条：快速冲到前段，再减速逼近 ~90%，完成时直接补满到 100%
   const [translateProgress, setTranslateProgress] = useState(0);
   useEffect(() => {
@@ -74,7 +81,6 @@ export function RecorderPill({
   // VoiceInk 15-bar 可视化：用 ref 直接写 DOM 高度，避免每帧 setState
   const vkBarsRef = useRef([]);          // array of 15 span refs
   const vkLevelRef = useRef(0);
-  const vkRecordingRef = useRef(false);
   const breatheRowRef = useRef(null);    // music 皮肤呼吸音符行容器（rAF 写入 --amp）
   const pillRootRef = useRef(null);      // 胶囊根容器：用于「出现」时的轻微淡入
   useEffect(() => { vkLevelRef.current = audioLevel || 0; }, [audioLevel]);
@@ -96,8 +102,6 @@ export function RecorderPill({
     document.addEventListener("visibilitychange", play);
     return () => document.removeEventListener("visibilitychange", play);
   }, []);
-  useEffect(() => { vkRecordingRef.current = micState === "recording"; }, [micState]);
-
   // music 皮肤音符上下晃动：用 rAF 缓动写入 --amp，突发/断续声音时幅度平滑过渡不抖
   const isRecordingForMusic = micState === "recording";
   useEffect(() => {
@@ -115,32 +119,39 @@ export function RecorderPill({
     raf = requestAnimationFrame(tick);
     return () => { cancelled = true; if (raf) cancelAnimationFrame(raf); if (breatheRowRef.current) breatheRowRef.current.style.setProperty('--amp','0px'); };
   }, [pillSkin, isRecordingForMusic]);
+  const isRecordingForVoiceInk = micState === "recording";
   useEffect(() => {
     if (pillSkin !== 'voiceink') return;
-    let raf, cancelled = false;
-    const tick = () => {
-      if (cancelled) return;
-      const t = performance.now() / 1000;
-      const lvl = Math.min(1, Math.max(0, vkLevelRef.current));
-      const amp = Math.pow(lvl, 0.7);
+
+    const renderBars = (timeSeconds) => {
       for (let i = 0; i < 15; i++) {
         const el = vkBarsRef.current[i];
         if (!el) continue;
-        let h;
-        if (vkRecordingRef.current) {
-          const wave = Math.sin(t * 8 + i * 0.4) * 0.5 + 0.5;
-          const centerBoost = 1 - (Math.abs(i - 7) / 7) * 0.4;
-          h = 4 + amp * wave * centerBoost * 14;   // 4..18px
-        } else {
-          h = 4;                                    // idle flat
-        }
-        el.style.height = `${h.toFixed(1)}px`;
+        const height = voiceInkBarHeight({
+          index: i,
+          timeSeconds,
+          level: vkLevelRef.current,
+          isRecording: isRecordingForVoiceInk,
+          reducedMotion,
+        });
+        el.style.height = `${height.toFixed(1)}px`;
       }
+    };
+
+    // 停止录音立即归零；减少动态效果时保留静态录音轮廓，不启动持续帧循环。
+    renderBars(0);
+    if (!isRecordingForVoiceInk || reducedMotion) return;
+
+    let raf;
+    let cancelled = false;
+    const tick = () => {
+      if (cancelled) return;
+      renderBars(performance.now() / 1000);
       raf = requestAnimationFrame(tick);
     };
     raf = requestAnimationFrame(tick);
     return () => { cancelled = true; if (raf) cancelAnimationFrame(raf); };
-  }, [pillSkin]);
+  }, [pillSkin, isRecordingForVoiceInk, reducedMotion]);
 
   const isTranslating = translateState === "translating";
   const isTranslateActive = isTranslating || translateState === "done";
@@ -198,13 +209,28 @@ export function RecorderPill({
         micState={micState}
         audioLevel={audioLevel}
         isBusy={isBusy}
+        awake={catAwake}
+        reducedMotion={reducedMotion}
         showPolishBubble={showPolishBubble}
         polishCharCount={polishCharCount}
+        showQuotaExhaustedBubble={showQuotaExhaustedBubble}
+        onQuotaBubbleShown={onQuotaBubbleShown}
+        onQuotaBubbleDismiss={onQuotaBubbleDismiss}
       />
     );
   }
   if (pillSkin === "cat") {
-    return <CatSkin micState={micState} audioLevel={audioLevel} isBusy={isBusy} />;
+    return (
+      <CatSkin
+        micState={micState}
+        isBusy={isBusy}
+        awake={catAwake}
+        reducedMotion={reducedMotion}
+        showQuotaExhaustedBubble={showQuotaExhaustedBubble}
+        onQuotaBubbleShown={onQuotaBubbleShown}
+        onQuotaBubbleDismiss={onQuotaBubbleDismiss}
+      />
+    );
   }
 
   return (

@@ -4,6 +4,7 @@ const AiService = require("./aiService");
 const {
   isTrustedSettingsUrl,
 } = require("./passportDesktopPolicy");
+const { shouldSkipPolish } = require("../utils/shortTextPolicy.cjs");
 
 // 已停用 IPC 硬超时兜底：长语音转写润色可能耗时较久，硬超时会把长文本的润色请求
 // 提前中断并回退直贴原文（已确诊 BUG）。按用户要求去除该时间兜底，直接 await
@@ -185,6 +186,9 @@ class IPCHandlers {
       if (typeof text !== 'string' || !text.trim()) {
         return { success: false, error: '无有效文本' };
       }
+      if (mode !== 'translate-en' && shouldSkipPolish(text)) {
+        return { success: true, text, engine: 'passthrough' };
+      }
       // 润色模式（copywriting）按当前「角色」解析：normal→normal / gaoeq→gaoeq / vibecoding→copywriting。
       // 其它模式（如 optimize）保持原样透传。
       const effectiveMode = mode === 'copywriting' ? await this.aiService.getPolishMode() : mode;
@@ -284,6 +288,16 @@ class IPCHandlers {
     // 流式润色 + 增量上屏：边收边贴到光标处。返回 { success, text, pastedAny }
     ipcMain.handle("process-text-stream", async (event, text) => {
       if (typeof text !== "string" || !text.trim()) return { success: false, error: "无有效文本", pastedAny: false };
+      if (shouldSkipPolish(text)) {
+        return {
+          success: false,
+          text,
+          engine: "passthrough",
+          reason: "short_text_bypass",
+          code: "short-text-bypass",
+          pastedAny: false,
+        };
+      }
       // 不再做长度上限拦截：任意长度文本都允许走流式润色。
       // 流式上屏受设置开关控制（防御性）：llm_streaming_enabled 为 false 时返回明确的
       // streaming-unavailable。正常情况下渲染层关闭开关时也不会调用本 handler。

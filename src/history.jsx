@@ -1,57 +1,13 @@
 import React from "react";
 import { createRoot } from "react-dom/client";
 import "./index.css";
+import { formatAiOptimizeLabel } from "./utils/historyPerformance";
+import { syncRuntimeDocumentTitle } from "./utils/appTitle";
 
-// 毫秒 → 秒字符串：精确到小数点后 2 位，第 3 位起直接截断(floor，不四舍五入)。
-// 219ms→"0.21"、200ms→"0.20"。
-const formatPolishDuration = (ms) => (Math.floor(ms / 10) / 100).toFixed(2);
-
-// 润色引擎 → 展示名（标明由哪个模型优化）。
-const POLISH_ENGINE_LABELS = {
-  cloud: "云端AI",
-  "local-4b": "本地模型",
-};
-
-// 「AI优化」标题：
-//  - 有 polish_engine → 前缀标明模型「AI优化·<模型>」；老记录无引擎 → 仅「AI优化」。
-//  - 无 polish_duration_ms（老记录/未走润色）→ 只到前缀，不带指标。
-//  - 有耗时 → 追加「 X字/秒，总耗时：Y秒」；X = 润色输出字数 ÷ 总耗时(秒)，取整数。
-//    润色输出字数 = 最终展示的润色结果文本(processed_text)的字符数（按码点计）。
-//  - 若为流式记录（polish_first_char_ms 非空）→ 再追加「，流式上屏首字：Z秒」。
-const aiOptimizeLabel = (item) => {
-  const engineLabel = POLISH_ENGINE_LABELS[item?.polish_engine];
-  let label = engineLabel ? `AI优化·${engineLabel}` : "AI优化";
-
-  const ms = item?.polish_duration_ms;
-  if (!Number.isFinite(ms) || ms <= 0) return label;
-
-  const totalSec = ms / 1000;
-  const outText = item?.processed_text || "";
-  const charCount = [...outText].length;
-  const cps = Math.round(charCount / totalSec);
-
-  label += ` ${cps}字/秒，总耗时：${formatPolishDuration(ms)}秒`;
-
-  const firstMs = item?.polish_first_char_ms;
-  if (Number.isFinite(firstMs)) {
-    label += `，流式上屏首字：${formatPolishDuration(firstMs)}秒`;
-  }
-  return label;
-};
-
-// 端到端字/秒：从「录音结束」到「整段文本真正粘贴落屏」的总耗时算出的吞吐，
-// 作为端到端提速的度量基线，与「AI优化字/秒」并列展示、不替换。
-//  - 字数 = 最终落屏文本(processed_text，无则回退 raw_text/text)的码点数。
-//  - 老记录无 e2e_total_ms（或为 0）→ 返回 null，界面优雅降级、不显示。
-const e2eThroughputLabel = (item) => {
-  const ms = item?.e2e_total_ms;
-  if (!Number.isFinite(ms) || ms <= 0) return null;
-  const text = item?.processed_text || item?.raw_text || item?.text || '';
-  const chars = [...text].length;
-  if (chars <= 0) return null;
-  const cps = Math.round(chars / (ms / 1000));
-  return `端到端 ${cps} 字/秒（总 ${formatPolishDuration(ms)} 秒）`;
-};
+void syncRuntimeDocumentTitle({
+  getAppVersion: window.electronAPI?.getAppVersion,
+  documentRef: document,
+});
 
 // 历史记录页面组件
 const HistoryPage = () => {
@@ -358,11 +314,6 @@ const HistoryContent = ({ onCopy }) => {
                           置信度: {Math.round(item.confidence * 100)}%
                         </span>
                       )}
-                      {e2eThroughputLabel(item) && (
-                        <span className="bg-blue-50 dark:bg-blue-900/20 text-blue-600 dark:text-blue-300 px-2 py-0.5 rounded-md text-xs">
-                          {e2eThroughputLabel(item)}
-                        </span>
-                      )}
                     </div>
                     <div className="flex space-x-1.5">
                       <button
@@ -392,7 +343,7 @@ const HistoryContent = ({ onCopy }) => {
                   {/* AI优化（放在上面） */}
                   {item.processed_text && item.processed_text.trim() !== (item.raw_text || item.text || '').trim() && (
                     <div className="mb-4">
-                      <h4 className="text-[13px] font-medium text-gray-500 dark:text-gray-400 mb-2">{aiOptimizeLabel(item)}</h4>
+                      <h4 className="text-[13px] font-medium text-gray-500 dark:text-gray-400 mb-2">{formatAiOptimizeLabel(item)}</h4>
                       <p className="chinese-content leading-relaxed bg-gray-50 dark:bg-neutral-800/40 p-4 rounded-xl border border-gray-100 dark:border-neutral-700/30 text-gray-800 dark:text-gray-100">
                         {item.processed_text}
                       </p>

@@ -11,9 +11,32 @@ import { usePermissions } from "./hooks/usePermissions";
 import { Mic, MicOff, Settings, History, Copy, Download } from "lucide-react";
 import RecorderPill from "./components/RecorderPill";
 import { playWake, playEnd, warmupAudio } from "./utils/sounds";
+import {
+  resolveRecorderMicState,
+  shouldShowCat,
+} from "./utils/recorderAnimation";
+import {
+  readQuotaReminderTimestamp,
+  shouldShowQuotaExhaustedReminder,
+  writeQuotaReminderTimestamp,
+} from "./utils/quotaReminder";
+import { syncRuntimeDocumentTitle } from "./utils/appTitle";
+
+void syncRuntimeDocumentTitle({
+  getAppVersion: window.electronAPI?.getAppVersion,
+  documentRef: document,
+});
 
 // 动态导入设置页面组件
 const SettingsPage = React.lazy(() => import('./settings.jsx').then(module => ({ default: module.SettingsPage })));
+
+function getReminderStorage() {
+  try {
+    return window.localStorage;
+  } catch {
+    return null;
+  }
+}
 
 // 顶层路由：在调用任何 hooks 之前就分流。设置页与录音页各自是独立组件，
 // 各自无条件地在顶部调用自己的 hooks，杜绝"条件性调用 hooks"（HOOK-1）。
@@ -41,6 +64,7 @@ export default function App() {
 
 // 录音主界面（悬浮胶囊）：所有录音相关 hooks 都在这里无条件、按固定顺序调用。
 function RecorderApp() {
+  const isControlPanel = new URLSearchParams(window.location.search).get('panel') === 'control';
   const [isHovered, setIsHovered] = useState(false);
   const [originalText, setOriginalText] = useState("");
   const [processedText, setProcessedText] = useState("");
@@ -50,6 +74,113 @@ function RecorderApp() {
   const [pillSkin, setPillSkin] = useState('music'); // music | voiceink
   const [polishActive, setPolishActive] = useState(false); // 长润色：是否正在生成
   const [polishCharCount, setPolishCharCount] = useState(0); // 长润色：累计已生成字符数
+  const [sharedIsRecording, setSharedIsRecording] = useState(false);
+  const [sharedIsBusy, setSharedIsBusy] = useState(false);
+  const [recorderWindowVisible, setRecorderWindowVisible] = useState(false);
+  const [quotaBubblePending, setQuotaBubblePending] = useState(false);
+  const [quotaBubbleDismissed, setQuotaBubbleDismissed] = useState(false);
+  const [quotaBubbleWasShown, setQuotaBubbleWasShown] = useState(false);
+  const quotaCheckStartedRef = useRef(false);
+  const quotaReminderRecordedRef = useRef(false);
+  const recorderAppAliveRef = useRef(true);
+
+  useEffect(() => {
+    recorderAppAliveRef.current = true;
+    return () => {
+      recorderAppAliveRef.current = false;
+    };
+  }, []);
+
+  // BrowserWindow 隐藏时页面仍保持挂载；只在主录音窗口真正显示后检查一次额度，
+  // 避免把“DOM 已挂载”误当成用户实际看到了提醒。
+  useEffect(() => {
+    if (isControlPanel) return undefined;
+    const off = window.electronAPI?.onRecorderWindowVisibilityChanged?.((visible) => {
+      setRecorderWindowVisible(Boolean(visible));
+    });
+    return () => {
+      if (typeof off === "function") off();
+    };
+  }, [isControlPanel]);
+
+  useEffect(() => {
+    if (
+      isControlPanel ||
+      !recorderWindowVisible ||
+      quotaCheckStartedRef.current
+    ) {
+      return;
+    }
+    quotaCheckStartedRef.current = true;
+    const api = window.electronAPI;
+    Promise.resolve()
+      .then(() => api?.getCloudQuota?.())
+      .then((result) => {
+        if (!recorderAppAliveRef.current) return;
+        const requestFailed = !result?.success;
+        const lastShownAt = readQuotaReminderTimestamp(getReminderStorage());
+        setQuotaBubblePending(
+          shouldShowQuotaExhaustedReminder({
+            cloudRemaining: requestFailed ? null : result.cloudRemaining,
+            lastShownAt,
+            now: Date.now(),
+            loading: false,
+            requestFailed,
+          }),
+        );
+      })
+      .catch((error) => {
+        window.electronAPI?.log?.(
+          "warn",
+          `查询云端额度提醒失败: ${error?.message || error}`,
+        );
+      });
+  }, [isControlPanel, recorderWindowVisible]);
+
+  const markQuotaReminder = useCallback((event) => {
+    if (event === "shown" && quotaReminderRecordedRef.current) return;
+    const storedAt = writeQuotaReminderTimestamp(
+      getReminderStorage(),
+      event,
+      Date.now(),
+    );
+    if (storedAt !== null) quotaReminderRecordedRef.current = true;
+    if (event === "shown") setQuotaBubbleWasShown(true);
+  }, []);
+
+  const dismissQuotaBubble = useCallback((reason) => {
+    markQuotaReminder(reason === "dismissed" ? "dismissed" : "shown");
+    setQuotaBubbleDismissed(true);
+  }, [markQuotaReminder]);
+
+  const handleQuotaBubbleShown = useCallback(() => {
+    markQuotaReminder("shown");
+  }, [markQuotaReminder]);
+
+  // 控制面板只镜像主录音窗口的会话状态；它不能用自己的空闲 hook 覆盖主进程状态。
+  useEffect(() => {
+    if (!isControlPanel) return undefined;
+    let active = true;
+    const api = window.electronAPI;
+    const applySharedState = (state) => {
+      if (!active) return;
+      setSharedIsRecording(Boolean(state?.isRecording));
+      setSharedIsBusy(Boolean(state?.isBusy));
+    };
+    const initialState = api?.getRecorderSessionState?.();
+    if (initialState && typeof initialState.then === 'function') {
+      initialState
+        .then(applySharedState)
+        .catch((error) => api?.log?.('warn', `读取共享录音状态失败: ${error?.message || error}`));
+    }
+    const off = api?.onRecorderStateChanged?.((state) => {
+      applySharedState(state);
+    });
+    return () => {
+      active = false;
+      if (typeof off === 'function') off();
+    };
+  }, [isControlPanel]);
 
   // 读取胶囊皮肤初始值（沿用现有 getSetting 模式）
   useEffect(() => {
@@ -235,14 +366,14 @@ function RecorderApp() {
 
   // 录音状态上报主进程（用于按需注册 Esc 取消键）
   useEffect(() => {
-    if (window.electronAPI && window.electronAPI.setRecorderState) {
+    if (!isControlPanel && window.electronAPI && window.electronAPI.setRecorderState) {
       window.electronAPI.setRecorderState(isRecording);
     }
     // 录音一开始就预热 LLM 连接，与说话时间重叠，省去后续请求的握手
     if (isRecording) {
       window.electronAPI?.prewarmLLM?.();
     }
-  }, [isRecording]);
+  }, [isControlPanel, isRecording]);
 
   // 唤起/结束提示音：按键瞬时反馈。
   // 旧实现挂在 isRecording 状态变化的 effect 上——开始音要等 getUserMedia+MediaRecorder
@@ -459,9 +590,6 @@ function RecorderApp() {
   // 注册传统热键监听 - 只在主窗口注册，避免重复
   useEffect(() => {
     // 检查是否为控制面板窗口
-    const urlParams = new URLSearchParams(window.location.search);
-    const isControlPanel = urlParams.get('panel') === 'control';
-    
     // 只有主窗口才注册热键
     if (isControlPanel) {
       window.electronAPI?.log?.('info', '控制面板窗口，跳过热键注册');
@@ -473,7 +601,7 @@ function RecorderApp() {
     //  - 普通组合键经 Electron globalShortcut
     // 渲染层只需监听 'hotkey-triggered' 事件并 toggle 录音，避免重复注册造成冲突。
     window.electronAPI?.log?.('info', '录音触发键由主进程管理，渲染层仅监听 hotkey-triggered');
-  }, []);
+  }, [isControlPanel]);
 
   // 处理关闭窗口
   const handleClose = () => {
@@ -526,10 +654,10 @@ function RecorderApp() {
 
   // 同步录音状态到热键管理器
   useEffect(() => {
-    if (syncRecordingState) {
+    if (!isControlPanel && syncRecordingState) {
       syncRecordingState(isRecording);
     }
-  }, [isRecording, syncRecordingState]);
+  }, [isControlPanel, isRecording, syncRecordingState]);
 
   // 监听键盘事件
   useEffect(() => {
@@ -557,20 +685,44 @@ function RecorderApp() {
   }, [textProcessingError]);
 
   // 确定当前麦克风状态
-  const getMicState = () => {
-    if (isRecording) return "recording";
-    if (isRecordingProcessing) return "processing";
-    if (isOptimizing) return "optimizing";
-    if (isHovered && !isRecording && !isRecordingProcessing && !isOptimizing) return "hover";
-    return "idle";
-  };
-
-  const micState = getMicState();
-  const isListening = isRecording || isRecordingProcessing;
+  const micState = resolveRecorderMicState({
+    isControlPanel,
+    localIsRecording: isRecording,
+    sharedIsRecording,
+    sharedIsBusy,
+    isProcessing: isRecordingProcessing,
+    isOptimizing,
+    isHovered,
+  });
   // 进入润色阶段即准备显示头顶进度气泡（开启/关闭流式均适用）。
   // 关闭流式=整体粘贴时也能显示"生成中…"的不确定提示（无字数）；
   // 开启流式时 onPolishProgress 会更新 polishCharCount，气泡显示"已生成 N 字"。
   const showPolishBubble = micState === 'optimizing';
+  const isCatSkin = pillSkin === "catfx" || pillSkin === "cat";
+  const showCat = shouldShowCat({
+    recorderWindowVisible,
+    micState,
+  });
+  const showQuotaExhaustedBubble =
+    quotaBubblePending &&
+    !quotaBubbleDismissed &&
+    recorderWindowVisible &&
+    isCatSkin;
+
+  useEffect(() => {
+    window.electronAPI?.setQuotaBubbleVisible?.(showQuotaExhaustedBubble);
+    return () => {
+      if (showQuotaExhaustedBubble) {
+        window.electronAPI?.setQuotaBubbleVisible?.(false);
+      }
+    };
+  }, [showQuotaExhaustedBubble]);
+
+  useEffect(() => {
+    if (!showQuotaExhaustedBubble && quotaBubbleWasShown) {
+      setQuotaBubbleDismissed(true);
+    }
+  }, [quotaBubbleWasShown, showQuotaExhaustedBubble]);
 
   // 获取麦克风按钮属性
   const getMicButtonProps = () => {
@@ -644,10 +796,14 @@ function RecorderApp() {
       hotkeyLabel={triggerLabel}
       translateState={translatePhase}
       pillSkin={pillSkin}
+      catAwake={showCat}
       showPolishBubble={showPolishBubble}
       polishCharCount={polishCharCount}
-      disabled={micProps.disabled}
-      onToggle={toggleRecording}
+      showQuotaExhaustedBubble={showQuotaExhaustedBubble}
+      onQuotaBubbleShown={handleQuotaBubbleShown}
+      onQuotaBubbleDismiss={dismissQuotaBubble}
+      disabled={isControlPanel || micProps.disabled}
+      onToggle={isControlPanel ? undefined : toggleRecording}
       onOpenSettings={handleOpenSettings}
       onOpenHistory={handleOpenHistory}
       onDownloadModels={handleDownloadModels}

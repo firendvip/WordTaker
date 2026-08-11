@@ -6,6 +6,10 @@
 // 已去除「请求时间超时主动 abort」兜底（按用户要求）：长语音转写润色可能耗时较久，
 // 时间超时 abort 会把长文本润色请求中途中断并回退直贴原文（已确诊 BUG）。
 // 现在不再因时间到而中断请求；仍保留对瞬时错误(429/5xx)与网络异常的重试。
+const {
+  shouldSkipPolish,
+} = require('../utils/shortTextPolicy.cjs');
+
 async function fetchNoTimeout(url, options = {}) {
   return await fetch(url, options);
 }
@@ -336,6 +340,11 @@ class AiService {
   }
 
   async processTextStreamRouted(text, mode, relayUrl, onDelta) {
+    if (mode !== 'translate-en' && shouldSkipPolish(text)) {
+      this.logger.info('短文本跳过模型处理:', { inputLength: [...text.trim()].length });
+      if (typeof onDelta === 'function') onDelta(text);
+      return this._passthroughResult(text);
+    }
     const engine = await this.getPolishEngine();
     if (engine === 'cloud') {
       // 未登录也可用云端：backendClient 匿名带 X-Device-Id（设备赠送额度），不做登录前置拦截。
@@ -404,6 +413,10 @@ class AiService {
   //   local-*   → 本地 LLM（llmManager）
   // 所选引擎失败一律返回 { success:false, error }，绝不回退到其它引擎或云端。
   async processTextWithAI(text, mode = 'optimize') {
+    if (mode !== 'translate-en' && shouldSkipPolish(text)) {
+      this.logger.info('短文本跳过模型处理:', { inputLength: [...text.trim()].length });
+      return this._passthroughResult(text);
+    }
     const engine = await this.getPolishEngine();
     if (engine === 'cloud') {
       // 未登录也可用云端：backendClient 匿名带 X-Device-Id（设备赠送额度），不做登录前置拦截。

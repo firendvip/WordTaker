@@ -159,8 +159,8 @@ class DatabaseManager {
       cancel_key: 'Escape',
       // 取消键为裸修饰键时的连击次数（加速键如 Esc 时忽略此值）
       cancel_taps: 1,
-      // 短句优化：识别结果 ≤ 该字数且干净时，跳过润色直接贴原文（0=关闭）
-      skip_polish_max_chars: 10,
+      // 短文本规则：识别结果 ≤ 6 字时固定跳过模型，保留此键仅兼容已有设置数据。
+      skip_polish_max_chars: 6,
       // 润色「角色」：normal（默认，常规改写）/ vibecoding（走 llm_prompt_template）/ gaoeq（高情商改写）
       llm_active_role: 'normal',
       // 「转英文」全局触发键：新装默认「无」（关闭该功能，不注册触发器）。
