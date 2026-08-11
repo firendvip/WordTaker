@@ -34,7 +34,7 @@ function secureSnapshot(overrides = {}) {
           "cross-env WORDTAKER_PACKAGED_RUNTIME_SMOKE=1 electron .",
         "pack:passport-candidate":
           "electron-builder --config electron-builder.passport-candidate.cjs --dir",
-        "verify:signed-artifact": "node scripts/signed-artifact-gate.js --manifest",
+        "verify:signed-artifact": "node scripts/signed-artifact-gate.js",
       },
       devDependencies: {
         electron: MIN_ELECTRON_VERSION,
@@ -66,6 +66,8 @@ function secureSnapshot(overrides = {}) {
     ciWorkflow: [
       "permissions:",
       "contents: read",
+      "environment: release-signing",
+      "persist-credentials: false",
       "version: 11.5.3",
       "node-version: 22.22.0",
       "pnpm install --frozen-lockfile --ignore-scripts",
@@ -161,9 +163,9 @@ function secureSnapshot(overrides = {}) {
       "--publish never",
     ].join("\n"),
     changelogSource: "# Changelog\n\n## [1.29.0] - 2026-08-11",
-    appSource: "getAppVersion(); formatAppTitle(appVersion)",
-    historySource: "getAppVersion(); formatAppTitle(appVersion)",
-    windowManagerSource: "app.getVersion(); formatNativeWindowTitle(app.getVersion())",
+    appSource: "syncRuntimeDocumentTitle({ getAppVersion })",
+    historySource: "syncRuntimeDocumentTitle({ getAppVersion })",
+    windowManagerSource: "_runtimeTitle() { return app.getVersion(); }",
     mainSource: [
       'if (process.env.WORDTAKER_PACKAGED_RUNTIME_SMOKE === "1") {',
       'app.setName("WordTaker Runtime Smoke")',
