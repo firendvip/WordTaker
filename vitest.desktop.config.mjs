@@ -6,6 +6,7 @@ export default defineConfig({
     include: [
       "tests/desktopReleaseContract.test.js",
       "tests/electronRuntimeSmoke.test.js",
+      "tests/signedArtifactGate.test.js",
     ],
     coverage: {
       provider: "v8",
@@ -13,6 +14,7 @@ export default defineConfig({
       include: [
         "scripts/verify-desktop-release.js",
         "scripts/electron-runtime-smoke.js",
+        "scripts/signed-artifact-gate.js",
       ],
       thresholds: {
         perFile: true,

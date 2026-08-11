@@ -22,7 +22,7 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 function secureSnapshot(overrides = {}) {
   return {
     packageJson: {
-      version: "1.28.6",
+      version: "1.29.0",
       packageManager: "pnpm@11.5.3",
       engines: { node: ">=22.12.0" },
       scripts: {
@@ -32,6 +32,9 @@ function secureSnapshot(overrides = {}) {
         "test:desktop:coverage": "vitest run --config vitest.desktop.config.mjs --coverage",
         "smoke:electron-runtime":
           "cross-env WORDTAKER_PACKAGED_RUNTIME_SMOKE=1 electron .",
+        "pack:passport-candidate":
+          "electron-builder --config electron-builder.passport-candidate.cjs --dir",
+        "verify:signed-artifact": "node scripts/signed-artifact-gate.js --manifest",
       },
       devDependencies: {
         electron: MIN_ELECTRON_VERSION,
@@ -43,12 +46,6 @@ function secureSnapshot(overrides = {}) {
       },
       build: {
         files: ["main.js", "scripts/electron-runtime-smoke.js"],
-        protocols: [
-          {
-            name: "Wangsan WordTaker OAuth",
-            schemes: ["wangsan-wordtaker"],
-          },
-        ],
         win: { artifactName: "KittyEcho-${version}-${arch}.${ext}" },
         nsis: { artifactName: "KittyEcho-${version}-${arch}-setup.${ext}" },
         portable: { artifactName: "KittyEcho-${version}-${arch}-portable.exe" },
@@ -135,10 +132,38 @@ function secureSnapshot(overrides = {}) {
       "Verify packaged Electron runtime",
       "open -n -W",
       "security create-keychain",
-      "wangsan-wordtaker",
+      "Expected no wangsan-wordtaker scheme",
       "CFBundleShortVersionString",
       "CFBundleVersion",
     ].join("\n"),
+    candidateConfigSource: [
+      "wordtakerPassportCandidate: true",
+      "protocols:",
+      "Wangsan WordTaker OAuth",
+      'schemes: ["wangsan-wordtaker"]',
+    ].join("\n"),
+    releaseGateWorkflow: [
+      "workflow_dispatch:",
+      "permissions:",
+      "contents: read",
+      "forceCodeSigning=true",
+      "codesign --verify --deep --strict",
+      "spctl --assess --type execute",
+      "xcrun stapler validate",
+      "MACOS_SIGNER_SHA256",
+      "APPLE_TEAM_ID",
+      "Get-AuthenticodeSignature",
+      "TimeStamperCertificate",
+      "WINDOWS_SIGNER_SHA256",
+      "signtool verify /pa /all /v",
+      "WORDTAKER_PACKAGED_RUNTIME_SMOKE",
+      "signed-artifact-gate.js",
+      "--publish never",
+    ].join("\n"),
+    changelogSource: "# Changelog\n\n## [1.29.0] - 2026-08-11",
+    appSource: "getAppVersion(); formatAppTitle(appVersion)",
+    historySource: "getAppVersion(); formatAppTitle(appVersion)",
+    windowManagerSource: "app.getVersion(); formatNativeWindowTitle(app.getVersion())",
     mainSource: [
       'if (process.env.WORDTAKER_PACKAGED_RUNTIME_SMOKE === "1") {',
       'app.setName("WordTaker Runtime Smoke")',
@@ -183,6 +208,54 @@ describe("desktop release contract", () => {
         expect.stringContaining("better-sqlite3"),
         expect.stringContaining("Node.js"),
       ]),
+    );
+  });
+
+  it("pins the only desktop release runtime to Electron 43.3.0 exactly", () => {
+    const snapshot = secureSnapshot();
+    snapshot.packageJson.devDependencies.electron = "43.3.1";
+    snapshot.lockfileText = "electron:\n  specifier: 43.3.1\n  version: 43.3.1";
+    expect(validateDesktopReleaseSnapshot(snapshot)).toEqual(
+      expect.arrayContaining([expect.stringContaining("Electron")]),
+    );
+  });
+
+  it("requires v1.29.0 changelog alignment and every user-visible runtime version wire", () => {
+    const snapshot = secureSnapshot({
+      changelogSource: "# Changelog\n\n## [1.28.0] - 2026-07-11",
+      historySource: "document.title = '弦外小猫'",
+      windowManagerSource: "title: '弦外小猫'",
+    });
+    expect(validateDesktopReleaseSnapshot(snapshot)).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining("CHANGELOG"),
+        expect.stringContaining("user-visible version"),
+      ]),
+    );
+  });
+
+  it("separates the default package from the explicit Passport candidate package", () => {
+    const defaultRegistered = secureSnapshot();
+    defaultRegistered.packageJson.build.protocols = [
+      { name: "Wangsan WordTaker OAuth", schemes: ["wangsan-wordtaker"] },
+    ];
+    expect(validateDesktopReleaseSnapshot(defaultRegistered)).toEqual(
+      expect.arrayContaining([expect.stringContaining("default package")]),
+    );
+
+    expect(validateDesktopReleaseSnapshot(secureSnapshot({ candidateConfigSource: "" })))
+      .toEqual(expect.arrayContaining([expect.stringContaining("candidate") ]));
+  });
+
+  it("requires a manual non-publishing signed artifact gate for both desktop platforms", () => {
+    const snapshot = secureSnapshot({ releaseGateWorkflow: "runs-on: ubuntu-latest" });
+    expect(validateDesktopReleaseSnapshot(snapshot)).toEqual(
+      expect.arrayContaining([expect.stringContaining("signed artifact")]),
+    );
+    const publishing = secureSnapshot();
+    publishing.releaseGateWorkflow += "\ncontents: write\naction-gh-release\n--publish always";
+    expect(validateDesktopReleaseSnapshot(publishing)).toEqual(
+      expect.arrayContaining([expect.stringContaining("signed artifact")]),
     );
   });
 
@@ -383,7 +456,7 @@ describe("desktop release contract", () => {
     });
     snapshot.packageJson.version = "v1";
     snapshot.packageJson.scripts = {};
-    snapshot.packageJson.build.protocols = [];
+    snapshot.candidateConfigSource = "";
     snapshot.packageJson.build.win = {};
     snapshot.packageJson.build.nsis = {};
     snapshot.packageJson.build.portable = {};
@@ -393,7 +466,7 @@ describe("desktop release contract", () => {
       expect.arrayContaining([
         expect.stringContaining("SemVer"),
         expect.stringContaining("scripts"),
-        expect.stringContaining("protocols"),
+        expect.stringContaining("candidate"),
         expect.stringContaining("artifactName"),
         expect.stringContaining("lock"),
         expect.stringContaining("CI"),
@@ -434,10 +507,10 @@ describe("desktop release contract", () => {
 
   it("emits machine-usable release CLI success, issue and failure outcomes", async () => {
     const processLike = { stdout: { write: vi.fn() }, stderr: { write: vi.fn() } };
-    const valid = { version: "1.28.6", electronVersion: "43.3.0", issues: [] };
+    const valid = { version: "1.29.0", electronVersion: "43.3.0", issues: [] };
 
     expect(await runDesktopReleaseCli({ inspect: async () => valid, processLike })).toBe(valid);
-    expect(processLike.stdout.write).toHaveBeenCalledWith(expect.stringContaining("1.28.6"));
+    expect(processLike.stdout.write).toHaveBeenCalledWith(expect.stringContaining("1.29.0"));
 
     const invalid = { ...valid, issues: ["unsafe"] };
     expect(await runDesktopReleaseCli({ inspect: async () => invalid, processLike })).toBe(invalid);
