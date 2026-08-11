@@ -8,6 +8,7 @@ const require = createRequire(import.meta.url);
 const {
   SENTINEL,
   assertAppVersion,
+  assertReleaseVariant,
   assertUiohookApi,
   assertSafeStorageRoundTrip,
   assertRuntimeVersion,
@@ -164,6 +165,8 @@ describe("Electron authentication runtime smoke", () => {
       expectedAppVersion: "1.29.0",
       actualArch: "arm64",
       expectedArch: "arm64",
+      actualVariant: "passport-candidate",
+      expectedVariant: "passport-candidate",
     });
 
     expect(whenReady).toHaveBeenCalledOnce();
@@ -171,8 +174,13 @@ describe("Electron authentication runtime smoke", () => {
       success: true,
       version: "43.3.0",
       appVersion: "1.29.0",
+      variant: "passport-candidate",
       storage: { backend: "dpapi" },
     });
+    expect(() => assertReleaseVariant("passport-candidate", "default"))
+      .toThrow(/variant/i);
+    expect(assertReleaseVariant("default", "default")).toBe("default");
+    expect(() => assertReleaseVariant("pilot", "pilot")).toThrow(/variant/i);
   });
 
   it("runs the CLI inside Electron's browser process even when require.main is unset", () => {
@@ -315,7 +323,11 @@ describe("Electron authentication runtime smoke", () => {
     const processLike = {
       versions: { electron: "43.3.0" },
       arch: "x64",
-      env: { WORDTAKER_RUNTIME_SMOKE_RESULT: "/tmp/result.json" },
+      platform: "win32",
+      env: {
+        WORDTAKER_EXPECTED_VARIANT: "passport-candidate",
+        WORDTAKER_RUNTIME_SMOKE_RESULT: "/tmp/result.json",
+      },
       stdout,
       stderr,
     };
@@ -325,7 +337,11 @@ describe("Electron authentication runtime smoke", () => {
       ...native,
       createTokenStore,
       uIOhook: { start() {}, stop() {}, on() {} },
-      packageJson: { version: "1.29.0", devDependencies: { electron: "43.3.0" } },
+      packageJson: {
+        version: "1.29.0",
+        wordtakerPassportCandidate: true,
+        devDependencies: { electron: "43.3.0" },
+      },
       processLike,
       fileSystem: { writeFileSync: (...args) => writes.push(args) },
     });
@@ -343,7 +359,11 @@ describe("Electron authentication runtime smoke", () => {
       ...native,
       createTokenStore,
         uIOhook: { start() {}, stop() {}, on() {} },
-        packageJson: { version: "1.29.0", devDependencies: { electron: "43.3.0" } },
+        packageJson: {
+          version: "1.29.0",
+          wordtakerPassportCandidate: true,
+          devDependencies: { electron: "43.3.0" },
+        },
         processLike,
       }),
     ).toBeNull();
@@ -357,6 +377,7 @@ describe("Electron authentication runtime smoke", () => {
       version: "43.3.0",
       appVersion: "1.29.0",
       arch: "arm64",
+      variant: "default",
       storage: { backend: "keychain", encryptedBytes: 32 },
       native: {
         credentials: { persisted: true, accessTokenPersisted: false, reloaded: true },
@@ -369,12 +390,14 @@ describe("Electron authentication runtime smoke", () => {
         expectedElectronVersion: "43.3.0",
         expectedAppVersion: "1.29.0",
         expectedArch: "arm64",
+        expectedVariant: "default",
       }),
     ).toBe(evidence);
 
     for (const invalid of [
       { ...evidence, success: false },
       { ...evidence, arch: "x64" },
+      { ...evidence, variant: "passport-candidate" },
       { ...evidence, storage: { backend: "basic_text" } },
       { ...evidence, native: { ...evidence.native, credentials: { persisted: false } } },
     ]) {
@@ -383,6 +406,7 @@ describe("Electron authentication runtime smoke", () => {
           expectedElectronVersion: "43.3.0",
           expectedAppVersion: "1.29.0",
           expectedArch: "arm64",
+          expectedVariant: "default",
         }),
       ).toThrow(/smoke/i);
     }
@@ -394,6 +418,7 @@ describe("Electron authentication runtime smoke", () => {
       version: "43.3.0",
       appVersion: "1.29.0",
       arch: "x64",
+      variant: "default",
       storage: { backend: "dpapi", encryptedBytes: 32 },
       native: {
         credentials: { persisted: true, accessTokenPersisted: false, reloaded: true },
@@ -404,7 +429,7 @@ describe("Electron authentication runtime smoke", () => {
     const processLike = { stdout: { write: vi.fn() }, stderr: { write: vi.fn() } };
     expect(
       runRuntimeSmokeResultCli({
-        argv: ["result.json", "43.3.0", "1.29.0", "x64"],
+        argv: ["result.json", "43.3.0", "1.29.0", "x64", "default"],
         readFile: () => evidence,
         processLike,
       }),
@@ -423,7 +448,7 @@ describe("Electron authentication runtime smoke", () => {
     processLike.exitCode = 0;
     expect(
       runRuntimeSmokeResultCli({
-        argv: ["result.json", "43.3.0", "1.29.0", "x64"],
+        argv: ["result.json", "43.3.0", "1.29.0", "x64", "default"],
         readFile: () => "x".repeat(65 * 1024),
         processLike,
       }),

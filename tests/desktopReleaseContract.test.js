@@ -143,6 +143,20 @@ function secureSnapshot(overrides = {}) {
       "protocols:",
       "Wangsan WordTaker OAuth",
       'schemes: ["wangsan-wordtaker"]',
+      'include: "build/installer-passport-candidate.nsh"',
+      'target: "nsis"',
+    ].join("\n"),
+    candidateInstallerSource: [
+      '!include "installer.nsh"',
+      "!macro customInstall",
+      'WriteRegStr HKCU "Software\\Classes\\wangsan-wordtaker" "URL Protocol" ""',
+      'WriteRegStr HKCU "Software\\Classes\\wangsan-wordtaker\\shell\\open\\command" ""',
+      "$INSTDIR\\${APP_EXECUTABLE_FILENAME}",
+      "%1",
+      "!macro customUnInstall",
+      "ReadRegStr",
+      "StrCmp",
+      'DeleteRegKey HKCU "Software\\Classes\\wangsan-wordtaker"',
     ].join("\n"),
     releaseGateWorkflow: [
       "workflow_dispatch:",
@@ -257,6 +271,14 @@ describe("desktop release contract", () => {
 
     expect(validateDesktopReleaseSnapshot(secureSnapshot({ candidateConfigSource: "" })))
       .toEqual(expect.arrayContaining([expect.stringContaining("candidate") ]));
+
+    expect(validateDesktopReleaseSnapshot(secureSnapshot({ candidateInstallerSource: "" })))
+      .toEqual(expect.arrayContaining([expect.stringContaining("candidate") ]));
+
+    const candidatePortable = secureSnapshot();
+    candidatePortable.candidateConfigSource += '\ntarget: "portable"';
+    expect(validateDesktopReleaseSnapshot(candidatePortable))
+      .toEqual(expect.arrayContaining([expect.stringContaining("portable") ]));
   });
 
   it("requires a manual non-publishing signed artifact gate for both desktop platforms", () => {

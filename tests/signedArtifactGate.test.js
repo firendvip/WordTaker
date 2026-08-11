@@ -53,12 +53,13 @@ function tempDirectory() {
   return directory;
 }
 
-function writeRuntimeResult(filePath, arch = "arm64") {
+function writeRuntimeResult(filePath, arch = "arm64", variant = "passport-candidate") {
   fs.writeFileSync(filePath, JSON.stringify({
     success: true,
     version: "43.3.0",
     appVersion: "1.29.0",
     arch,
+    variant,
     storage: { backend: arch === "arm64" ? "keychain" : "dpapi", encryptedBytes: 32 },
     native: {
       credentials: { persisted: true, accessTokenPersisted: false, reloaded: true },
@@ -253,10 +254,26 @@ describe("signed packaged artifact gate", () => {
     });
     expect(validateMacProtocolVariant(appPath, "passport-candidate", () => ({ stdout: plist })))
       .toEqual(["wangsan-wordtaker"]);
-    expect(validateWindowsProtocolVariant("passport-candidate", () => ({ stdout: "True\n" })))
+    const installedAppPath = "C:\\Users\\runner\\KittyEcho.exe";
+    expect(validateWindowsProtocolVariant(installedAppPath, "passport-candidate", () => ({
+      stdout: JSON.stringify({
+        Exists: true,
+        UrlProtocolPresent: true,
+        Command: `"${installedAppPath}" "%1"`,
+      }),
+    })))
       .toEqual(["wangsan-wordtaker"]);
-    expect(validateWindowsProtocolVariant("default", () => ({ stdout: "False\n" }))).toEqual([]);
-    expect(() => validateWindowsProtocolVariant("default", () => ({ stdout: "maybe" })))
+    expect(validateWindowsProtocolVariant(null, "default", () => ({
+      stdout: JSON.stringify({ Exists: false, UrlProtocolPresent: false, Command: null }),
+    }))).toEqual([]);
+    expect(() => validateWindowsProtocolVariant(installedAppPath, "passport-candidate", () => ({
+      stdout: JSON.stringify({
+        Exists: true,
+        UrlProtocolPresent: true,
+        Command: '"C:\\Stale\\KittyEcho.exe" "%1"',
+      }),
+    }))).toThrow(/command/i);
+    expect(() => validateWindowsProtocolVariant(null, "default", () => ({ stdout: "maybe" })))
       .toThrow(/invalid/i);
     expect(validateMacProtocolVariant(appPath, "default", () => ({ stdout: "{}" })))
       .toEqual([]);
@@ -397,6 +414,7 @@ describe("signed packaged artifact gate", () => {
       version: "43.3.0",
       appVersion: "1.29.0",
       arch: "arm64",
+      variant: "default",
       storage: { backend: "keychain", encryptedBytes: 32 },
       native: {
         credentials: { persisted: true, accessTokenPersisted: false, reloaded: true },
@@ -408,12 +426,14 @@ describe("signed packaged artifact gate", () => {
       version: "1.29.0",
       electronVersion: "43.3.0",
       arch: "arm64",
+      variant: "default",
     })).toEqual(result);
     for (const mutation of [
       { success: false },
       { version: "42.0.0" },
       { appVersion: "1.28.6" },
       { arch: "x64" },
+      { variant: "passport-candidate" },
       { native: {
         ...result.native,
         credentials: { persisted: true, accessTokenPersisted: true, reloaded: true },
@@ -423,6 +443,7 @@ describe("signed packaged artifact gate", () => {
         version: "1.29.0",
         electronVersion: "43.3.0",
         arch: "arm64",
+        variant: "default",
       })).toThrow(/runtime/i);
     }
     expect(() => validateRuntimeResult({
@@ -432,6 +453,7 @@ describe("signed packaged artifact gate", () => {
       version: "1.29.0",
       electronVersion: "43.3.0",
       arch: "arm64",
+      variant: "default",
       platform: "macos",
     })).toThrow(/platform storage/i);
     expect(() => validateRuntimeResult({
@@ -444,6 +466,7 @@ describe("signed packaged artifact gate", () => {
       version: "1.29.0",
       electronVersion: "43.3.0",
       arch: "arm64",
+      variant: "default",
     })).toThrow(/legacy database/i);
   });
 
@@ -455,6 +478,7 @@ describe("signed packaged artifact gate", () => {
       version: "43.3.0",
       appVersion: "1.29.0",
       arch: "arm64",
+      variant: "default",
       storage: { backend: "keychain" },
       native: {
         credentials: { persisted: true, reloaded: true, accessTokenPersisted: false },
@@ -463,6 +487,8 @@ describe("signed packaged artifact gate", () => {
       },
       refreshToken: "must-not-escape",
     })).not.toHaveProperty("refreshToken");
+    expect(safeRuntimeSummary({ success: true, variant: "passport-candidate" }))
+      .toEqual({ success: true, variant: "passport-candidate" });
     expect(safeArtifactSummary({ name: "KittyEcho.dmg", sha256: "ab".repeat(32) }))
       .toEqual({ name: "KittyEcho.dmg", sha256: "ab".repeat(32) });
     for (const artifact of [
@@ -483,6 +509,13 @@ describe("signed packaged artifact gate", () => {
     expect(() => safeSignatureSummaries({
       installer: { signerFingerprint: FINGERPRINT, timestamped: true },
     })).toThrow(/portable/i);
+    expect(safeSignatureSummaries({
+      installer: { signerFingerprint: FINGERPRINT, timestamped: true },
+      installedApp: { signerFingerprint: FINGERPRINT, timestamped: true },
+    }, "passport-candidate")).toEqual({
+      installer: { signerFingerprint: FINGERPRINT, timestamped: true },
+      installedApp: { signerFingerprint: FINGERPRINT, timestamped: true },
+    });
     expect(() => createReleaseReceipt({
       platform: "macos",
       version: "1.29.0",
@@ -672,9 +705,10 @@ describe("signed packaged artifact gate", () => {
     const artifactPath = path.join(directory, "KittyEcho.dmg");
     const appPath = path.join(directory, "KittyEcho.app");
     const runtimePath = path.join(directory, "runtime.json");
+    const receiptPath = path.join(directory, "receipt.json");
     fs.writeFileSync(artifactPath, "dmg");
     fs.mkdirSync(appPath);
-    writeRuntimeResult(runtimePath, "arm64");
+    writeRuntimeResult(runtimePath, "arm64", "default");
     const runtimeCleanup = vi.fn(() => { throw new Error("runtime cleanup failed"); });
     const mountCleanup = vi.fn();
     const run = vi.fn((command, args) => {
@@ -689,6 +723,7 @@ describe("signed packaged artifact gate", () => {
     });
     expect(() => verifyMacArtifact({
       artifactPath,
+      receiptPath,
       version: "1.29.0",
       electronVersion: "43.3.0",
       arch: "arm64",
@@ -707,6 +742,7 @@ describe("signed packaged artifact gate", () => {
     })).toThrow(/runtime cleanup failed/i);
     expect(runtimeCleanup).toHaveBeenCalledOnce();
     expect(mountCleanup).toHaveBeenCalledOnce();
+    expect(fs.existsSync(receiptPath)).toBe(false);
   });
 
   it("executes Windows installer, portable and installed-exe Authenticode gates", () => {
@@ -719,8 +755,8 @@ describe("signed packaged artifact gate", () => {
     for (const filePath of [installerPath, portablePath, installedAppPath]) {
       fs.writeFileSync(filePath, `signed:${path.basename(filePath)}`);
     }
-    writeRuntimeResult(installedRuntimeResultPath, "x64");
-    writeRuntimeResult(portableRuntimeResultPath, "x64");
+    writeRuntimeResult(installedRuntimeResultPath, "x64", "default");
+    writeRuntimeResult(portableRuntimeResultPath, "x64", "default");
     const signature = JSON.stringify({
       Status: "Valid",
       SignerCertificate: { Thumbprint: FINGERPRINT },
@@ -736,7 +772,7 @@ describe("signed packaged artifact gate", () => {
       version: "1.29.0",
       electronVersion: "43.3.0",
       arch: "x64",
-      variant: "passport-candidate",
+      variant: "default",
       commit: "a".repeat(40),
       tree: "b".repeat(40),
       expectedSignerFingerprint: FINGERPRINT,
@@ -744,6 +780,7 @@ describe("signed packaged artifact gate", () => {
       run,
       verifyProvenance: vi.fn(),
       validateProtocolVariant: vi.fn(),
+      validateProtocolRemoval: vi.fn(),
       installArtifact: () => ({ installedAppPath, cleanup: vi.fn() }),
       runPackagedRuntime: (targetPath) => targetPath === portablePath
         ? portableRuntimeResultPath
@@ -762,34 +799,45 @@ describe("signed packaged artifact gate", () => {
     });
   });
 
-  it("uses the default Windows installer, registry, signature and runtime gates", () => {
+  it("binds the Passport candidate registry command to its installed executable and removes it", () => {
     const directory = tempDirectory();
     const installerPath = path.join(directory, "KittyEcho-1.29.0-x64-setup.exe");
-    const portablePath = path.join(directory, "KittyEcho-1.29.0-x64-portable.exe");
     fs.writeFileSync(installerPath, "installer");
-    fs.writeFileSync(portablePath, "portable");
+    let registeredAppPath = null;
     const run = vi.fn((command, args, options = {}) => {
       if (command === installerPath) {
         const installPath = args.find((value) => value.startsWith("/D=")).slice(3);
         fs.mkdirSync(installPath, { recursive: true });
-        fs.writeFileSync(path.join(installPath, "KittyEcho.exe"), "installed");
+        registeredAppPath = path.join(installPath, "KittyEcho.exe");
+        fs.writeFileSync(registeredAppPath, "installed");
         fs.writeFileSync(path.join(installPath, "Uninstall.exe"), "uninstall");
+      } else if (/Uninstall\.exe$/.test(command)) {
+        registeredAppPath = null;
       } else if (command === "powershell.exe") {
-        if (args.join(" ").includes("Test-Path")) return { stdout: "True\n", stderr: "" };
+        if (args.join(" ").includes("URL Protocol")) {
+          return { stdout: JSON.stringify({
+            Exists: Boolean(registeredAppPath),
+            UrlProtocolPresent: Boolean(registeredAppPath),
+            Command: registeredAppPath ? `"${registeredAppPath}" "%1"` : null,
+          }), stderr: "" };
+        }
         return { stdout: JSON.stringify({
           Status: "Valid",
           SignerSha256: FINGERPRINT,
           TimestampSha256: "B2".repeat(32),
         }), stderr: "" };
       } else if (options.env?.WORDTAKER_RUNTIME_SMOKE_RESULT) {
-        writeRuntimeResult(options.env.WORDTAKER_RUNTIME_SMOKE_RESULT, "x64");
+        writeRuntimeResult(
+          options.env.WORDTAKER_RUNTIME_SMOKE_RESULT,
+          "x64",
+          "passport-candidate",
+        );
       }
       return { stdout: "", stderr: "" };
     });
 
     const receipt = verifyWindowsArtifact({
       installerPath,
-      portablePath,
       version: "1.29.0",
       electronVersion: "43.3.0",
       arch: "x64",
@@ -803,11 +851,41 @@ describe("signed packaged artifact gate", () => {
       platform: "windows",
       runtime: {
         installed: { storage: { backend: "dpapi" } },
-        portable: { storage: { backend: "dpapi" } },
+      },
+      signatures: {
+        installer: { timestamped: true },
+        installedApp: { timestamped: true },
       },
     });
+    expect(receipt.artifacts).not.toHaveProperty("portable");
+    expect(receipt.runtime).not.toHaveProperty("portable");
     expect(run.mock.calls.some(([command, args]) => /Uninstall\.exe$/.test(command) && args[0] === "/S"))
       .toBe(true);
+    expect(run.mock.calls.filter(([command, args]) =>
+      command === "powershell.exe" && args.join(" ").includes("URL Protocol")))
+      .toHaveLength(3);
+  });
+
+  it("refuses a portable Passport candidate before executing release artifacts", () => {
+    const directory = tempDirectory();
+    const installerPath = path.join(directory, "setup.exe");
+    const portablePath = path.join(directory, "portable.exe");
+    fs.writeFileSync(installerPath, "installer");
+    fs.writeFileSync(portablePath, "portable");
+    const run = vi.fn();
+
+    expect(() => verifyWindowsArtifact({
+      installerPath,
+      portablePath,
+      version: "1.29.0",
+      electronVersion: "43.3.0",
+      arch: "x64",
+      variant: "passport-candidate",
+      commit: "a".repeat(40),
+      tree: "b".repeat(40),
+      expectedSignerFingerprint: FINGERPRINT,
+    }, { run, verifyProvenance: vi.fn() })).toThrow(/portable/i);
+    expect(run).not.toHaveBeenCalled();
   });
 
   it("verifies Windows distributable signatures before executing the installer", () => {
@@ -842,8 +920,9 @@ describe("signed packaged artifact gate", () => {
     const portablePath = path.join(directory, "portable.exe");
     const installedAppPath = path.join(directory, "KittyEcho.exe");
     const runtimePath = path.join(directory, "runtime.json");
+    const receiptPath = path.join(directory, "receipt.json");
     for (const filePath of [installerPath, portablePath, installedAppPath]) fs.writeFileSync(filePath, "x");
-    writeRuntimeResult(runtimePath, "x64");
+    writeRuntimeResult(runtimePath, "x64", "default");
     const installedCleanup = vi.fn(() => { throw new Error("installed cleanup failed"); });
     const portableCleanup = vi.fn();
     const installationCleanup = vi.fn();
@@ -857,6 +936,7 @@ describe("signed packaged artifact gate", () => {
     expect(() => verifyWindowsArtifact({
       installerPath,
       portablePath,
+      receiptPath,
       version: "1.29.0",
       electronVersion: "43.3.0",
       arch: "x64",
@@ -868,6 +948,7 @@ describe("signed packaged artifact gate", () => {
       run,
       verifyProvenance: vi.fn(),
       validateProtocolVariant: vi.fn(),
+      validateProtocolRemoval: vi.fn(),
       installArtifact: () => ({ installedAppPath, cleanup: installationCleanup }),
       runPackagedRuntime: (target) => ({
         resultPath: runtimePath,
@@ -877,6 +958,7 @@ describe("signed packaged artifact gate", () => {
     expect(installedCleanup).toHaveBeenCalledOnce();
     expect(portableCleanup).toHaveBeenCalledOnce();
     expect(installationCleanup).toHaveBeenCalledOnce();
+    expect(fs.existsSync(receiptPath)).toBe(false);
   });
 
   it("rejects malformed Authenticode JSON and generates the SHA-256 signer command", () => {
