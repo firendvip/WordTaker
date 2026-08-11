@@ -41,15 +41,18 @@ function assertRuntimeArch(actualArch, expectedArch) {
   return actual;
 }
 
-function assertSafeStorageRoundTrip(safeStorage) {
+function assertSafeStorageRoundTrip(safeStorage, platform) {
   if (!safeStorage || safeStorage.isEncryptionAvailable() !== true) {
     throw new Error("Electron safeStorage encryption is unavailable");
   }
 
-  const backend =
-    typeof safeStorage.getSelectedStorageBackend === "function"
-      ? safeStorage.getSelectedStorageBackend()
-      : "platform-default";
+  const backend = platform === "darwin"
+    ? "keychain"
+    : platform === "win32"
+      ? "dpapi"
+      : typeof safeStorage.getSelectedStorageBackend === "function"
+        ? safeStorage.getSelectedStorageBackend()
+        : "platform-default";
   if (backend === "basic_text") {
     throw new Error("Electron safeStorage selected insecure basic_text backend");
   }
@@ -241,13 +244,14 @@ async function runElectronRuntimeSmoke({
   expectedAppVersion,
   actualArch,
   expectedArch,
+  platform,
   nativeCheck,
 }) {
   await app.whenReady();
   const version = assertRuntimeVersion(actualVersion, expectedVersion);
   const appVersion = assertAppVersion(actualAppVersion, expectedAppVersion);
   const arch = assertRuntimeArch(actualArch, expectedArch);
-  const storage = assertSafeStorageRoundTrip(safeStorage);
+  const storage = assertSafeStorageRoundTrip(safeStorage, platform);
   const native = typeof nativeCheck === "function" ? nativeCheck() : undefined;
   return native
     ? { version, appVersion, arch, storage, native }
@@ -287,6 +291,7 @@ async function runElectronRuntimeSmokeCli(options = {}) {
         processLike.env.WORDTAKER_EXPECTED_APP_VERSION || packageJson.version,
       actualArch: processLike.arch,
       expectedArch: processLike.env.WORDTAKER_EXPECTED_ARCH || processLike.arch,
+      platform: processLike.platform,
       nativeCheck: () => ({
         database: runDatabaseMigrationSmoke({ Database, DatabaseManager }),
         credentials: runTokenStorePersistenceSmoke({

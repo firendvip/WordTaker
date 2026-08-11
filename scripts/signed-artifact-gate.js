@@ -67,7 +67,10 @@ function parseMacSignatureDetails(output) {
 
 function validateMacAssessment(output) {
   const text = String(output || "");
-  if (!/^accepted\s*$/m.test(text) || !/^source=Notarized Developer ID\s*$/m.test(text)) {
+  if (
+    !/^(?:.+:\s+)?accepted\s*$/m.test(text)
+    || !/^source=Notarized Developer ID\s*$/m.test(text)
+  ) {
     throw new Error("macOS artifact is not accepted as a Notarized Developer ID application");
   }
   return "Notarized Developer ID";
@@ -277,7 +280,32 @@ function readJsonFile(filePath, label) {
 }
 
 function sha256File(filePath) {
-  return crypto.createHash("sha256").update(fs.readFileSync(filePath)).digest("hex");
+  const digest = crypto.createHash("sha256");
+  const descriptor = fs.openSync(filePath, "r");
+  const buffer = Buffer.allocUnsafe(1024 * 1024);
+  try {
+    let bytesRead;
+    do {
+      bytesRead = fs.readSync(descriptor, buffer, 0, buffer.length, null);
+      if (bytesRead > 0) digest.update(buffer.subarray(0, bytesRead));
+    } while (bytesRead > 0);
+    return digest.digest("hex");
+  } finally {
+    fs.closeSync(descriptor);
+  }
+}
+
+function runCleanupSteps(steps) {
+  let cleanupError = null;
+  for (const cleanup of steps) {
+    if (typeof cleanup !== "function") continue;
+    try {
+      cleanup();
+    } catch (error) {
+      cleanupError ||= error;
+    }
+  }
+  return cleanupError;
 }
 
 function writeReceipt(receiptPath, receipt) {
@@ -460,6 +488,8 @@ function verifyMacArtifact(manifest, dependencies = {}) {
 
   const mounted = mountArtifact(artifactPath);
   let runtimeExecution;
+  let receipt;
+  let verificationError;
   try {
     const appPath = requirePath(mounted.appPath, "mounted macOS application", "directory");
     verifyProtocolVariant(appPath);
@@ -489,7 +519,7 @@ function verifyMacArtifact(manifest, dependencies = {}) {
         platform: "macos",
       },
     );
-    const receipt = createReleaseReceipt({
+    receipt = createReleaseReceipt({
       ...manifest,
       platform: "macos",
       artifact: { name: path.basename(artifactPath), sha256: sha256File(artifactPath) },
@@ -502,11 +532,13 @@ function verifyMacArtifact(manifest, dependencies = {}) {
       runtime,
     });
     writeReceipt(manifest.receiptPath, receipt);
-    return receipt;
-  } finally {
-    if (runtimeExecution) runtimeExecution.cleanup();
-    if (typeof mounted.cleanup === "function") mounted.cleanup();
+  } catch (error) {
+    verificationError = error;
   }
+  const cleanupError = runCleanupSteps([runtimeExecution?.cleanup, mounted.cleanup]);
+  if (verificationError) throw verificationError;
+  if (cleanupError) throw cleanupError;
+  return receipt;
 }
 
 function windowsSignatureCommand(targetPath) {
@@ -621,9 +653,15 @@ function verifyWindowsArtifact(manifest, dependencies = {}) {
   const installerPath = requirePath(manifest.installerPath, "Windows installer", "file");
   const portablePath = requirePath(manifest.portablePath, "Windows portable app", "file");
   const expectedSignerFingerprint = normalizeFingerprint(manifest.expectedSignerFingerprint);
+  const signatures = {
+    installer: verifyWindowsSignature(installerPath, expectedSignerFingerprint, run),
+    portable: verifyWindowsSignature(portablePath, expectedSignerFingerprint, run),
+  };
   const installation = installArtifact(installerPath);
   let installedRuntimeExecution;
   let portableRuntimeExecution;
+  let receipt;
+  let verificationError;
   try {
     const installedAppPath = requirePath(
       installation.installedAppPath,
@@ -631,11 +669,11 @@ function verifyWindowsArtifact(manifest, dependencies = {}) {
       "file",
     );
     verifyProtocolVariant(installedAppPath);
-    const signatures = {
-      installer: verifyWindowsSignature(installerPath, expectedSignerFingerprint, run),
-      portable: verifyWindowsSignature(portablePath, expectedSignerFingerprint, run),
-      installedApp: verifyWindowsSignature(installedAppPath, expectedSignerFingerprint, run),
-    };
+    signatures.installedApp = verifyWindowsSignature(
+      installedAppPath,
+      expectedSignerFingerprint,
+      run,
+    );
     installedRuntimeExecution = normalizeRuntimeExecution(executeRuntime(installedAppPath));
     portableRuntimeExecution = normalizeRuntimeExecution(executeRuntime(portablePath));
     const expectedRuntime = {
@@ -654,7 +692,7 @@ function verifyWindowsArtifact(manifest, dependencies = {}) {
         expectedRuntime,
       ),
     };
-    const receipt = createReleaseReceipt({
+    receipt = createReleaseReceipt({
       ...manifest,
       platform: "windows",
       artifacts: {
@@ -666,12 +704,17 @@ function verifyWindowsArtifact(manifest, dependencies = {}) {
       runtime,
     });
     writeReceipt(manifest.receiptPath, receipt);
-    return receipt;
-  } finally {
-    if (installedRuntimeExecution) installedRuntimeExecution.cleanup();
-    if (portableRuntimeExecution) portableRuntimeExecution.cleanup();
-    if (typeof installation.cleanup === "function") installation.cleanup();
+  } catch (error) {
+    verificationError = error;
   }
+  const cleanupError = runCleanupSteps([
+    installedRuntimeExecution?.cleanup,
+    portableRuntimeExecution?.cleanup,
+    installation.cleanup,
+  ]);
+  if (verificationError) throw verificationError;
+  if (cleanupError) throw cleanupError;
+  return receipt;
 }
 
 function readManifest(manifestPath) {

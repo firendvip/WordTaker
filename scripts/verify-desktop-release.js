@@ -295,6 +295,10 @@ function validateDesktopReleaseSnapshot(snapshot) {
   }
 
   const releaseWorkflow = String(snapshot.releaseGateWorkflow || "");
+  const releaseActionReferences = Array.from(
+    releaseWorkflow.matchAll(/^\s*-\s+uses:\s+([^\s#]+)/gm),
+    (match) => match[1],
+  );
   if (
     !includesAll(releaseWorkflow, [
       "workflow_dispatch:",
@@ -306,6 +310,10 @@ function validateDesktopReleaseSnapshot(snapshot) {
       "codesign --verify --deep --strict",
       "spctl --assess --type execute",
       "xcrun stapler validate",
+      "xcrun notarytool submit",
+      "security create-keychain",
+      "security delete-keychain",
+      "if: always()",
       "MACOS_SIGNER_SHA256",
       "APPLE_TEAM_ID",
       "Get-AuthenticodeSignature",
@@ -314,10 +322,15 @@ function validateDesktopReleaseSnapshot(snapshot) {
       "signtool verify /pa /all /v",
       "WORDTAKER_PACKAGED_RUNTIME_SMOKE",
       "signed-artifact-gate.js",
+      "signed-gate-artifacts-macos",
+      "signed-gate-artifacts-windows",
       "--publish never",
     ])
+    || releaseActionReferences.length === 0
+    || releaseActionReferences.some((reference) => !/@[a-f0-9]{40}$/i.test(reference))
     || /(^|\n)\s*(push|pull_request|schedule):/m.test(releaseWorkflow)
     || /contents:\s*write/i.test(releaseWorkflow)
+    || /APPLE_API_KEY=.*GITHUB_ENV/i.test(releaseWorkflow)
     || /action-gh-release|--publish\s+(always|onTagOrDraft)|continue-on-error:\s*true/i
       .test(releaseWorkflow)
   ) {

@@ -34,14 +34,14 @@ jobs:
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 120
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
           fetch-depth: 1
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
         with:
           version: 11.5.3
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22.22.0
           cache: pnpm
@@ -68,10 +68,6 @@ jobs:
             echo "Pinned macOS signer identity is malformed" >&2
             exit 1
           fi
-          key_path="$RUNNER_TEMP/AuthKey_${APPLE_API_KEY_ID}.p8"
-          umask 077
-          printf '%s' "$APPLE_API_KEY_CONTENT" > "$key_path"
-          echo "APPLE_API_KEY=$key_path" >> "$GITHUB_ENV"
 
       - name: Install and verify source dependencies
         run: |
@@ -97,17 +93,32 @@ jobs:
         env:
           CSC_LINK: ${{ secrets.MACOS_CSC_LINK }}
           CSC_KEY_PASSWORD: ${{ secrets.MACOS_CSC_KEY_PASSWORD }}
+          APPLE_API_KEY_CONTENT: ${{ secrets.APPLE_API_KEY_CONTENT }}
           APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
           APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
         run: |
           set -euo pipefail
+          key_path="$RUNNER_TEMP/AuthKey_${APPLE_API_KEY_ID}.p8"
+          umask 077
+          printf '%s' "$APPLE_API_KEY_CONTENT" > "$key_path"
+          cleanup_signing_key() { rm -f "$key_path"; }
+          trap cleanup_signing_key EXIT
+          export APPLE_API_KEY="$key_path"
           config=()
           if [[ "${{ inputs.variant }}" == "passport-candidate" ]]; then
             config=(--config electron-builder.passport-candidate.cjs)
           fi
           pnpm exec electron-builder "${config[@]}" --mac dmg --${{ matrix.arch }} \
             --config.forceCodeSigning=true --publish never
+          artifact="$(find dist -maxdepth 1 -type f -name "KittyEcho-*-${{ matrix.arch }}.dmg" -print -quit)"
+          if [[ -z "$artifact" ]]; then
+            echo "Signed DMG was not produced" >&2
+            exit 1
+          fi
+          xcrun notarytool submit "$artifact" --key "$key_path" \
+            --key-id "$APPLE_API_KEY_ID" --issuer "$APPLE_API_ISSUER" --wait
+          xcrun stapler staple "$artifact"
 
       # signed-artifact-gate.js sets WORDTAKER_PACKAGED_RUNTIME_SMOKE and performs these exact checks:
       # codesign --verify --deep --strict, spctl --assess --type execute,
@@ -119,6 +130,18 @@ jobs:
           MACOS_SIGNER_SHA256: ${{ vars.MACOS_SIGNER_SHA256 }}
         run: |
           set -euo pipefail
+          smoke_keychain="$RUNNER_TEMP/wordtaker-release-smoke-${{ matrix.arch }}.keychain-db"
+          cleanup_smoke_keychain() {
+            security default-keychain -d user -s "$HOME/Library/Keychains/login.keychain-db" || true
+            security list-keychains -d user -s "$HOME/Library/Keychains/login.keychain-db" || true
+            security delete-keychain "$smoke_keychain" || true
+          }
+          trap cleanup_smoke_keychain EXIT
+          security create-keychain -p "wordtaker-release-smoke" "$smoke_keychain"
+          security set-keychain-settings -lut 900 "$smoke_keychain"
+          security unlock-keychain -p "wordtaker-release-smoke" "$smoke_keychain"
+          security default-keychain -d user -s "$smoke_keychain"
+          security list-keychains -d user -s "$smoke_keychain"
           artifact="$(find dist -maxdepth 1 -type f -name "KittyEcho-*-${{ matrix.arch }}.dmg" -print -quit)"
           if [[ -z "$artifact" ]]; then
             echo "Signed DMG was not produced" >&2
@@ -148,12 +171,23 @@ jobs:
           NODE
           node scripts/signed-artifact-gate.js --manifest "$RUNNER_TEMP/wordtaker-macos-manifest.json"
 
-      - uses: actions/upload-artifact@v4
+      - name: Remove macOS signing and smoke state
+        if: always()
+        shell: bash
+        run: |
+          rm -f "$RUNNER_TEMP"/AuthKey_*.p8
+          security default-keychain -d user -s "$HOME/Library/Keychains/login.keychain-db" || true
+          security list-keychains -d user -s "$HOME/Library/Keychains/login.keychain-db" || true
+          security delete-keychain "$RUNNER_TEMP/wordtaker-release-smoke-${{ matrix.arch }}.keychain-db" || true
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: signed-gate-receipt-macos-${{ matrix.arch }}-${{ inputs.variant }}
-          path: ${{ runner.temp }}/wordtaker-macos-${{ matrix.arch }}-receipt.json
+          name: signed-gate-artifacts-macos-${{ matrix.arch }}-${{ inputs.variant }}
+          path: |
+            dist/KittyEcho-*-${{ matrix.arch }}.dmg
+            ${{ runner.temp }}/wordtaker-macos-${{ matrix.arch }}-receipt.json
           if-no-files-found: error
-          retention-days: 1
+          retention-days: 7
 
   windows:
     name: Windows ${{ matrix.arch }} signed artifact
@@ -169,14 +203,14 @@ jobs:
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 150
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
           fetch-depth: 1
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
         with:
           version: 11.5.3
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22.22.0
           cache: pnpm
@@ -216,7 +250,7 @@ jobs:
           pnpm run build:renderer
 
       - name: Setup MSVC toolchain
-        uses: ilammy/msvc-dev-cmd@v1
+        uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1
         with:
           arch: ${{ matrix.arch }}
 
@@ -268,9 +302,12 @@ jobs:
           node scripts/signed-artifact-gate.js --manifest $manifestPath
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: signed-gate-receipt-windows-${{ matrix.arch }}-${{ inputs.variant }}
-          path: ${{ runner.temp }}/wordtaker-windows-${{ matrix.arch }}-receipt.json
+          name: signed-gate-artifacts-windows-${{ matrix.arch }}-${{ inputs.variant }}
+          path: |
+            dist/KittyEcho-*-${{ matrix.arch }}-setup.exe
+            dist/KittyEcho-*-${{ matrix.arch }}-portable.exe
+            ${{ runner.temp }}/wordtaker-windows-${{ matrix.arch }}-receipt.json
           if-no-files-found: error
-          retention-days: 1
+          retention-days: 7
