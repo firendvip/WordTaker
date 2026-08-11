@@ -31,6 +31,7 @@
     "prebuild:linux": "npm run prepare:python:embedded && npm run build:renderer",
     "build:linux": "electron-builder --linux",
     "pack": "npm run patch:uiohook && npm run build:renderer && node scripts/check-embedded-python.js && CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --dir",
+    "pack:passport-candidate": "npm run patch:uiohook && npm run build:renderer && node scripts/check-embedded-python.js && CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --config electron-builder.passport-candidate.cjs --dir",
     "dist": "npm run prepare:python:embedded && npm run build:renderer && electron-builder",
     "lint": "cd src && eslint .",
     "test": "vitest run",
@@ -174,14 +175,6 @@
       "**/*.node",
       "node_modules/.pnpm/**/uiohook-napi/**/*",
       "node_modules/.pnpm/**/better-sqlite3/**/*"
-    ],
-    "protocols": [
-      {
-        "name": "Wangsan WordTaker OAuth",
-        "schemes": [
-          "wangsan-wordtaker"
-        ]
-      }
     ],
     "mac": {
       "category": "public.app-category.productivity",

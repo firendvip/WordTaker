@@ -133,7 +133,7 @@ function discovery() {
 function seededPassport(overrides = {}) {
   return {
     accessToken: "persisted-access-token",
-    refreshToken: `rt1.${"R".repeat(43)}`,
+    refreshToken: `opaque-refresh~${"R".repeat(43)}`,
     expiresAt: NOW_MS + 900_000,
     scope: REQUESTED_SCOPE,
     centralSessionId: CENTRAL_SESSION_ID,
@@ -153,7 +153,7 @@ async function completeLogin({ manager, openExternal }) {
   await manager.startLogin();
   const authorizationUrl = new URL(openExternal.mock.calls[0][0]);
   return manager.handleCallback(
-    `${REDIRECT_URI}?code=ac1.${"A".repeat(43)}&state=${authorizationUrl.searchParams.get("state")}`,
+    `${REDIRECT_URI}?code=opaque-code~${"A".repeat(43)}&state=${authorizationUrl.searchParams.get("state")}`,
   );
 }
 
@@ -208,7 +208,7 @@ function fixture({
             sid: CENTRAL_SESSION_ID,
             jti: "3793bbfa-7c55-47b4-adb3-cb95f47ef915",
           }),
-          refresh_token: `rt1.${"S".repeat(43)}`,
+          refresh_token: `opaque-refresh~${"S".repeat(43)}`,
           token_type: "Bearer",
           expires_in: 900,
           scope: REQUESTED_SCOPE,
@@ -232,7 +232,7 @@ function fixture({
           sid: CENTRAL_SESSION_ID,
           jti: "0f13be9a-e100-4377-b43e-a2599aaf472d",
         }),
-        refresh_token: `rt1.${"R".repeat(43)}`,
+        refresh_token: `opaque-refresh~${"R".repeat(43)}`,
         token_type: "Bearer",
         expires_in: 900,
         scope: REQUESTED_SCOPE,
@@ -291,7 +291,7 @@ describe("PassportAuthManager", () => {
     expect(authorizationUrl.searchParams.get("client_secret")).toBeNull();
 
     const result = await manager.handleCallback(
-      `${REDIRECT_URI}?code=ac1.${"A".repeat(43)}&state=${authorizationUrl.searchParams.get("state")}`,
+      `${REDIRECT_URI}?code=opaque-code~${"A".repeat(43)}&state=${authorizationUrl.searchParams.get("state")}`,
     );
     expect(result).toMatchObject({
       success: true,
@@ -317,7 +317,7 @@ describe("PassportAuthManager", () => {
   });
 
   it("revokes the replaced refresh family only after interactive reauthentication commits", async () => {
-    const oldRefreshToken = `rt1.${"Q".repeat(43)}`;
+    const oldRefreshToken = `opaque-refresh~${"Q".repeat(43)}`;
     const context = fixture({
       storeOptions: {
         passport: seededPassport({
@@ -334,7 +334,7 @@ describe("PassportAuthManager", () => {
       provider: "passport",
     });
     await new Promise((resolve) => setTimeout(resolve, 0));
-    expect(context.store.getPassport()?.refreshToken).toBe(`rt1.${"R".repeat(43)}`);
+    expect(context.store.getPassport()?.refreshToken).toBe(`opaque-refresh~${"R".repeat(43)}`);
     const revokeCall = context.manager.fetchFn.mock.calls.find(([url]) =>
       url.endsWith("/discovered/revoke"),
     );
@@ -342,7 +342,7 @@ describe("PassportAuthManager", () => {
   });
 
   it("preserves the existing Passport session when a replacement callback fails", async () => {
-    const oldRefreshToken = `rt1.${"Q".repeat(43)}`;
+    const oldRefreshToken = `opaque-refresh~${"Q".repeat(43)}`;
     const oldSession = seededPassport({ refreshToken: oldRefreshToken });
 
     const invalidGrant = fixture({ storeOptions: { passport: oldSession } });
@@ -358,7 +358,7 @@ describe("PassportAuthManager", () => {
     });
     await expect(
       invalidGrant.manager.handleCallback(
-        `${REDIRECT_URI}?code=ac1.${"A".repeat(43)}&state=${invalidGrantUrl.searchParams.get("state")}`,
+        `${REDIRECT_URI}?code=opaque-code~${"A".repeat(43)}&state=${invalidGrantUrl.searchParams.get("state")}`,
       ),
     ).rejects.toMatchObject({ code: "AUTH_REQUIRED" });
     expect(invalidGrant.store.getPassport()?.refreshToken).toBe(oldRefreshToken);
@@ -374,9 +374,9 @@ describe("PassportAuthManager", () => {
     );
     await expect(
       invalidProfile.manager.handleCallback(
-        `${REDIRECT_URI}?code=ac1.${"A".repeat(43)}&state=${invalidProfileUrl.searchParams.get("state")}`,
+        `${REDIRECT_URI}?code=opaque-code~${"A".repeat(43)}&state=${invalidProfileUrl.searchParams.get("state")}`,
       ),
-    ).rejects.toMatchObject({ code: "INVALID_USERINFO" });
+    ).rejects.toMatchObject({ code: "IDENTITY_CONFLICT" });
     expect(invalidProfile.store.getPassport()?.refreshToken).toBe(oldRefreshToken);
 
     const storageFailure = fixture({
@@ -386,7 +386,7 @@ describe("PassportAuthManager", () => {
     const storageFailureUrl = new URL(storageFailure.openExternal.mock.calls.at(-1)[0]);
     await expect(
       storageFailure.manager.handleCallback(
-        `${REDIRECT_URI}?code=ac1.${"A".repeat(43)}&state=${storageFailureUrl.searchParams.get("state")}`,
+        `${REDIRECT_URI}?code=opaque-code~${"A".repeat(43)}&state=${storageFailureUrl.searchParams.get("state")}`,
       ),
     ).rejects.toMatchObject({ code: "SECURE_STORAGE_REQUIRED" });
     expect(storageFailure.store.getPassport()?.refreshToken).toBe(oldRefreshToken);
@@ -397,7 +397,7 @@ describe("PassportAuthManager", () => {
         url.endsWith("/discovered/revoke"),
       );
       expect(new URLSearchParams(revokeCall?.[1]?.body || "").get("token")).toBe(
-        `rt1.${"R".repeat(43)}`,
+        `opaque-refresh~${"R".repeat(43)}`,
       );
     }
   });
@@ -407,7 +407,7 @@ describe("PassportAuthManager", () => {
     await manager.startLogin();
 
     await expect(
-      manager.handleCallback(`${REDIRECT_URI}?code=ac1.${"A".repeat(43)}&state=wrong-state-value`),
+      manager.handleCallback(`${REDIRECT_URI}?code=opaque-code~${"A".repeat(43)}&state=wrong-state-value`),
     ).rejects.toThrow(/state/i);
     expect(fetchFn.mock.calls.some(([url]) => url.endsWith("/discovered/token"))).toBe(false);
     expect(store.setPassport).not.toHaveBeenCalled();
@@ -418,7 +418,7 @@ describe("PassportAuthManager", () => {
     await manager.startLogin();
     const authorizationUrl = new URL(openExternal.mock.calls[0][0]);
     await manager.handleCallback(
-      `${REDIRECT_URI}?code=ac1.${"A".repeat(43)}&state=${authorizationUrl.searchParams.get("state")}`,
+      `${REDIRECT_URI}?code=opaque-code~${"A".repeat(43)}&state=${authorizationUrl.searchParams.get("state")}`,
     );
     expect(getUserinfoCalls()).toBe(1);
     await manager.ensureFreshUserInfo();
@@ -481,14 +481,14 @@ describe("PassportAuthManager", () => {
     const authorizationUrl = new URL(openExternal.mock.calls[0][0]);
     await expect(
       manager.handleCallback(
-        `${REDIRECT_URI}?code=ac1.${"A".repeat(43)}&state=${authorizationUrl.searchParams.get("state")}`,
+        `${REDIRECT_URI}?code=opaque-code~${"A".repeat(43)}&state=${authorizationUrl.searchParams.get("state")}`,
       ),
     ).rejects.toMatchObject({ code: "AUTH_REQUIRED" });
     expect(store.getPassport()).toBeNull();
     await new Promise((resolve) => setTimeout(resolve, 0));
     const revokeCall = fetchFn.mock.calls.find(([url]) => url.endsWith("/discovered/revoke"));
     expect(new URLSearchParams(revokeCall?.[1]?.body || "").get("token")).toBe(
-      `rt1.${"R".repeat(43)}`,
+      `opaque-refresh~${"R".repeat(43)}`,
     );
   });
 
@@ -501,7 +501,7 @@ describe("PassportAuthManager", () => {
         return jsonResponse({
           access_token: "malformed",
           id_token: "malformed",
-          refresh_token: `rt1.${"C".repeat(43)}`,
+          refresh_token: `opaque-refresh~${"C".repeat(43)}`,
           token_type: "NotBearer",
           expires_in: 900,
           scope: REQUESTED_SCOPE,
@@ -513,7 +513,7 @@ describe("PassportAuthManager", () => {
     const callbackState = new URL(callback.openExternal.mock.calls[0][0]).searchParams.get("state");
     await expect(
       callback.manager.handleCallback(
-        `${REDIRECT_URI}?code=ac1.${"A".repeat(43)}&state=${callbackState}`,
+        `${REDIRECT_URI}?code=opaque-code~${"A".repeat(43)}&state=${callbackState}`,
       ),
     ).rejects.toMatchObject({ code: "INVALID_TOKEN_RESPONSE" });
 
@@ -526,7 +526,7 @@ describe("PassportAuthManager", () => {
       if (url.endsWith("/discovered/token") && body.get("grant_type") === "refresh_token") {
         return jsonResponse({
           access_token: "malformed",
-          refresh_token: `rt1.${"D".repeat(43)}`,
+          refresh_token: `opaque-refresh~${"D".repeat(43)}`,
           token_type: "NotBearer",
           expires_in: 900,
           scope: REQUESTED_SCOPE,
@@ -545,8 +545,8 @@ describe("PassportAuthManager", () => {
     const refreshRevokes = refresh.manager.fetchFn.mock.calls
       .filter(([url]) => url.endsWith("/discovered/revoke"))
       .map(([, options]) => new URLSearchParams(options.body).get("token"));
-    expect(callbackRevokes).toContain(`rt1.${"C".repeat(43)}`);
-    expect(refreshRevokes).toContain(`rt1.${"D".repeat(43)}`);
+    expect(callbackRevokes).toContain(`opaque-refresh~${"C".repeat(43)}`);
+    expect(refreshRevokes).toContain(`opaque-refresh~${"D".repeat(43)}`);
   });
 
   it("destroys the local session before best-effort refresh-token revocation and is idempotent", async () => {
@@ -555,7 +555,7 @@ describe("PassportAuthManager", () => {
     await manager.startLogin();
     const authorizationUrl = new URL(openExternal.mock.calls[0][0]);
     await manager.handleCallback(
-      `${REDIRECT_URI}?code=ac1.${"A".repeat(43)}&state=${authorizationUrl.searchParams.get("state")}`,
+      `${REDIRECT_URI}?code=opaque-code~${"A".repeat(43)}&state=${authorizationUrl.searchParams.get("state")}`,
     );
     events.length = 0;
 
@@ -572,11 +572,11 @@ describe("PassportAuthManager", () => {
     const authorizationUrl = new URL(context.openExternal.mock.calls[0][0]);
     await expect(
       context.manager.handleCallback(
-        `${REDIRECT_URI}?code=ac1.${"A".repeat(43)}&state=wrong-state-value`,
+        `${REDIRECT_URI}?code=opaque-code~${"A".repeat(43)}&state=wrong-state-value`,
       ),
     ).rejects.toMatchObject({ code: "STATE_MISMATCH" });
 
-    const callback = `${REDIRECT_URI}?code=ac1.${"A".repeat(43)}&state=${authorizationUrl.searchParams.get("state")}`;
+    const callback = `${REDIRECT_URI}?code=opaque-code~${"A".repeat(43)}&state=${authorizationUrl.searchParams.get("state")}`;
     await expect(context.manager.handleCallback(callback)).resolves.toMatchObject({ success: true });
     const tokenCalls = context.fetchFn.mock.calls.filter(([url]) => url.endsWith("/discovered/token"));
     await expect(context.manager.handleCallback(callback)).rejects.toMatchObject({ code: "NO_AUTH_REQUEST" });
@@ -685,7 +685,7 @@ describe("PassportAuthManager", () => {
     await Promise.all([refreshRejected, newerRejected]);
     await expect(
       context.manager.handleCallback(
-        `${REDIRECT_URI}?code=ac1.${"A".repeat(43)}&state=${authorizationUrl.searchParams.get("state")}`,
+        `${REDIRECT_URI}?code=opaque-code~${"A".repeat(43)}&state=${authorizationUrl.searchParams.get("state")}`,
       ),
     ).resolves.toMatchObject({ success: true, provider: "passport" });
   });
@@ -720,7 +720,7 @@ describe("PassportAuthManager", () => {
     );
     expect(refreshCalls).toHaveLength(0);
     expect(context.store.getPassport()).toMatchObject({
-      refreshToken: `rt1.${"R".repeat(43)}`,
+      refreshToken: `opaque-refresh~${"R".repeat(43)}`,
     });
     expect(context.store.getPassport()).not.toHaveProperty("refreshOutcomeUnknown");
 
@@ -774,16 +774,16 @@ describe("PassportAuthManager", () => {
     releaseRefresh.resolve();
     await refreshRejected;
     expect(context.store.getPassport()).toMatchObject({
-      refreshToken: `rt1.${"S".repeat(43)}`,
+      refreshToken: `opaque-refresh~${"S".repeat(43)}`,
       account: { passport_user_id: PASSPORT_USER_ID },
     });
     const revokedTokens = context.manager.fetchFn.mock.calls
       .filter(([url]) => url.endsWith("/discovered/revoke"))
       .map(([, options]) => new URLSearchParams(options.body).get("token"));
-    expect(revokedTokens).not.toContain(`rt1.${"S".repeat(43)}`);
+    expect(revokedTokens).not.toContain(`opaque-refresh~${"S".repeat(43)}`);
     await expect(
       context.manager.handleCallback(
-        `${REDIRECT_URI}?code=ac1.${"A".repeat(43)}&state=${authorizationUrl.searchParams.get("state")}`,
+        `${REDIRECT_URI}?code=opaque-code~${"A".repeat(43)}&state=${authorizationUrl.searchParams.get("state")}`,
       ),
     ).resolves.toMatchObject({ success: true });
   });
@@ -813,12 +813,12 @@ describe("PassportAuthManager", () => {
     releaseRefresh.resolve();
     await rejected;
     expect(context.store.getPassport()).toMatchObject({
-      refreshToken: `rt1.${"S".repeat(43)}`,
+      refreshToken: `opaque-refresh~${"S".repeat(43)}`,
     });
     const revokedTokens = context.manager.fetchFn.mock.calls
       .filter(([url]) => url.endsWith("/discovered/revoke"))
       .map(([, options]) => new URLSearchParams(options.body).get("token"));
-    expect(revokedTokens).not.toContain(`rt1.${"S".repeat(43)}`);
+    expect(revokedTokens).not.toContain(`opaque-refresh~${"S".repeat(43)}`);
     expect(context.manager.pending).not.toBeNull();
   });
 
@@ -863,7 +863,7 @@ describe("PassportAuthManager", () => {
     expect(oldOutcome.error).toMatchObject({ code: "AUTH_CANCELLED" });
     expect(requestsBeforeRelease).toBe(1);
     expect(readyOutcome.value).toMatchObject({ provider: "passport" });
-    expect(context.store.getPassport().refreshToken).toBe(`rt1.${"S".repeat(43)}`);
+    expect(context.store.getPassport().refreshToken).toBe(`opaque-refresh~${"S".repeat(43)}`);
     expect(context.getUserinfoCalls()).toBe(1);
   });
 
@@ -1026,7 +1026,7 @@ describe("PassportAuthManager", () => {
       url.endsWith("/discovered/revoke"),
     );
     expect(new URLSearchParams(revokeCall?.[1]?.body || "").get("token")).toBe(
-      `rt1.${"R".repeat(43)}`,
+      `opaque-refresh~${"R".repeat(43)}`,
     );
 
     const empty = fixture({ storeOptions: { passport: null } });
@@ -1052,7 +1052,7 @@ describe("PassportAuthManager", () => {
       url.endsWith("/discovered/revoke"),
     );
     expect(new URLSearchParams(blockedRevoke?.[1]?.body || "").get("token")).toBe(
-      `rt1.${"R".repeat(43)}`,
+      `opaque-refresh~${"R".repeat(43)}`,
     );
   });
 
@@ -1070,11 +1070,11 @@ describe("PassportAuthManager", () => {
       String(options?.body || "").includes("grant_type=refresh_token"),
     );
     const body = new URLSearchParams(refreshCall[1].body);
-    expect(body.get("refresh_token")).toBe(`rt1.${"R".repeat(43)}`);
+    expect(body.get("refresh_token")).toBe(`opaque-refresh~${"R".repeat(43)}`);
     expect(body.get("client_id")).toBe(CLIENT_ID);
     expect(body.has("client_secret")).toBe(false);
     expect(context.store.getPassport()).toMatchObject({
-      refreshToken: `rt1.${"S".repeat(43)}`,
+      refreshToken: `opaque-refresh~${"S".repeat(43)}`,
       centralSessionId: CENTRAL_SESSION_ID,
       account: { passport_user_id: PASSPORT_USER_ID, profile_version: 3 },
     });
@@ -1110,7 +1110,7 @@ describe("PassportAuthManager", () => {
     context.store.clearPassport.mockClear();
     await expect(context.manager.refresh()).rejects.toMatchObject({ code: "INVALID_USERINFO" });
     expect(context.store.getPassport()).toMatchObject({
-      refreshToken: `rt1.${"S".repeat(43)}`,
+      refreshToken: `opaque-refresh~${"S".repeat(43)}`,
       account: { profile_version: 3 },
     });
     expect(context.store.clearPassport).not.toHaveBeenCalled();
@@ -1135,12 +1135,12 @@ describe("PassportAuthManager", () => {
       retryable: true,
     });
     expect(context.store.getPassport()).toMatchObject({
-      refreshToken: `rt1.${"S".repeat(43)}`,
+      refreshToken: `opaque-refresh~${"S".repeat(43)}`,
     });
     expect(scheduled.some(({ delay }) => delay === 60_000)).toBe(true);
   });
 
-  it("persists the consumed refresh rotation before temporary JWKS failure", async () => {
+  it("does not inspect opaque refreshed access tokens through JWKS", async () => {
     const context = fixture({ storeOptions: { passport: seededPassport() } });
     const originalFetch = context.manager.fetchFn;
     context.manager.fetchFn = vi.fn(async (url, options = {}) =>
@@ -1149,12 +1149,9 @@ describe("PassportAuthManager", () => {
         : originalFetch(url, options),
     );
 
-    await expect(context.manager.refresh()).rejects.toMatchObject({
-      code: "PASSPORT_REQUEST_FAILED",
-      retryable: true,
-    });
+    await expect(context.manager.refresh()).resolves.toMatchObject({ success: true });
     expect(context.store.getPassport()).toMatchObject({
-      refreshToken: `rt1.${"S".repeat(43)}`,
+      refreshToken: `opaque-refresh~${"S".repeat(43)}`,
       account: { passport_user_id: PASSPORT_USER_ID },
     });
     expect(context.store.clearPassport).not.toHaveBeenCalled();
@@ -1182,7 +1179,7 @@ describe("PassportAuthManager", () => {
       retryable: false,
     });
     expect(context.store.getPassport()).toMatchObject({
-      refreshToken: `rt1.${"R".repeat(43)}`,
+      refreshToken: `opaque-refresh~${"R".repeat(43)}`,
       refreshOutcomeUnknown: true,
     });
     await expect(context.manager.refresh()).rejects.toMatchObject({
@@ -1203,7 +1200,7 @@ describe("PassportAuthManager", () => {
       code: "SECURE_STORAGE_REQUIRED",
     });
     expect(unavailable.getRefreshCalls()).toBe(0);
-    expect(unavailable.store.getPassport()?.refreshToken).toBe(`rt1.${"R".repeat(43)}`);
+    expect(unavailable.store.getPassport()?.refreshToken).toBe(`opaque-refresh~${"R".repeat(43)}`);
 
     const missingAdapter = fixture({
       storeOptions: { passport: seededPassport({ accessToken: null, expiresAt: 0 }) },
@@ -1223,7 +1220,7 @@ describe("PassportAuthManager", () => {
       if (url.endsWith("/discovered/token") && body.get("grant_type") === "refresh_token") {
         const response = await originalFetch(url, options);
         const payload = JSON.parse(await response.text());
-        return jsonResponse({ ...payload, refresh_token: `rt1.${"R".repeat(43)}` });
+        return jsonResponse({ ...payload, refresh_token: `opaque-refresh~${"R".repeat(43)}` });
       }
       return originalFetch(url, options);
     });
@@ -1232,7 +1229,7 @@ describe("PassportAuthManager", () => {
       code: "REFRESH_OUTCOME_UNKNOWN",
     });
     expect(context.store.getPassport()).toMatchObject({
-      refreshToken: `rt1.${"R".repeat(43)}`,
+      refreshToken: `opaque-refresh~${"R".repeat(43)}`,
       refreshOutcomeUnknown: true,
     });
     expect(context.getRefreshCalls()).toBe(1);
@@ -1311,7 +1308,7 @@ describe("PassportAuthManager", () => {
     const rejected = expect(refreshing).rejects.toMatchObject({ code: "AUTH_CANCELLED" });
     await refreshEntered.promise;
     context.store.setPassport(seededPassport({
-      refreshToken: `rt1.${"B".repeat(43)}`,
+      refreshToken: `opaque-refresh~${"B".repeat(43)}`,
       refreshOutcomeUnknown: false,
       account: {
         ...seededPassport().account,
@@ -1321,7 +1318,7 @@ describe("PassportAuthManager", () => {
     releaseRefresh.resolve();
     await rejected;
     expect(context.store.getPassport()).toMatchObject({
-      refreshToken: `rt1.${"B".repeat(43)}`,
+      refreshToken: `opaque-refresh~${"B".repeat(43)}`,
       account: { passport_user_id: "3793bbfa-7c55-47b4-adb3-cb95f47ef915" },
     });
     expect(context.store.setPassportRefreshToken).not.toHaveBeenCalled();
@@ -1348,7 +1345,7 @@ describe("PassportAuthManager", () => {
     const rejected = expect(oldRefresh).rejects.toMatchObject({ code: "AUTH_CANCELLED" });
     await refreshEntered.promise;
     context.store.setPassport(seededPassport({
-      refreshToken: `rt1.${"B".repeat(43)}`,
+      refreshToken: `opaque-refresh~${"B".repeat(43)}`,
       refreshOutcomeUnknown: false,
       account: {
         ...seededPassport().account,
@@ -1358,7 +1355,7 @@ describe("PassportAuthManager", () => {
     releaseRefresh.resolve();
     await rejected;
     expect(context.store.getPassport()).toMatchObject({
-      refreshToken: `rt1.${"B".repeat(43)}`,
+      refreshToken: `opaque-refresh~${"B".repeat(43)}`,
       refreshOutcomeUnknown: false,
     });
   });
@@ -1453,7 +1450,7 @@ describe("PassportAuthManager", () => {
     });
 
     await context.manager.initialize();
-    expect(context.store.getPassport()?.refreshToken).toBe(`rt1.${"R".repeat(43)}`);
+    expect(context.store.getPassport()?.refreshToken).toBe(`opaque-refresh~${"R".repeat(43)}`);
     expect(context.store.clearPassport).not.toHaveBeenCalled();
     expect(context.logger.warn).not.toHaveBeenCalledWith(
       "恢复统一登录会话失败",
@@ -1586,7 +1583,7 @@ describe("PassportAuthManager", () => {
       url.endsWith("/discovered/revoke"),
     );
     expect(new URLSearchParams(revokeCall?.[1]?.body || "").get("token")).toBe(
-      `rt1.${"R".repeat(43)}`,
+      `opaque-refresh~${"R".repeat(43)}`,
     );
   });
 
@@ -1624,7 +1621,7 @@ describe("PassportAuthManager", () => {
     await revokeEntered.promise;
     context.manager.invalidateAuthOperations();
     context.store.setPassport(seededPassport({
-      refreshToken: `rt1.${"B".repeat(43)}`,
+      refreshToken: `opaque-refresh~${"B".repeat(43)}`,
       account: {
         ...seededPassport().account,
         passport_user_id: "3793bbfa-7c55-47b4-adb3-cb95f47ef915",
@@ -1655,7 +1652,7 @@ describe("PassportAuthManager", () => {
       url.endsWith("/discovered/revoke"),
     );
     expect(new URLSearchParams(revokeCall?.[1]?.body || "").get("token")).toBe(
-      `rt1.${"S".repeat(43)}`,
+      `opaque-refresh~${"S".repeat(43)}`,
     );
   });
 
@@ -1671,14 +1668,14 @@ describe("PassportAuthManager", () => {
       code: "SECURE_STORAGE_REQUIRED",
     });
     expect(context.store.getPassport()).toMatchObject({
-      refreshToken: `rt1.${"S".repeat(43)}`,
+      refreshToken: `opaque-refresh~${"S".repeat(43)}`,
       account: { passport_user_id: PASSPORT_USER_ID },
     });
     await new Promise((resolve) => setTimeout(resolve, 0));
     const revokedTokens = context.manager.fetchFn.mock.calls
       .filter(([url]) => url.endsWith("/discovered/revoke"))
       .map(([, options]) => new URLSearchParams(options.body).get("token"));
-    expect(revokedTokens).not.toContain(`rt1.${"S".repeat(43)}`);
+    expect(revokedTokens).not.toContain(`opaque-refresh~${"S".repeat(43)}`);
   });
 
   it("does not let an older revoke operation suppress logout after legacy reauthentication", async () => {
@@ -1755,7 +1752,7 @@ describe("PassportAuthManager", () => {
     releaseUserinfo.resolve();
     await checking;
     expect(context.store.getPassport()).toMatchObject({
-      refreshToken: `rt1.${"S".repeat(43)}`,
+      refreshToken: `opaque-refresh~${"S".repeat(43)}`,
     });
   });
 
@@ -1784,7 +1781,7 @@ describe("PassportAuthManager", () => {
     releaseStaleUserinfo.resolve();
     await staleRejected;
     expect(context.store.getPassport()).toMatchObject({
-      refreshToken: `rt1.${"S".repeat(43)}`,
+      refreshToken: `opaque-refresh~${"S".repeat(43)}`,
       accessToken: expect.stringMatching(/^eyJ/),
     });
     expect(context.store.clearPassport).not.toHaveBeenCalled();
@@ -1820,7 +1817,7 @@ describe("PassportAuthManager", () => {
     releaseRefresh.resolve();
     await expect(refreshWork).rejects.toMatchObject({ retryable: true });
     expect(context.store.getPassport()).toMatchObject({
-      refreshToken: `rt1.${"S".repeat(43)}`,
+      refreshToken: `opaque-refresh~${"S".repeat(43)}`,
       account: { nickname: "新资料", profile_version: 4 },
     });
   });
@@ -1949,7 +1946,7 @@ describe("PassportAuthManager", () => {
       return originalCallbackFetch(url, options);
     });
     const callbackWork = callback.manager.handleCallback(
-      `${REDIRECT_URI}?code=ac1.${"A".repeat(43)}&state=${state}`,
+      `${REDIRECT_URI}?code=opaque-code~${"A".repeat(43)}&state=${state}`,
     );
     const callbackRejected = expect(callbackWork).rejects.toMatchObject({ code: "AUTH_CANCELLED" });
     await callbackEntered.promise;
@@ -1997,7 +1994,7 @@ describe("PassportAuthManager", () => {
       return originalCallbackFetch(url, options);
     });
     const callbackWork = callback.manager.handleCallback(
-      `${REDIRECT_URI}?code=ac1.${"A".repeat(43)}&state=${authorizationUrl.searchParams.get("state")}`,
+      `${REDIRECT_URI}?code=opaque-code~${"A".repeat(43)}&state=${authorizationUrl.searchParams.get("state")}`,
     );
     const callbackRejected = expect(callbackWork).rejects.toMatchObject({ code: "AUTH_CANCELLED" });
     await tokenEntered.promise;
@@ -2023,7 +2020,7 @@ describe("PassportAuthManager", () => {
     });
 
     const callbackWork = context.manager.handleCallback(
-      `${REDIRECT_URI}?code=ac1.${"A".repeat(43)}&state=${authorizationUrl.searchParams.get("state")}`,
+      `${REDIRECT_URI}?code=opaque-code~${"A".repeat(43)}&state=${authorizationUrl.searchParams.get("state")}`,
     );
     const callbackRejected = expect(callbackWork).rejects.toMatchObject({
       code: "AUTH_CANCELLED",
@@ -2038,7 +2035,7 @@ describe("PassportAuthManager", () => {
       url.endsWith("/discovered/revoke"),
     );
     expect(new URLSearchParams(revokeCall?.[1]?.body || "").get("token")).toBe(
-      `rt1.${"R".repeat(43)}`,
+      `opaque-refresh~${"R".repeat(43)}`,
     );
     expect(context.store.getPassport()).toBeNull();
   });
@@ -2222,7 +2219,7 @@ describe("PassportAuthManager", () => {
     ).rejects.toMatchObject({ code: "INVALID_RESPONSE" });
   });
 
-  it("reloads JWKS once for both initial verification and refresh key rotation", async () => {
+  it("reloads JWKS for the signed initial ID token but never for opaque refresh access", async () => {
     const initial = fixture();
     await initial.manager.startLogin();
     const originalInitialLoader = initial.manager.loadJwks.bind(initial.manager);
@@ -2233,7 +2230,7 @@ describe("PassportAuthManager", () => {
     const state = new URL(initial.openExternal.mock.calls[0][0]).searchParams.get("state");
     await expect(
       initial.manager.handleCallback(
-        `${REDIRECT_URI}?code=ac1.${"A".repeat(43)}&state=${state}`,
+        `${REDIRECT_URI}?code=opaque-code~${"A".repeat(43)}&state=${state}`,
       ),
     ).resolves.toMatchObject({ success: true });
     expect(initial.manager.loadJwks).toHaveBeenCalledTimes(2);
@@ -2245,7 +2242,7 @@ describe("PassportAuthManager", () => {
       .mockResolvedValueOnce({ keys: [] })
       .mockImplementation(originalRefreshLoader);
     await expect(refreshing.manager.refresh()).resolves.toMatchObject({ success: true });
-    expect(refreshing.manager.loadJwks).toHaveBeenCalledTimes(2);
+    expect(refreshing.manager.loadJwks).not.toHaveBeenCalled();
   });
 
   it("runs scheduled refresh failure handling without leaking sensitive values", async () => {
@@ -2395,12 +2392,12 @@ describe("PassportAuthManager", () => {
       url.endsWith("/discovered/revoke"),
     );
     expect(new URLSearchParams(revokeCall[1].body).get("token")).toBe(
-      `rt1.${"R".repeat(43)}`,
+      `opaque-refresh~${"R".repeat(43)}`,
     );
   });
 
   it("does not forget a failed-logout revocation when a new login succeeds", async () => {
-    const abandonedRefreshToken = `rt1.${"Q".repeat(43)}`;
+    const abandonedRefreshToken = `opaque-refresh~${"Q".repeat(43)}`;
     const context = fixture({
       storeOptions: {
         passport: seededPassport({ refreshToken: abandonedRefreshToken }),
@@ -2419,12 +2416,12 @@ describe("PassportAuthManager", () => {
       .map(([, options]) => new URLSearchParams(options.body).get("token"));
     expect(revokedTokens).toContain(abandonedRefreshToken);
     expect(context.store.getPassport()).toMatchObject({
-      refreshToken: `rt1.${"R".repeat(43)}`,
+      refreshToken: `opaque-refresh~${"R".repeat(43)}`,
     });
   });
 
   it("single-flights revocation and lets a compatible login drain an abandoned token", async () => {
-    const abandonedRefreshToken = `rt1.${"Q".repeat(43)}`;
+    const abandonedRefreshToken = `opaque-refresh~${"Q".repeat(43)}`;
     const context = fixture({
       storeOptions: {
         passport: seededPassport({ refreshToken: abandonedRefreshToken }),
@@ -2475,7 +2472,7 @@ describe("PassportAuthManager", () => {
     const state = new URL(callback.openExternal.mock.calls[0][0]).searchParams.get("state");
     await expect(
       callback.manager.handleCallback(
-        `${REDIRECT_URI}?code=ac1.${"A".repeat(43)}&state=${state}`,
+        `${REDIRECT_URI}?code=opaque-code~${"A".repeat(43)}&state=${state}`,
       ),
     ).rejects.toThrow("unexpected validator failure");
     expect(notifications.at(-1)).toEqual({

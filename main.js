@@ -136,13 +136,15 @@ const { createPassportAimMapper } = require("./src/helpers/passportAimMapper");
 const backendClient = require("./src/helpers/backendClient");
 const { extractCallbackUrl } = require("./src/helpers/passportOidc");
 const {
-  isPassportRolloutEnabled,
   isTrustedSettingsUrl,
   shouldPreflightSensitivePassport,
 } = require("./src/helpers/passportDesktopPolicy");
-const PASSPORT_ROLLOUT_ENABLED = isPassportRolloutEnabled(
-  process.env.WORDTAKER_PASSPORT_ENABLED,
-);
+const { resolvePassportCapability } = require("./src/helpers/passportCapability");
+const PASSPORT_ROLLOUT_ENABLED = resolvePassportCapability({
+  isPackaged: app.isPackaged,
+  packageMetadata: require("./package.json"),
+  environmentValue: process.env.WORDTAKER_PASSPORT_ENABLED,
+}).enabled;
 tokenStore.setPassportRolloutEnabled(PASSPORT_ROLLOUT_ENABLED);
 
 // 初始化日志管理器
@@ -174,12 +176,13 @@ function deliverPassportCallback(rawUrl) {
   return true;
 }
 
-app.on("open-url", (event, rawUrl) => {
-  if (!PASSPORT_ROLLOUT_ENABLED) return;
-  if (!extractCallbackUrl([rawUrl])) return;
-  event.preventDefault();
-  deliverPassportCallback(rawUrl);
-});
+if (PASSPORT_ROLLOUT_ENABLED) {
+  app.on("open-url", (event, rawUrl) => {
+    if (!extractCallbackUrl([rawUrl])) return;
+    event.preventDefault();
+    deliverPassportCallback(rawUrl);
+  });
+}
 
 // 添加全局错误处理（同时写入早期 app.log，保证崩溃栈一定落盘）
 process.on("uncaughtException", (error) => {

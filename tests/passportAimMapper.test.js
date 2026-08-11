@@ -20,7 +20,7 @@ function deferred() {
 function passport(overrides = {}) {
   return {
     issuer: identity.issuer,
-    refreshToken: `rt1.${"R".repeat(43)}`,
+    refreshToken: `opaque-refresh~${"R".repeat(43)}`,
     account: {
       passport_user_id: PASSPORT_USER_ID,
       nickname: "中央昵称",

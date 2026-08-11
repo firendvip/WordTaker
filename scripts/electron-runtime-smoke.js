@@ -6,7 +6,7 @@ const path = require("node:path");
 
 const SENTINEL = "wordtaker-safe-storage-smoke-v1";
 const TOKEN_SMOKE_ACCESS = "runtime.smoke.access-token";
-const TOKEN_SMOKE_REFRESH = `rt1.${"R".repeat(43)}`;
+const TOKEN_SMOKE_REFRESH = `opaque-refresh~${"R".repeat(43)}`;
 
 function assertRuntimeVersion(actualVersion, expectedVersion) {
   const actual = String(actualVersion || "").trim();

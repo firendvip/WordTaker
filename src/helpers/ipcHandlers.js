@@ -1597,33 +1597,35 @@ class IPCHandlers {
 
     // 统一登录：主进程从 discovery 构造 Authorization Code + PKCE 请求，
     // 仅让系统浏览器看到 authorize URL；renderer 永远拿不到 verifier/token。
-    ipcMain.handle("auth-passport-login", async (event) => {
-      if (!isTrustedRenderer(event)) {
-        return { success: false, code: "AUTH_FORBIDDEN", error: "不允许的登录来源" };
-      }
-      if (!this.passportEnabled || !this.passportAuthManager) {
-        return { success: false, code: "PASSPORT_DISABLED", error: "统一登录尚未启用" };
-      }
-      try {
-        return await this.passportAuthManager.startLogin();
-      } catch (error) {
-        return failFromError(error, "统一登录暂不可用");
-      }
-    });
+    if (this.passportEnabled) {
+      ipcMain.handle("auth-passport-login", async (event) => {
+        if (!isTrustedRenderer(event)) {
+          return { success: false, code: "AUTH_FORBIDDEN", error: "不允许的登录来源" };
+        }
+        if (!this.passportAuthManager) {
+          return { success: false, code: "PASSPORT_DISABLED", error: "统一登录尚未启用" };
+        }
+        try {
+          return await this.passportAuthManager.startLogin();
+        } catch (error) {
+          return failFromError(error, "统一登录暂不可用");
+        }
+      });
 
-    ipcMain.handle("auth-passport-account", async (event) => {
-      if (!isTrustedRenderer(event)) {
-        return { success: false, code: "AUTH_FORBIDDEN", error: "不允许的账号操作来源" };
-      }
-      if (!this.passportEnabled || !this.passportAuthManager) {
-        return { success: false, code: "PASSPORT_DISABLED", error: "统一登录尚未启用" };
-      }
-      try {
-        return await this.passportAuthManager.openAccountCenter();
-      } catch (error) {
-        return failFromError(error, "账号中心暂不可用");
-      }
-    });
+      ipcMain.handle("auth-passport-account", async (event) => {
+        if (!isTrustedRenderer(event)) {
+          return { success: false, code: "AUTH_FORBIDDEN", error: "不允许的账号操作来源" };
+        }
+        if (!this.passportAuthManager) {
+          return { success: false, code: "PASSPORT_DISABLED", error: "统一登录尚未启用" };
+        }
+        try {
+          return await this.passportAuthManager.openAccountCenter();
+        } catch (error) {
+          return failFromError(error, "账号中心暂不可用");
+        }
+      });
+    }
 
     // 发码：手机
     ipcMain.handle("auth-sms-send", async (event, phone) => {

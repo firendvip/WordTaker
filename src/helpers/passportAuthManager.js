@@ -11,7 +11,6 @@ const {
   validateRefreshTokenResponse,
   validateTokenResponse,
   validateUserInfo,
-  verifyAccessToken,
   verifyTokenSet,
 } = require("./passportOidc");
 
@@ -505,10 +504,7 @@ class PassportAuthManager {
         verified.passportUserId,
       );
       const now = Number(this.now());
-      const expiresAt = Math.min(
-        now + tokenResponse.expiresIn * 1000,
-        verified.accessClaims.exp * 1000,
-      );
+      const expiresAt = now + tokenResponse.expiresIn * 1000;
       const replacedRefreshToken = this.tokenStore.getPassport()?.refreshToken || null;
       this.storePassportSession({
         accessToken: tokenResponse.accessToken,
@@ -721,31 +717,14 @@ class PassportAuthManager {
       // JWKS/network verification below must never leave the consumed RT behind.
       this.commitRefreshRotation(current, rotated.refreshToken);
       rotationCommitted = true;
-      let jwks = await this.loadJwks(discovery);
-      let verified;
-      try {
-        verified = verifyAccessToken(rotated.accessToken, {
-          jwks,
-          nowSeconds: Math.floor(Number(this.now()) / 1000),
-        });
-      } catch (error) {
-        if (!["INVALID_JWKS", "INVALID_TOKEN"].includes(error?.code)) throw error;
-        jwks = await this.loadJwks(discovery, { force: true });
-        verified = verifyAccessToken(rotated.accessToken, {
-          jwks,
-          nowSeconds: Math.floor(Number(this.now()) / 1000),
-        });
-      }
-      if (verified.passportUserId !== current.account.passport_user_id) {
-        throw new PassportAuthError("IDENTITY_CONFLICT", "统一登录身份发生冲突");
-      }
+      const passportUserId = current.account.passport_user_id;
       const now = Number(this.now());
-      const expiresAt = Math.min(now + rotated.expiresIn * 1000, verified.payload.exp * 1000);
+      const expiresAt = now + rotated.expiresIn * 1000;
       const latest = this.tokenStore.getPassport();
       if (
         !latest ||
         latest.refreshToken !== rotated.refreshToken ||
-        latest.account?.passport_user_id !== verified.passportUserId
+        latest.account?.passport_user_id !== passportUserId
       ) {
         throw new PassportAuthError("AUTH_CANCELLED", "认证操作已取消");
       }
@@ -754,7 +733,7 @@ class PassportAuthManager {
         accessToken: rotated.accessToken,
         expiresAt,
         scope: rotated.scope,
-        centralSessionId: verified.centralSessionId,
+        centralSessionId: latest.centralSessionId,
       };
       // Commit the one-time refresh rotation before any secondary profile I/O.
       // If userinfo is temporarily unavailable, the valid rotated family is
@@ -778,11 +757,11 @@ class PassportAuthManager {
       const profile = await this.fetchUserInfo(
         discovery,
         rotated.accessToken,
-        verified.passportUserId,
+        passportUserId,
       );
       this.assertAuthEpoch(epoch);
       const profiledSession = this.tokenStore.getPassport();
-      if (!profiledSession || profiledSession.account.passport_user_id !== verified.passportUserId) {
+      if (!profiledSession || profiledSession.account.passport_user_id !== passportUserId) {
         throw new PassportAuthError("AUTH_CANCELLED", "认证操作已取消");
       }
       const account = this.accountForProfile(profile, profiledSession.account);

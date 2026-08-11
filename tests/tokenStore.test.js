@@ -53,8 +53,8 @@ function secureStorage({
 
 function passportSession(now, overrides = {}) {
   return {
-    accessToken: "passport-token",
-    refreshToken: `rt1.${"R".repeat(43)}`,
+    accessToken: "opaque-passport-token",
+    refreshToken: `opaque-refresh~${"R".repeat(43)}`,
     idToken: "id-token",
     expiresAt: now + 900_000,
     scope: "openid profile offline_access aim.api",
@@ -125,6 +125,37 @@ describe("OS-protected credential store", () => {
     });
     expect(fs.existsSync(legacyPath)).toBe(false);
     expect(fs.existsSync(path.join(directory, SECURE_FILE_NAME))).toBe(true);
+  });
+
+  it("reads legacy fallback without mutating credentials while Passport is default-off", () => {
+    const directory = tempDirectory();
+    const legacyPath = path.join(directory, LEGACY_FILE_NAME);
+    fs.writeFileSync(
+      legacyPath,
+      JSON.stringify({ accessToken: "default-off-legacy-token", account: { userId: "42" } }),
+      { mode: 0o600 },
+    );
+    const safeStorage = secureStorage();
+    const encryptString = safeStorage.encryptString;
+    let encryptCalls = 0;
+    safeStorage.encryptString = (value) => {
+      encryptCalls += 1;
+      return encryptString(value);
+    };
+    const store = createTokenStore({
+      dataDirectory: directory,
+      safeStorage,
+      platform: "darwin",
+    });
+    store.setPassportRolloutEnabled(false);
+
+    expect(store.getLegacy()).toMatchObject({
+      accessToken: "default-off-legacy-token",
+      account: { userId: "42" },
+    });
+    expect(encryptCalls).toBe(0);
+    expect(fs.existsSync(legacyPath)).toBe(true);
+    expect(fs.existsSync(path.join(directory, SECURE_FILE_NAME))).toBe(false);
   });
 
   it("does not delete the legacy file when secure migration cannot be verified", () => {
@@ -271,7 +302,7 @@ describe("OS-protected credential store", () => {
     const persisted = JSON.parse(secureStorage().decryptString(encrypted));
     expect(persisted.passport).toMatchObject({
       issuer: OIDC_ISSUER,
-      refreshToken: `rt1.${"R".repeat(43)}`,
+      refreshToken: `opaque-refresh~${"R".repeat(43)}`,
       account: { passport_user_id: PASSPORT_USER_ID },
     });
     expect(persisted.passport).not.toHaveProperty("accessToken");
@@ -282,7 +313,7 @@ describe("OS-protected credential store", () => {
       { provider: "legacy", accessToken: "legacy-token" },
     ]);
     expect(store.getAccessTokenCandidates({ method: "GET", purpose: "aim-mapping" })).toEqual([
-      { provider: "passport", accessToken: "passport-token" },
+      { provider: "passport", accessToken: "opaque-passport-token" },
       { provider: "legacy", accessToken: "legacy-token" },
     ]);
     expect(store.getAuthState()).toMatchObject({
@@ -315,14 +346,14 @@ describe("OS-protected credential store", () => {
     expect(store.setPassport(passportSession(now))).toBe(true);
     expect(store.getPassport()).toMatchObject({
       issuer: OIDC_ISSUER,
-      accessToken: "passport-token",
+      accessToken: "opaque-passport-token",
       expiresAt: now + 900_000,
     });
 
     const restarted = createTokenStore(options);
     expect(restarted.getPassport()).toMatchObject({
       issuer: OIDC_ISSUER,
-      refreshToken: `rt1.${"R".repeat(43)}`,
+      refreshToken: `opaque-refresh~${"R".repeat(43)}`,
       accessToken: null,
       expiresAt: 0,
     });
@@ -341,33 +372,33 @@ describe("OS-protected credential store", () => {
     const store = createTokenStore(options);
     store.setPassport(passportSession(now));
     expect(store.setPassportRefreshToken(
-      `rt1.${"R".repeat(43)}`,
-      `rt1.${"S".repeat(43)}`,
+      `opaque-refresh~${"R".repeat(43)}`,
+      `opaque-refresh~${"S".repeat(43)}`,
     )).toBe(true);
     expect(store.getPassport()).toMatchObject({
-      refreshToken: `rt1.${"S".repeat(43)}`,
-      accessToken: "passport-token",
+      refreshToken: `opaque-refresh~${"S".repeat(43)}`,
+      accessToken: "opaque-passport-token",
     });
     expect(createTokenStore(options).getPassport()).toMatchObject({
-      refreshToken: `rt1.${"S".repeat(43)}`,
+      refreshToken: `opaque-refresh~${"S".repeat(43)}`,
       accessToken: null,
     });
     expect(store.setPassportRefreshToken(
-      `rt1.${"R".repeat(43)}`,
-      `rt1.${"T".repeat(43)}`,
+      `opaque-refresh~${"R".repeat(43)}`,
+      `opaque-refresh~${"T".repeat(43)}`,
     )).toBe(false);
     expect(store.setPassportRefreshToken(
-      `rt1.${"S".repeat(43)}`,
-      `rt1.${"S".repeat(43)}`,
+      `opaque-refresh~${"S".repeat(43)}`,
+      `opaque-refresh~${"S".repeat(43)}`,
     )).toBe(false);
-    expect(store.quarantinePassportRefreshToken(`rt1.${"S".repeat(43)}`)).toBe(true);
+    expect(store.quarantinePassportRefreshToken(`opaque-refresh~${"S".repeat(43)}`)).toBe(true);
     expect(store.getPassport()).toMatchObject({
-      refreshToken: `rt1.${"S".repeat(43)}`,
+      refreshToken: `opaque-refresh~${"S".repeat(43)}`,
       refreshOutcomeUnknown: true,
-      accessToken: "passport-token",
+      accessToken: "opaque-passport-token",
     });
     expect(createTokenStore(options).getPassport()).toMatchObject({
-      refreshToken: `rt1.${"S".repeat(43)}`,
+      refreshToken: `opaque-refresh~${"S".repeat(43)}`,
       refreshOutcomeUnknown: true,
       accessToken: null,
     });
@@ -376,10 +407,10 @@ describe("OS-protected credential store", () => {
       provider: null,
       account: null,
     });
-    expect(store.quarantinePassportRefreshToken("bad-refresh-token")).toBe(false);
-    expect(store.quarantinePassportRefreshToken(`rt1.${"T".repeat(43)}`)).toBe(false);
-    expect(store.setPassportRefreshToken("bad-refresh-token", `rt1.${"T".repeat(43)}`)).toBe(false);
-    expect(store.setPassportRefreshToken(`rt1.${"S".repeat(43)}`, "bad-refresh-token")).toBe(false);
+    expect(store.quarantinePassportRefreshToken("bad/refresh/token")).toBe(false);
+    expect(store.quarantinePassportRefreshToken(`opaque-refresh~${"T".repeat(43)}`)).toBe(false);
+    expect(store.setPassportRefreshToken("bad/refresh/token", `opaque-refresh~${"T".repeat(43)}`)).toBe(false);
+    expect(store.setPassportRefreshToken(`opaque-refresh~${"S".repeat(43)}`, "bad/refresh/token")).toBe(false);
   });
 
   it("falls back to legacy after restart finds a quarantined Passport family", () => {
@@ -394,7 +425,7 @@ describe("OS-protected credential store", () => {
     const store = createTokenStore(options);
     store.setLegacy({ accessToken: "legacy-token", account: { userId: "42" } });
     store.setPassport(passportSession(now));
-    expect(store.quarantinePassportRefreshToken(`rt1.${"R".repeat(43)}`)).toBe(true);
+    expect(store.quarantinePassportRefreshToken(`opaque-refresh~${"R".repeat(43)}`)).toBe(true);
     expect(createTokenStore(options).getAuthState()).toMatchObject({
       loggedIn: true,
       provider: "legacy",
@@ -424,13 +455,13 @@ describe("OS-protected credential store", () => {
     expect(store.markPassportAimApiAccepted(true, "42")).toBe(true);
     expect(store.markPassportAimApiAccepted(true, "42")).toBe(true);
     expect(store.getAccessTokenCandidates({ method: "POST" })).toEqual([
-      { provider: "passport", accessToken: "passport-token" },
+      { provider: "passport", accessToken: "opaque-passport-token" },
     ]);
     expect(store.get()).toMatchObject({
-      accessToken: "passport-token",
+      accessToken: "opaque-passport-token",
       provider: "passport",
     });
-    expect(store.getAccessToken()).toBe("passport-token");
+    expect(store.getAccessToken()).toBe("opaque-passport-token");
 
     store.setPassport(passportSession(now, {
       account: {
@@ -467,12 +498,12 @@ describe("OS-protected credential store", () => {
     store.setPassport(passportSession(now));
     expect(store.getAccessTokenCandidates({ method: "GET" })).toEqual([]);
     expect(store.getAccessTokenCandidates({ method: "GET", purpose: "aim-mapping" })).toEqual([
-      { provider: "passport", accessToken: "passport-token" },
+      { provider: "passport", accessToken: "opaque-passport-token" },
     ]);
     expect(store.getAccessTokenCandidates({ method: "POST" })).toEqual([]);
     expect(store.markPassportAimApiAccepted(true, "42")).toBe(true);
     expect(store.getAccessTokenCandidates({ method: "POST" })).toEqual([
-      { provider: "passport", accessToken: "passport-token" },
+      { provider: "passport", accessToken: "opaque-passport-token" },
     ]);
     expect(store.getPassport()?.aimMapping).toEqual({
       issuer: OIDC_ISSUER,
@@ -523,7 +554,7 @@ describe("OS-protected credential store", () => {
       { provider: "legacy", accessToken: "legacy-token" },
     ]);
     expect(restarted.getAccessTokenCandidates({ method: "GET", purpose: "aim-mapping" })).toEqual([
-      { provider: "passport", accessToken: "passport-token" },
+      { provider: "passport", accessToken: "opaque-passport-token" },
       { provider: "legacy", accessToken: "legacy-token" },
     ]);
     expect(restarted.getAccessTokenCandidates({ method: "POST" })).toEqual([
@@ -531,7 +562,7 @@ describe("OS-protected credential store", () => {
     ]);
     expect(restarted.markPassportAimApiAccepted(true, "42")).toBe(true);
     expect(restarted.getAccessTokenCandidates({ method: "POST" })).toEqual([
-      { provider: "passport", accessToken: "passport-token" },
+      { provider: "passport", accessToken: "opaque-passport-token" },
     ]);
   });
 
@@ -552,7 +583,7 @@ describe("OS-protected credential store", () => {
       { provider: "legacy", accessToken: "legacy-token" },
     ]);
     store.setPassportRolloutEnabled(true);
-    expect(store.getPassport()?.refreshToken).toMatch(/^rt1\./);
+    expect(store.getPassport()?.refreshToken).toBe(`opaque-refresh~${"R".repeat(43)}`);
     expect(store.getLegacy()?.accessToken).toBe("legacy-token");
 
     const empty = createTokenStore({
@@ -630,7 +661,7 @@ describe("OS-protected credential store", () => {
       null,
       passportSession(now, { accessToken: "short" }),
       passportSession(now, { expiresAt: now }),
-      passportSession(now, { refreshToken: "bad-refresh-token" }),
+      passportSession(now, { refreshToken: "bad/refresh/token" }),
       passportSession(now, { scope: "x".repeat(513) }),
       passportSession(now, { centralSessionId: "bad" }),
       passportSession(now, { profileCheckedAt: -1 }),
@@ -810,21 +841,21 @@ describe("OS-protected credential store", () => {
       expect(facade.getSecurityStatus()).toEqual({ persistent: true, reason: null });
       expect(facade.getAuthState()).toMatchObject({ provider: "legacy" });
       expect(facade.getLegacy()?.accessToken).toBe("legacy-token");
-      expect(facade.getPassport()?.accessToken).toBe("passport-token");
+      expect(facade.getPassport()?.accessToken).toBe("opaque-passport-token");
 
       facade.setPassportRolloutEnabled(true);
       expect(facade.markPassportAimApiAccepted(true, "42")).toBe(true);
       expect(facade.getAccessTokenCandidates({ method: "POST" })).toEqual([
-        { provider: "passport", accessToken: "passport-token" },
+        { provider: "passport", accessToken: "opaque-passport-token" },
       ]);
-      expect(facade.getAccessToken()).toBe("passport-token");
+      expect(facade.getAccessToken()).toBe("opaque-passport-token");
       expect(facade.get()).toMatchObject({ provider: "passport" });
       expect(facade.getProviderGeneration("passport")).toBeGreaterThan(0);
       expect(facade.setPassportRefreshToken(
-        `rt1.${"R".repeat(43)}`,
-        `rt1.${"S".repeat(43)}`,
+        `opaque-refresh~${"R".repeat(43)}`,
+        `opaque-refresh~${"S".repeat(43)}`,
       )).toBe(true);
-      expect(facade.quarantinePassportRefreshToken(`rt1.${"S".repeat(43)}`)).toBe(true);
+      expect(facade.quarantinePassportRefreshToken(`opaque-refresh~${"S".repeat(43)}`)).toBe(true);
       expect(facade.clearPassport()).toBe(true);
       expect(facade.setLegacy({ accessToken: "legacy-token-2", account: { userId: "42" } })).toBe(true);
       expect(facade.clearProvider("legacy")).toBe(true);

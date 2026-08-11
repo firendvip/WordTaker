@@ -82,7 +82,7 @@ afterEach(() => {
 });
 
 describe("opaque native OAuth credentials", () => {
-  it("accepts authorization codes without ac1 prefixes at the exact frozen bounds", () => {
+  it("accepts authorization codes without implementation-specific prefixes at the frozen bounds", () => {
     const state = "state-value-is-long-enough";
     for (const code of ["A".repeat(16), "._~-".repeat(128)]) {
       expect(parseCallbackUrl(

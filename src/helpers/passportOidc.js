@@ -20,13 +20,13 @@ const REQUESTED_SCOPE = REQUESTED_SCOPES.join(" ");
 
 const OPAQUE_PARAMETER = /^[A-Za-z0-9._~-]{16,512}$/;
 const PKCE_VALUE = /^[A-Za-z0-9_-]{43,128}$/;
-const AUTHORIZATION_CODE = /^ac1\.[A-Za-z0-9_-]{43}$/;
-const REFRESH_TOKEN = /^rt1\.[A-Za-z0-9_-]{43}$/;
 const JWT_PART = /^[A-Za-z0-9_-]+$/;
 const KEY_ID = /^[A-Za-z0-9._-]{1,64}$/;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const MAX_URL_LENGTH = 4096;
 const MAX_JWT_LENGTH = 32 * 1024;
+const MAX_CODE_OR_REFRESH_LENGTH = 512;
+const MAX_ACCESS_TOKEN_LENGTH = 32 * 1024;
 const CLOCK_SKEW_SECONDS = 60;
 
 class PassportAuthError extends Error {
@@ -58,6 +58,27 @@ function containsAsciiControl(value, { includeSpace = false } = {}) {
     if (code <= upper || code === 127) return true;
   }
   return false;
+}
+
+function isOpaqueOAuthCredential(value, { maximum = MAX_CODE_OR_REFRESH_LENGTH } = {}) {
+  if (typeof value !== "string" || value.length < 16 || value.length > maximum) return false;
+  for (const character of value) {
+    const code = character.charCodeAt(0);
+    const alphaNumeric =
+      (code >= 48 && code <= 57) ||
+      (code >= 65 && code <= 90) ||
+      (code >= 97 && code <= 122);
+    if (
+      !alphaNumeric &&
+      character !== "." &&
+      character !== "_" &&
+      character !== "~" &&
+      character !== "-"
+    ) {
+      return false;
+    }
+  }
+  return true;
 }
 
 function hasEvery(value, expected) {
@@ -232,7 +253,7 @@ function parseCallbackUrl(raw, expectedState) {
     return fail(errorCode, safeMessage, { stateValidated: true });
   }
   const code = singleQueryValue(url, "code", true);
-  if (!AUTHORIZATION_CODE.test(code)) {
+  if (!isOpaqueOAuthCredential(code)) {
     return fail("INVALID_CALLBACK", "OAuth authorization code 无效");
   }
   return Object.freeze({ code, state });
@@ -245,6 +266,13 @@ function validateTokenString(value, name, maximum = MAX_JWT_LENGTH) {
     value.length > maximum ||
     containsAsciiControl(value, { includeSpace: true })
   ) {
+    return fail("INVALID_TOKEN_RESPONSE", `${name} 无效`);
+  }
+  return value;
+}
+
+function validateOpaqueCredential(value, name, maximum) {
+  if (!isOpaqueOAuthCredential(value, { maximum })) {
     return fail("INVALID_TOKEN_RESPONSE", `${name} 无效`);
   }
   return value;
@@ -266,15 +294,20 @@ function commonTokenFields(raw) {
   if (typeof raw.token_type !== "string" || raw.token_type.toLowerCase() !== "bearer") {
     return fail("INVALID_TOKEN_RESPONSE", "token_type 必须是 Bearer");
   }
-  if (!Number.isSafeInteger(raw.expires_in) || raw.expires_in < 60 || raw.expires_in > 86400) {
+  if (!Number.isSafeInteger(raw.expires_in) || raw.expires_in < 60 || raw.expires_in > 900) {
     return fail("INVALID_TOKEN_RESPONSE", "expires_in 无效");
   }
-  const refreshToken = validateTokenString(raw.refresh_token, "refresh_token", 1024);
-  if (!REFRESH_TOKEN.test(refreshToken)) {
-    return fail("INVALID_TOKEN_RESPONSE", "refresh_token 无效");
-  }
+  const refreshToken = validateOpaqueCredential(
+    raw.refresh_token,
+    "refresh_token",
+    MAX_CODE_OR_REFRESH_LENGTH,
+  );
   return {
-    accessToken: validateTokenString(raw.access_token, "access_token"),
+    accessToken: validateOpaqueCredential(
+      raw.access_token,
+      "access_token",
+      MAX_ACCESS_TOKEN_LENGTH,
+    ),
     refreshToken,
     tokenType: "Bearer",
     expiresIn: raw.expires_in,
@@ -295,7 +328,7 @@ function validateRefreshTokenResponse(raw) {
 
 function extractRefreshTokenCandidate(raw) {
   if (!isPlainObject(raw)) return null;
-  return typeof raw.refresh_token === "string" && REFRESH_TOKEN.test(raw.refresh_token)
+  return isOpaqueOAuthCredential(raw.refresh_token)
     ? raw.refresh_token
     : null;
 }
@@ -427,39 +460,12 @@ function verifyIdToken(idToken, { jwks, expectedNonce, nowSeconds }) {
   };
 }
 
-function verifyAccessToken(accessToken, { jwks, nowSeconds }) {
-  const payload = verifySignedJwt(accessToken, jwks);
-  const passportUserId = validateCommonClaims(payload, nowSeconds, 15 * 60);
-  if (
-    payload.token_use !== "access" ||
-    typeof payload.scope !== "string" ||
-    typeof payload.sid !== "string" ||
-    !UUID.test(payload.sid)
-  ) {
-    return fail("INVALID_TOKEN", "OIDC access token claims 无效");
-  }
-  normalizedScope(payload.scope);
-  return {
-    payload,
-    passportUserId,
-    centralSessionId: payload.sid.toLowerCase(),
-  };
-}
-
 function verifyTokenSet({ tokenResponse, jwks, expectedNonce, nowSeconds = Math.floor(Date.now() / 1000) }) {
   const id = verifyIdToken(tokenResponse.idToken, { jwks, expectedNonce, nowSeconds });
-  const access = verifyAccessToken(tokenResponse.accessToken, { jwks, nowSeconds });
-  if (id.passportUserId !== access.passportUserId) {
-    return fail("INVALID_TOKEN", "OIDC token subject 不一致");
-  }
-  if (id.centralSessionId !== access.centralSessionId) {
-    return fail("INVALID_TOKEN", "OIDC token session 不一致");
-  }
   return Object.freeze({
     passportUserId: id.passportUserId,
-    centralSessionId: access.centralSessionId,
+    centralSessionId: id.centralSessionId,
     idClaims: id.payload,
-    accessClaims: access.payload,
   });
 }
 
@@ -469,7 +475,7 @@ function validateUserInfo(raw, expectedPassportUserId) {
   }
   const passportUserId = raw.sub.toLowerCase();
   if (passportUserId !== String(expectedPassportUserId || "").toLowerCase()) {
-    return fail("INVALID_USERINFO", "OIDC userinfo sub 不匹配");
+    return fail("IDENTITY_CONFLICT", "OIDC userinfo sub 不匹配");
   }
   let nickname = null;
   if (raw.name !== undefined && raw.name !== null) {
@@ -512,7 +518,6 @@ function validateUserInfo(raw, expectedPassportUserId) {
 }
 
 module.exports = {
-  AUTHORIZATION_CODE,
   CLIENT_ID,
   DISCOVERY_URL,
   OIDC_ISSUER,
@@ -523,11 +528,11 @@ module.exports = {
   createAuthorizationRequest,
   extractRefreshTokenCandidate,
   extractCallbackUrl,
+  isOpaqueOAuthCredential,
   parseCallbackUrl,
   validateDiscovery,
   validateRefreshTokenResponse,
   validateTokenResponse,
   validateUserInfo,
-  verifyAccessToken,
   verifyTokenSet,
 };

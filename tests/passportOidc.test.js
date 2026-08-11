@@ -19,7 +19,6 @@ const {
   validateRefreshTokenResponse,
   validateTokenResponse,
   validateUserInfo,
-  verifyAccessToken,
   verifyTokenSet,
 } = require("../src/helpers/passportOidc.js");
 
@@ -99,7 +98,7 @@ function tokenFixture({ nonce = "nonce-value-is-long-enough", now = 1_800_000_00
     response: {
       access_token: accessToken,
       id_token: idToken,
-      refresh_token: `rt1.${"R".repeat(43)}`,
+      refresh_token: `opaque-refresh~${"R".repeat(43)}`,
       token_type: "Bearer",
       expires_in: 900,
       scope: REQUESTED_SCOPE,
@@ -149,9 +148,9 @@ describe("passport OIDC contract", () => {
   });
 
   it("accepts only the exact callback and consumes a matching state", () => {
-    const valid = `${REDIRECT_URI}?code=ac1.${"A".repeat(43)}&state=state-value-is-long-enough`;
+    const valid = `${REDIRECT_URI}?code=opaque-code~${"A".repeat(43)}&state=state-value-is-long-enough`;
     expect(parseCallbackUrl(valid, "state-value-is-long-enough")).toEqual({
-      code: `ac1.${"A".repeat(43)}`,
+      code: `opaque-code~${"A".repeat(43)}`,
       state: "state-value-is-long-enough",
     });
     expect(extractCallbackUrl(["electron", ".", "--flag", valid])).toBe(valid);
@@ -177,7 +176,7 @@ describe("passport OIDC contract", () => {
     }
   });
 
-  it("validates the complete token set, RS256 signatures, nonce, scopes and stable sub UUID", () => {
+  it("validates the signed ID token while treating the access bearer as opaque", () => {
     const now = 1_800_000_000;
     const fixture = tokenFixture({ now });
     const tokenResponse = validateTokenResponse(fixture.response);
@@ -191,7 +190,7 @@ describe("passport OIDC contract", () => {
     expect(verified.passportUserId).toBe(PASSPORT_USER_ID);
     expect(verified.centralSessionId).toBe(CENTRAL_SESSION_ID);
     expect(verified.idClaims.name).toBe("弦外小猫用户");
-    expect(verified.accessClaims.scope).toBe(REQUESTED_SCOPE);
+    expect(verified).not.toHaveProperty("accessClaims");
   });
 
   it("rejects token substitution, bad nonce, expiry, wrong audience and malformed responses", () => {
@@ -287,7 +286,7 @@ describe("passport OIDC contract", () => {
 
   it("rejects malformed, ambiguous and replay-oriented callbacks", () => {
     const state = "state-value-is-long-enough";
-    const code = `ac1.${"A".repeat(43)}`;
+    const code = `opaque-code~${"A".repeat(43)}`;
     const invalid = [
       null,
       "",
@@ -314,7 +313,7 @@ describe("passport OIDC contract", () => {
   it("validates authorization and refresh response boundary fields", () => {
     const fixture = tokenFixture();
     expect(validateRefreshTokenResponse(fixture.response)).toMatchObject({
-      refreshToken: `rt1.${"R".repeat(43)}`,
+      refreshToken: `opaque-refresh~${"R".repeat(43)}`,
       tokenType: "Bearer",
     });
     const invalid = [
@@ -323,7 +322,7 @@ describe("passport OIDC contract", () => {
       { ...fixture.response, expires_in: 59 },
       { ...fixture.response, expires_in: 86_401 },
       { ...fixture.response, expires_in: 900.5 },
-      { ...fixture.response, refresh_token: "not-a-refresh-token" },
+      { ...fixture.response, refresh_token: "bad/refresh/token-value" },
       { ...fixture.response, access_token: "short" },
       { ...fixture.response, access_token: `bad\ntoken-value-long` },
       { ...fixture.response, id_token: "short" },
@@ -337,7 +336,7 @@ describe("passport OIDC contract", () => {
     }
   });
 
-  it("enforces final jti, sid, auth_time, subject and TTL claims", () => {
+  it("enforces final ID-token jti, sid, auth_time, subject and TTL claims", () => {
     const now = 1_800_000_000;
     const fixture = tokenFixture({ now });
     const original = validateTokenResponse(fixture.response);
@@ -367,66 +366,42 @@ describe("passport OIDC contract", () => {
         }),
       ).toThrow();
     }
-    const accessCases = [
-      { jti: undefined },
-      { sid: undefined },
-      { exp: now + 901 },
-      { scope: "openid profile" },
-      { token_use: "id" },
-      { sub: "not-a-uuid" },
-      { aud: "another-client" },
-      { iss: "https://attacker.example" },
-    ];
-    for (const overrides of accessCases) {
-      expect(() =>
-        verify({
-          ...original,
-          accessToken: replaceJwt(fixture.privateKey, original.accessToken, overrides),
-        }),
-      ).toThrow();
-    }
-    expect(() =>
-      verify({
-        ...original,
-        accessToken: replaceJwt(fixture.privateKey, original.accessToken, {
-          sid: "3793bbfa-7c55-47b4-adb3-cb95f47ef915",
-        }),
-      }),
-    ).toThrow(/session/i);
-    expect(() =>
-      verify({
-        ...original,
-        accessToken: replaceJwt(fixture.privateKey, original.accessToken, {
-          sub: "3793bbfa-7c55-47b4-adb3-cb95f47ef915",
-        }),
-      }),
-    ).toThrow(/subject/i);
+    expect(verify({
+      ...original,
+      accessToken: "opaque~replacement.access-token-value",
+    }).passportUserId).toBe(PASSPORT_USER_ID);
   });
 
   it("rejects malformed JWT encodings, algorithms, keys and signatures", () => {
     const now = 1_800_000_000;
     const fixture = tokenFixture({ now });
-    const access = fixture.response.access_token;
-    const verifyAccess = (token, jwks = fixture.jwks) =>
-      verifyAccessToken(token, { jwks, nowSeconds: now });
+    const original = validateTokenResponse(fixture.response);
+    const idToken = original.idToken;
+    const verifyId = (token, jwks = fixture.jwks) =>
+      verifyTokenSet({
+        tokenResponse: { ...original, idToken: token },
+        jwks,
+        expectedNonce: "nonce-value-is-long-enough",
+        nowSeconds: now,
+      });
     const malformed = [
       null,
       "x".repeat(32 * 1024 + 1),
       "one.two",
-      `!.${access.split(".")[1]}.${access.split(".")[2]}`,
-      `${base64urlJson([])}.${access.split(".")[1]}.${access.split(".")[2]}`,
-      `${access.split(".")[0]}.${base64urlJson([])}.${access.split(".")[2]}`,
-      replaceJwt(fixture.privateKey, access, {}, { alg: "HS256" }),
-      replaceJwt(fixture.privateKey, access, {}, { typ: "NOT-JWT" }),
-      `${access.split(".")[0]}.${access.split(".")[1]}.!`,
+      `!.${idToken.split(".")[1]}.${idToken.split(".")[2]}`,
+      `${base64urlJson([])}.${idToken.split(".")[1]}.${idToken.split(".")[2]}`,
+      `${idToken.split(".")[0]}.${base64urlJson([])}.${idToken.split(".")[2]}`,
+      replaceJwt(fixture.privateKey, idToken, {}, { alg: "HS256" }),
+      replaceJwt(fixture.privateKey, idToken, {}, { typ: "NOT-JWT" }),
+      `${idToken.split(".")[0]}.${idToken.split(".")[1]}.!`,
     ];
-    for (const token of malformed) expect(() => verifyAccess(token)).toThrow();
+    for (const token of malformed) expect(() => verifyId(token)).toThrow();
 
-    expect(() => verifyAccess(access, null)).toThrow(/JWKS/i);
-    expect(() => verifyAccess(access, { keys: [] })).toThrow(/JWKS/i);
-    expect(() => verifyAccess(access, { keys: [...fixture.jwks.keys, ...fixture.jwks.keys] })).toThrow(/key/i);
-    expect(() => verifyAccess(access, { keys: [{ ...fixture.jwks.keys[0], kty: "EC" }] })).toThrow(/key/i);
-    expect(() => verifyAccess(access, { keys: [{ ...fixture.jwks.keys[0], n: "A" }] })).toThrow(/key/i);
+    expect(() => verifyId(idToken, null)).toThrow(/JWKS/i);
+    expect(() => verifyId(idToken, { keys: [] })).toThrow(/JWKS/i);
+    expect(() => verifyId(idToken, { keys: [...fixture.jwks.keys, ...fixture.jwks.keys] })).toThrow(/key/i);
+    expect(() => verifyId(idToken, { keys: [{ ...fixture.jwks.keys[0], kty: "EC" }] })).toThrow(/key/i);
+    expect(() => verifyId(idToken, { keys: [{ ...fixture.jwks.keys[0], n: "A" }] })).toThrow(/key/i);
   });
 
   it("validates userinfo optional profile fields without accepting identity hints", () => {

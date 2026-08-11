@@ -14,7 +14,7 @@
 
 const fs = require("fs");
 const path = require("path");
-const { OIDC_ISSUER } = require("./passportOidc");
+const { OIDC_ISSUER, isOpaqueOAuthCredential } = require("./passportOidc");
 
 const LEGACY_FILE_NAME = "backend-token.json";
 const SECURE_FILE_NAME = "auth-credentials.safe";
@@ -22,7 +22,6 @@ const STORE_VERSION = 2;
 const MAX_FILE_BYTES = 128 * 1024;
 const ACCESS_EXPIRY_SKEW_MS = 30 * 1000;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-const REFRESH_TOKEN = /^rt1\.[A-Za-z0-9_-]{43}$/;
 const SENSITIVE_STRING_MAX = 32 * 1024;
 
 let temporarySequence = 0;
@@ -114,8 +113,7 @@ function normalizeLegacy(value) {
 function normalizePassport(value) {
   if (
     !isPlainObject(value) ||
-    !validSecret(value.refreshToken, 1024) ||
-    !REFRESH_TOKEN.test(value.refreshToken) ||
+    !isOpaqueOAuthCredential(value.refreshToken) ||
     value.issuer !== OIDC_ISSUER ||
     typeof value.scope !== "string" ||
     value.scope.length > 512 ||
@@ -281,7 +279,7 @@ function createTokenStore({
     if (legacy && !cache.legacy) {
       cache = { ...cache, legacy };
     }
-    if (legacy && encryptionStatus().persistent && persist()) {
+    if (legacy && passportRolloutEnabled && encryptionStatus().persistent && persist()) {
       try {
         // Re-read/decrypt the final file before removing the plaintext source.
         const finalPayload = readSecureFile();
@@ -345,7 +343,7 @@ function createTokenStore({
     const current = load();
     if (
       !isPlainObject(data) ||
-      !validSecret(data.accessToken) ||
+      !isOpaqueOAuthCredential(data.accessToken, { maximum: SENSITIVE_STRING_MAX }) ||
       !Number.isSafeInteger(data.expiresAt) ||
       data.expiresAt <= Number(now())
     ) {
@@ -396,8 +394,8 @@ function createTokenStore({
 
   function setPassportRefreshToken(expectedRefreshToken, nextRefreshToken) {
     if (
-      !REFRESH_TOKEN.test(expectedRefreshToken || "") ||
-      !REFRESH_TOKEN.test(nextRefreshToken || "") ||
+      !isOpaqueOAuthCredential(expectedRefreshToken) ||
+      !isOpaqueOAuthCredential(nextRefreshToken) ||
       expectedRefreshToken === nextRefreshToken
     ) {
       return false;
@@ -418,7 +416,7 @@ function createTokenStore({
   }
 
   function quarantinePassportRefreshToken(expectedRefreshToken) {
-    if (!REFRESH_TOKEN.test(expectedRefreshToken || "")) return false;
+    if (!isOpaqueOAuthCredential(expectedRefreshToken)) return false;
     const current = load();
     if (!current.passport || current.passport.refreshToken !== expectedRefreshToken) return false;
     const stored = failClosedUpdate({

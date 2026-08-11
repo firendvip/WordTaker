@@ -33,11 +33,12 @@ describe("Electron passport integration contract", () => {
 
   it("exposes only high-level passport IPC and never tokens or a client secret to renderer", () => {
     const preload = read("preload.js");
-    expect(preload).toContain("authPassportLogin");
-    expect(preload).toContain("onPassportAuthResult");
+    const capability = read("src/helpers/passportCapability.js");
+    expect(capability).toContain("authPassportLogin");
+    expect(capability).toContain("onPassportAuthResult");
     expect(preload).toContain("createPassportPreloadApi");
-    expect(preload).not.toMatch(/getAccessToken|getRefreshToken|getIdToken/);
-    expect(preload).not.toContain("client_secret");
+    expect(`${preload}\n${capability}`).not.toMatch(/getAccessToken|getRefreshToken|getIdToken/);
+    expect(`${preload}\n${capability}`).not.toContain("client_secret");
   });
 
   it("makes unified browser login primary while retaining clearly labelled legacy AIM fallback", () => {
