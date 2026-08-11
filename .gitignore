@@ -135,6 +135,7 @@ __pycache__/
 env/
 venv/
 .venv/
+.pnpm-store/
 ENV/
 env.bak/
 venv.bak/

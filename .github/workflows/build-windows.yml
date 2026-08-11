@@ -1,7 +1,7 @@
 name: Build Windows
 
 # 在 windows-latest runner 上产出真正的 Windows .exe（本地 Mac 无 Wine 无法产出）。
-# 手动触发为主；推 tag 时也会跑，便于做发布构建。注意：--publish never，不向 GitHub 发布。
+# 仅手动触发，产出未签名的短期验收工件；本 workflow 永不创建 Release 或发布生产资产。
 #
 # 矩阵：arch ∈ {x64, arm64}。两个架构均为纯 SenseVoice ONNX 路径（NO torch/funasr）：
 #   - x64：embedded x86_64 CPython + numpy/onnxruntime/soundfile（win_amd64 轮子），
@@ -10,16 +10,59 @@ name: Build Windows
 #            修复 Windows-on-ARM 上 torch 缺 win-arm64 轮子导致的 0xc0000017 启动崩溃。
 on:
   workflow_dispatch:
-  push:
-    tags:
-      - "v*"
 
-# 发布 Release 资产需要写仓库内容的权限。
 permissions:
-  contents: write
+  contents: read
 
 jobs:
+  verify:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.5.3
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.22.0
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile --ignore-scripts
+      - run: pnpm run prepare:electron-runtime
+      - run: pnpm exec electron-rebuild -f -w better-sqlite3 -w uiohook-napi --arch x64
+      - run: pnpm run verify:desktop-release
+      - run: pnpm run test:auth:coverage
+      - run: pnpm run test:desktop:coverage
+      - run: pnpm test
+      - run: pnpm run build:renderer
+      - run: pnpm audit --audit-level high
+      - run: pnpm run smoke:electron-runtime
+
+  verify-arm64-runtime:
+    needs: verify
+    runs-on: windows-11-arm
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.5.3
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.22.0
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile --ignore-scripts
+      - run: pnpm run prepare:electron-runtime
+      - run: pnpm exec electron-rebuild -f -w better-sqlite3 -w uiohook-napi --arch arm64
+      - run: pnpm run verify:desktop-release
+      - run: pnpm run smoke:electron-runtime
+
   build-win:
+    needs: [verify, verify-arm64-runtime]
     runs-on: windows-latest
     timeout-minutes: 90
 
@@ -32,17 +75,19 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       # 仓库只有 pnpm-lock.yaml（无 package-lock.json），故用 pnpm 而非 npm ci。
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
         with:
-          version: 9
+          version: 11.5.3
 
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: '22'
+          node-version: 22.22.0
 
       - name: Get pnpm store directory
         id: pnpm-cache
@@ -68,14 +113,14 @@ jobs:
       # 安装 JS 依赖。--ignore-scripts 跳过 postinstall（Windows 上 pnpm.cjs 调用会失败），
       # 再单独用 @electron/rebuild 按 Electron ABI + 目标架构重建原生模块。
       - name: Install dependencies
-        run: pnpm install --no-frozen-lockfile --ignore-scripts
+        run: pnpm install --frozen-lockfile --ignore-scripts
 
       # 按目标架构重建原生模块。
       #   - x64：默认架构，沿用历史命令。
       #   - arm64：@electron/rebuild --arch arm64 交叉编译 better-sqlite3；
       #     uiohook-napi 有 win32-arm64 预编译，node-gyp-build 运行期自动选用，无需源码重建。
       - name: Rebuild native modules for Electron
-        run: npx --yes @electron/rebuild -f -w better-sqlite3 -w uiohook-napi --arch ${{ matrix.arch }}
+        run: pnpm exec electron-rebuild -f -w better-sqlite3 -w uiohook-napi --arch ${{ matrix.arch }}
 
       # 下载并准备目标架构的嵌入式 CPython 并装好依赖（两架构统一纯 ONNX 依赖集：
       # numpy + onnxruntime + soundfile，NO torch/funasr）。
@@ -151,65 +196,13 @@ jobs:
           }
           Write-Host "arm64 嵌入式 Python 静态校验通过（运行期导入需在 ARM 机验证；无 llama_cpp）。"
 
-      # 下载并准备 SenseVoice ONNX 模型到 models/sensevoice/（仓库 .gitignore 了 models/）。
-      # 两个架构的嵌入式 Python 都是纯 ONNX 最小依赖集（无 funasr_onnx/modelscope/torch），
-      # 无法用嵌入式解释器拉取/导出模型——统一改用 runner 的 host(x64) Python 跑下载脚本。
-      # 产物 model_quant.onnx/tokens.json 与架构无关（纯模型文件），可安全打进 x64/arm64 包。
-      # 关键：torch 必须钉 2.0.1——新版 torch 的 onnx 导出器需要 onnxscript 等额外依赖，
-      # 会引入无谓的依赖链；2.0.1 的导出路径自洽、已在历史 x64 作业验证可用。
-      # 用 CPU 轮子(--index-url .../whl/cpu)。这些只装在 host，绝不进安装包。
-      - name: Install host tooling for model download
-        run: |
-          python -m pip install --upgrade pip
-          python -m pip install "numpy<2" onnxruntime modelscope jieba kaldi-native-fbank
-          python -m pip install torch==2.0.1 torchaudio==2.0.2 --index-url https://download.pytorch.org/whl/cpu
-          python -m pip install "funasr>=1.2.7" "funasr_onnx>=0.4.1"
+      # 模型文件与目标 CPU 架构无关。统一使用仓库中的固定 v2.0.5
+      # revision + size + SHA-256 清单，禁止在发版作业中现场导出或跟随浮动快照。
+      - name: Prepare pinned SenseVoice ONNX model
+        run: pnpm run prepare:sensevoice
 
-      - name: Download SenseVoice ONNX model
-        shell: pwsh
-        run: |
-          # 两个架构统一用 runner 的 host python（嵌入式均为纯 ONNX 最小依赖集，
-          # 无 funasr_onnx/modelscope，且 arm64 嵌入式是 aarch64 无法在 x64 runner 执行）。
-          $py = "python"
-          $env:PYTHONIOENCODING = "utf-8"
-          # PowerShell 无 bash heredoc，写临时 .py 再执行。
-          $script = @'
-          import os, sys, glob, shutil
-          dst = os.path.join("models", "sensevoice")
-          os.makedirs(dst, exist_ok=True)
-          need = ["model_quant.onnx", "tokens.json", "config.yaml", "am.mvn"]
-          # 1) 先用 modelscope 快照下载（iic/SenseVoiceSmall 已自带量化 onnx）。
-          src = None
-          try:
-              from modelscope import snapshot_download
-              src = snapshot_download("iic/SenseVoiceSmall")
-              print("snapshot dir:", src)
-              for n in need:
-                  for f in glob.glob(os.path.join(src, n)):
-                      shutil.copy2(f, dst)
-                      print("copied", n)
-          except Exception as e:
-              print("snapshot_download failed:", e)
-          # 2) 若快照里没有量化 onnx，则用 funasr_onnx 导出生成 model_quant.onnx。
-          if not os.path.exists(os.path.join(dst, "model_quant.onnx")):
-              print("model_quant.onnx missing, exporting via funasr_onnx ...")
-              from funasr_onnx import SenseVoiceSmall
-              m = SenseVoiceSmall("iic/SenseVoiceSmall", batch_size=1, quantize=True, device_id="-1")
-              exp = getattr(m, "model_dir", None) or (src or "")
-              for n in need:
-                  for f in glob.glob(os.path.join(exp, n)):
-                      shutil.copy2(f, dst)
-                      print("copied(export)", n)
-          # 3) 断言关键文件齐全。
-          missing = [n for n in ["model_quant.onnx", "tokens.json"] if not os.path.exists(os.path.join(dst, n))]
-          if missing:
-              print("ERROR: missing model files:", missing)
-              sys.exit(1)
-          print("SenseVoice model ready:", os.listdir(dst))
-          '@
-          Set-Content -Path "ci_download_sensevoice.py" -Value $script -Encoding utf8
-          & $py "ci_download_sensevoice.py"
-          if ($LASTEXITCODE -ne 0) { Write-Error "model download failed"; exit 1 }
+      - name: Verify pinned SenseVoice ONNX model
+        run: pnpm run verify:sensevoice
 
       - name: Build renderer (Vite)
         run: pnpm run build:renderer
@@ -249,7 +242,30 @@ jobs:
           # 关闭代码签名自动发现（CI 无证书）。
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
 
-      # 断言 SenseVoice ONNX 模型确实被打进安装包（resources\app.asar.unpacked\models\sensevoice\）。
+      - name: Verify packaged Electron runtime (x64)
+        if: matrix.arch == 'x64'
+        shell: pwsh
+        run: |
+          $unpackDir = "dist\win-unpacked"
+          $exe = Get-ChildItem -Path $unpackDir -Filter "*.exe" -File |
+            Where-Object { $_.Name -notmatch "uninstall" } |
+            Select-Object -First 1
+          if (-not $exe) { Write-Error "FAIL: 未找到 x64 unpacked Electron 主程序"; exit 1 }
+          $result = Join-Path $env:RUNNER_TEMP "wordtaker-packaged-runtime-x64.json"
+          $userData = Join-Path $env:RUNNER_TEMP "wordtaker-packaged-user-data-x64"
+          $package = Get-Content package.json | ConvertFrom-Json
+          $env:WORDTAKER_PACKAGED_RUNTIME_SMOKE = "1"
+          $env:WORDTAKER_EXPECTED_APP_VERSION = $package.version
+          $env:WORDTAKER_EXPECTED_ELECTRON_VERSION = $package.devDependencies.electron
+          $env:WORDTAKER_EXPECTED_ARCH = "x64"
+          $env:WORDTAKER_RUNTIME_SMOKE_RESULT = $result
+          & $exe.FullName "--user-data-dir=$userData"
+          if ($LASTEXITCODE -ne 0) { Write-Error "FAIL: x64 packaged runtime smoke failed"; exit 1 }
+          node scripts/electron-runtime-smoke.js --verify-result `
+            $result $package.devDependencies.electron $package.version "x64"
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+
+      # 用同一固定 revision/size/SHA-256 清单复核最终包，不能只检查文件存在。
       # 运行时 funasr_server.py 从「与自身同级的 models/sensevoice/」读取模型，
       # funasrManager 的模型检查也指向同一路径——两头对齐；缺失应在 CI 失败而非上线后发现。
       - name: Assert SenseVoice model packed
@@ -258,11 +274,8 @@ jobs:
           $arch = "${{ matrix.arch }}"
           if ($arch -eq "arm64") { $unpackDir = "dist\win-arm64-unpacked" } else { $unpackDir = "dist\win-unpacked" }
           $modelDir = Join-Path $unpackDir "resources\app.asar.unpacked\models\sensevoice"
-          foreach ($n in @("model_quant.onnx", "tokens.json")) {
-            $f = Join-Path $modelDir $n
-            if (-not (Test-Path $f)) { Write-Error "FAIL: 安装包缺少 SenseVoice 模型文件: $f"; exit 1 }
-            Write-Host ("OK: {0} ({1} MB)" -f $f, [math]::Round((Get-Item $f).Length/1MB, 1))
-          }
+          node scripts/sensevoice-model.js --verify "--model-dir=$modelDir"
+          if ($LASTEXITCODE -ne 0) { Write-Error "FAIL: 安装包 SenseVoice 模型哈希校验失败"; exit 1 }
 
       # 断言打包进 asar.unpacked 的原生模块/可执行文件确为 Windows PE 且机器类型匹配目标架构。
       #   x64   -> 0x8664(IMAGE_FILE_MACHINE_AMD64)
@@ -373,6 +386,15 @@ jobs:
 
           Write-Host "$expectName PE 断言通过，共校验 $checked 个文件。"
 
+      - name: Upload ARM64 unpacked app for native-runner verification
+        if: matrix.arch == 'arm64'
+        uses: actions/upload-artifact@v4
+        with:
+          name: wordtaker-windows-arm64-unpacked
+          if-no-files-found: error
+          retention-days: 1
+          path: dist/win-arm64-unpacked
+
       # 计算「本架构」安装包的 SHA256 写入按 arch 命名的校验文件。
       # v1.4.6 加固：只对含本架构 token（-x64- / -arm64-）的 .exe 求和，绝不混入对方架构产物
       # （即使构建步已只产出本架构，这里也按架构过滤作为二次防线）；每作业各写各的文件名，互不覆盖。
@@ -417,23 +439,8 @@ jobs:
           Write-Host "stage: SHA256SUMS-$arch.txt"
           Write-Host "publish/ 内容:"; Get-ChildItem "publish" | ForEach-Object { Write-Host "  $($_.Name)" }
 
-      # 发布到 GitHub Release（Release 资产不计入 Actions 工件存储配额）。
-      # 每个 arch 作业只上传 publish/ 下「本架构」产物，文件名含 -<arch>- 故跨作业互不覆盖。
-      - name: Publish to GitHub Release
-        if: startsWith(github.ref, 'refs/tags/')
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ github.ref_name }}
-          name: ${{ github.ref_name }}
-          generate_release_notes: true
-          fail_on_unmatched_files: true
-          files: |
-            publish/*.exe
-            publish/SHA256SUMS-${{ matrix.arch }}.txt
-
-      # 备份性短保留工件（仅 workflow_dispatch 等无 tag 场景方便取包）。
+      # 未签名包仅作验收，短期保存；签名/发布必须由受保护的独立主干流程完成。
       - name: Upload Windows artifacts (short retention)
-        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
         uses: actions/upload-artifact@v4
         with:
           name: wordtaker-windows-${{ matrix.arch }}
@@ -442,3 +449,51 @@ jobs:
           path: |
             publish/*.exe
             publish/SHA256SUMS-${{ matrix.arch }}.txt
+
+  verify-arm64-package:
+    needs: build-win
+    runs-on: windows-11-arm
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.22.0
+      - uses: actions/download-artifact@v4
+        with:
+          name: wordtaker-windows-arm64-unpacked
+          path: dist/win-arm64-unpacked
+      - name: Verify packaged Electron runtime (ARM64)
+        shell: pwsh
+        run: |
+          $unpackDir = "dist\win-arm64-unpacked"
+          $exe = Get-ChildItem -Path $unpackDir -Filter "*.exe" -File |
+            Where-Object { $_.Name -notmatch "uninstall" } |
+            Select-Object -First 1
+          if (-not $exe) { Write-Error "FAIL: 未找到 ARM64 unpacked Electron 主程序"; exit 1 }
+          $result = Join-Path $env:RUNNER_TEMP "wordtaker-packaged-runtime-arm64.json"
+          $userData = Join-Path $env:RUNNER_TEMP "wordtaker-packaged-user-data-arm64"
+          $package = Get-Content package.json | ConvertFrom-Json
+          $env:WORDTAKER_PACKAGED_RUNTIME_SMOKE = "1"
+          $env:WORDTAKER_EXPECTED_APP_VERSION = $package.version
+          $env:WORDTAKER_EXPECTED_ELECTRON_VERSION = $package.devDependencies.electron
+          $env:WORDTAKER_EXPECTED_ARCH = "arm64"
+          $env:WORDTAKER_RUNTIME_SMOKE_RESULT = $result
+          & $exe.FullName "--user-data-dir=$userData"
+          if ($LASTEXITCODE -ne 0) { Write-Error "FAIL: ARM64 packaged runtime smoke failed"; exit 1 }
+          node scripts/electron-runtime-smoke.js --verify-result `
+            $result $package.devDependencies.electron $package.version "arm64"
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+      - name: Verify packaged embedded Python (ARM64)
+        shell: pwsh
+        run: |
+          $pythonRoot = (Resolve-Path "dist\win-arm64-unpacked\resources\app.asar.unpacked\python").Path
+          $python = Join-Path $pythonRoot "python.exe"
+          if (-not (Test-Path $python)) { Write-Error "FAIL: ARM64 packaged python.exe missing"; exit 1 }
+          $env:PYTHONHOME = $pythonRoot
+          $env:PYTHONPATH = Join-Path $pythonRoot "Lib\site-packages"
+          $env:PYTHONIOENCODING = "utf-8"
+          & $python -c "import numpy, onnxruntime, soundfile; print('ARM64 packaged Python OK', numpy.__version__, onnxruntime.__version__)"
+          if ($LASTEXITCODE -ne 0) { Write-Error "FAIL: ARM64 packaged Python imports failed"; exit 1 }

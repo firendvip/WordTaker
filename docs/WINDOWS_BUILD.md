@@ -5,23 +5,25 @@
 ## 一、铁律
 
 1. **绝不在 Mac 本机构建 Windows 包**（无 Wine 产不出、内嵌 Python 平台不符必出坏包）。唯一通道：GitHub Actions `.github/workflows/build-windows.yml`（windows-latest 真机，matrix x64 + arm64）。
-2. 触发方式：推 tag `v*`（正常发版路径）或 workflow_dispatch 手动触发。
-3. 产物发布在 **GitHub Release 资产**（不是 workflow artifacts）：`KittyEcho-<ver>-<arch>-setup.exe`、`-portable.exe`、`SHA256SUMS-<arch>.txt`。
+2. 触发方式：只允许从 GitHub Actions 手动执行 `workflow_dispatch`；推 tag 不会触发此验收 workflow。
+3. 产物仅保存为保留 1 天的 **GitHub Actions artifacts**：`KittyEcho-<ver>-<arch>-setup.exe`、`-portable.exe`、`SHA256SUMS-<arch>.txt`。它们未签名，不是生产 Release 资产。
 
 ## 二、标准发版流程
 
 ```bash
 # 1. 版本 bump（SemVer）+ CHANGELOG.md 条目
 # 2. 密钥核查：git status --porcelain 全列，确保无 secrets/.env/pem/.bak/杂散构建产物入库
-# 3. commit（无 attribution 尾注）+ push origin main
-#    （pre-push hook 因本机 pnpm 环境失败属已知问题，与代码无关，可 --no-verify）
-git tag v<X.Y.Z> && git push origin v<X.Y.Z>   # 触发 Windows CI
+# 3. commit + push origin main；在 GitHub Actions 页面手动运行 Build Windows
+gh workflow run build-windows.yml --ref main
 gh run list --workflow=build-windows.yml --limit 2   # 拿 run ID
 # 轮询等完（约 20-40 分钟）：
 gh run view <RUN_ID> --json status,conclusion
 # 下载 + 校验：
-gh release download v<X.Y.Z> -R firendvip/WordTaker -p "*setup.exe" -p "SHA256SUMS*"
+gh run download <RUN_ID> -n wordtaker-windows-x64 -D _artifacts/x64
+gh run download <RUN_ID> -n wordtaker-windows-arm64 -D _artifacts/arm64
 shasum -a 256 <exe>  # 与 SHA256SUMS 比对
+# 4. 只有整条 workflow 成功且真机验收完成后，才可进入受保护的 signed release gate；
+#    签名、发布 tag 和 GitHub Release 均由主干发版流程另行执行。
 ```
 
 ## 三、产物核验清单（每次发版必做，7z 解包抽查 x64）
@@ -34,7 +36,7 @@ shasum -a 256 <exe>  # 与 SHA256SUMS 比对
 - [ ] **模型进包**：`app.asar.unpacked/models/sensevoice/{model_quant.onnx(≈241M), tokens.json}`（CI 有断言步骤兜底）
 - [ ] **sendkeys.exe 在**：`resources/bin/sendkeys.exe`（≈100KB，CI 用 MSVC 编译 `build/win/sendkeys.c`）
 - [ ] **图标**：`resources/assets/icon.ico` 8 尺寸条目（16/20/24/32/48/64/128/256）
-- [ ] asar 内 package.json version 与 tag 一致
+- [ ] asar 内 package.json version 与本次主干候选版本一致
 
 ## 四、Windows 专属架构事实（改代码前必须知道）
 
@@ -65,10 +67,10 @@ shasum -a 256 <exe>  # 与 SHA256SUMS 比对
 
 ### 6.1 Mac + Win 并行发版编排（一次性出双平台）
 ```bash
-# 1) bump 版本 + CHANGELOG + commit(--no-verify) + tag + push（推 tag 触发 Win CI）
-git push --no-verify origin main && git push --no-verify origin v<X.Y.Z>
+# 1) 主干完成版本 + CHANGELOG + commit 后，手动触发 Win 验收 workflow（不会创建 Release）
+gh workflow run build-windows.yml --ref main
 # 2) 后台盯 Win CI（省去反复 poll；约 20-40 分钟）
-gh run watch <RUN_ID> --exit-status --interval 60   # 用 run_in_background 挂后台
+gh run watch <RUN_ID> --exit-status --interval 60
 # 3) 同时本机打 Mac（后台并行）
 npm run prebuild:mac && CSC_IDENTITY_AUTO_DISCOVERY=false npm run build:mac
 # 两路都完成 → 分别核验（Mac 见项目 CLAUDE.md，Win 见 §三 + 下方）
@@ -101,7 +103,7 @@ SHA 慢，先用字节数快筛本机 vs 服务器是否一致，再抽 SHA 确�
 - [ ] `src/helpers/backendConfig.js` 的 `CLIENT_PLATFORM` 按 `process.platform` **派生**，非写死 `"mac"`（曾出现 Win 包上报 `x-platform:mac` 的 bug）。
 - [ ] `llm_server.py` **完整明文提示词 = 0**：`grep -c '【示例1】' <unpacked>/llm_server.py` == 0，且 `grep -c set_prompt` > 0（提示词已加密/服务端下发）。
 - [ ] `getLocalPrompt` / `/prompt` 拉取逻辑就位（提 `backendClient.js` grep）。
-- [ ] 下载站接链：**Windows 仅 x64**（下载页 `arm64-setup` 链接数 = 0，arm64 只留 GitHub Release）。
+- [ ] 下载站接链：**Windows 仅 x64**；ARM64 在签名安装包与真实 ARM64 验收完成前只保留为短期 Actions 验收工件。
 
 ### 6.6 其它
 - **secrets 扫描**：`git diff | grep -iE "(sk-|api[_-]?key|secret|token)"`，排除误报（`polish_engine`/`accessToken`/`HOOK_TOKEN`/`X-App-Token` 等业务词）。

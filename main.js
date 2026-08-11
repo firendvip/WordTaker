@@ -1,4 +1,14 @@
 const { app, globalShortcut, BrowserWindow, ipcMain, dialog, shell, crashReporter, systemPreferences, session, Notification, Menu } = require("electron");
+
+// Release-gate mode must return before loading any production manager or
+// opening the user's real database. A distinct app name also isolates the
+// temporary safeStorage key from the user's installed WordTaker keychain item.
+if (process.env.WORDTAKER_PACKAGED_RUNTIME_SMOKE === "1") {
+  app.setName("WordTaker Runtime Smoke");
+  require("./scripts/electron-runtime-smoke");
+  return;
+}
+
 const path = require("path");
 const os = require("os");
 const fs = require("fs");

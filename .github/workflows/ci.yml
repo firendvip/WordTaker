@@ -6,28 +6,62 @@ on:
   pull_request:
     branches: [main]
 
+permissions:
+  contents: read
+
 jobs:
   js:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: pnpm/action-setup@v4
         with:
-          version: 9
+          version: 11.5.3
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22.22.0
           cache: pnpm
       # --ignore-scripts 跳过 electron-builder/原生重建（单测仅依赖纯模块）
-      - run: pnpm install --no-frozen-lockfile --ignore-scripts
+      - run: pnpm install --frozen-lockfile --ignore-scripts
+      - run: pnpm run verify:desktop-release
       - run: pnpm run lint
-        continue-on-error: true
+      - run: pnpm run test:auth:coverage
+      - run: pnpm run test:desktop:coverage
       - run: pnpm test
+      - run: pnpm run build:renderer
+      - run: pnpm audit --audit-level high
+
+  desktop-runtime:
+    needs: js
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.5.3
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.22.0
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile --ignore-scripts
+      - run: pnpm run prepare:electron-runtime
+      - run: pnpm exec electron-rebuild -f -w better-sqlite3 -w uiohook-napi
+      - run: pnpm run smoke:electron-runtime
 
   python:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"

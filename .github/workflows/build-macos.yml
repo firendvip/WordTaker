@@ -1,0 +1,130 @@
+name: Build macOS
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "package.json"
+      - "pnpm-lock.yaml"
+      - "pnpm-workspace.yaml"
+      - "main.js"
+      - "preload.js"
+      - "entitlements.mac.plist"
+      - "assets/**"
+      - "build/**"
+      - "*.py"
+      - "src/**"
+      - "scripts/**"
+      - ".github/workflows/build-macos.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "package.json"
+      - "pnpm-lock.yaml"
+      - "pnpm-workspace.yaml"
+      - "main.js"
+      - "preload.js"
+      - "entitlements.mac.plist"
+      - "assets/**"
+      - "build/**"
+      - "*.py"
+      - "src/**"
+      - "scripts/**"
+      - ".github/workflows/build-macos.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  package-mac:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-15
+            arch: arm64
+          - os: macos-15-intel
+            arch: x64
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.5.3
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.22.0
+          cache: pnpm
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pnpm install --frozen-lockfile --ignore-scripts
+      - run: pnpm run prepare:electron-runtime
+      - run: pnpm exec electron-rebuild -f -w better-sqlite3 -w uiohook-napi --arch ${{ matrix.arch }}
+      - run: pnpm run verify:desktop-release
+      - run: pnpm run lint
+      - run: pnpm run test:auth:coverage
+      - run: pnpm run test:desktop:coverage
+      - run: pnpm test
+      - run: pnpm audit --audit-level high
+      - run: pnpm run smoke:electron-runtime
+      - run: pnpm run prebuild:mac
+      - run: pnpm run pack
+      - name: Verify packaged Electron runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          app_path="$(find dist -maxdepth 3 -name '*.app' -type d -print -quit)"
+          if [[ -z "$app_path" ]]; then
+            echo "No packaged .app found" >&2
+            exit 1
+          fi
+          plist="$app_path/Contents/Info.plist"
+          result_path="$RUNNER_TEMP/wordtaker-packaged-runtime-${{ matrix.arch }}.json"
+          user_data="$RUNNER_TEMP/wordtaker-packaged-user-data-${{ matrix.arch }}"
+          smoke_keychain="$RUNNER_TEMP/wordtaker-runtime-smoke-${{ matrix.arch }}.keychain-db"
+          expected_version="$(node -p "require('./package.json').version")"
+          expected_electron="$(node -p "require('./package.json').devDependencies.electron")"
+          security create-keychain -p "wordtaker-ci-runtime-smoke" "$smoke_keychain"
+          security set-keychain-settings -lut 900 "$smoke_keychain"
+          security unlock-keychain -p "wordtaker-ci-runtime-smoke" "$smoke_keychain"
+          security default-keychain -d user -s "$smoke_keychain"
+          security list-keychains -d user -s "$smoke_keychain"
+          open -n -W \
+            --env "WORDTAKER_PACKAGED_RUNTIME_SMOKE=1" \
+            --env "WORDTAKER_EXPECTED_APP_VERSION=$expected_version" \
+            --env "WORDTAKER_EXPECTED_ELECTRON_VERSION=$expected_electron" \
+            --env "WORDTAKER_EXPECTED_ARCH=${{ matrix.arch }}" \
+            --env "WORDTAKER_RUNTIME_SMOKE_RESULT=$result_path" \
+            "$app_path" --args "--user-data-dir=$user_data"
+          node scripts/electron-runtime-smoke.js --verify-result \
+            "$result_path" "$expected_electron" "$expected_version" "${{ matrix.arch }}"
+      - name: Verify packaged version and OAuth scheme
+        shell: bash
+        run: |
+          app_path="$(find dist -maxdepth 3 -name '*.app' -type d -print -quit)"
+          if [[ -z "$app_path" ]]; then
+            echo "No packaged .app found" >&2
+            exit 1
+          fi
+          plist="$app_path/Contents/Info.plist"
+          expected_version="$(node -p "require('./package.json').version")"
+          actual_version="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$plist")"
+          actual_build_version="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$plist")"
+          if [[ "$actual_version" != "$expected_version" ]]; then
+            echo "CFBundleShortVersionString mismatch: $actual_version != $expected_version" >&2
+            exit 1
+          fi
+          if [[ "$actual_build_version" != "$expected_version" ]]; then
+            echo "CFBundleVersion mismatch: $actual_build_version != $expected_version" >&2
+            exit 1
+          fi
+          scheme_count="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleURLTypes' "$plist" | grep -Fc 'wangsan-wordtaker')"
+          if [[ "$scheme_count" != "1" ]]; then
+            echo "Expected exactly one wangsan-wordtaker scheme, found $scheme_count" >&2
+            exit 1
+          fi

@@ -84,9 +84,8 @@ export default defineConfig({
     exclude: ['electron']
   },
   
-  // 定义全局常量
+  // 定义与版本无关的全局常量；用户可见版本只允许来自 Electron app.getVersion()。
   define: {
-    __APP_VERSION__: JSON.stringify(process.env.npm_package_version || '1.0.0'),
     __BUILD_TIME__: JSON.stringify(new Date().toISOString()),
     __DEV__: process.env.NODE_ENV === 'development'
   },

@@ -4,7 +4,6 @@
 
 **本地优先的中文语音输入工具 —— 本地识别 + AI 润色,说完即贴到光标处**
 
-<img src="https://img.shields.io/badge/version-0.1.0-brightgreen" alt="Version">
 <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux-lightgrey" alt="Platform">
 <img src="https://img.shields.io/badge/license-Apache_2.0-blue.svg" alt="License">
 
@@ -27,9 +26,9 @@ WordTaker 是一个注重隐私的桌面端中文语音输入工具:按一下快
 ## 🚀 快速开始
 
 ### 环境要求
-- **Node.js 18+**
-- **Python 3.8+**(运行本地 FunASR 服务)
-- **macOS 10.15+** / **Windows 10+** / **Linux**
+- **Node.js 22.12+**
+- **Python 3.11+**(运行本地 FunASR 服务)
+- **macOS 12+** / **Windows 10+** / **Linux**
 
 ### 安装与运行
 
