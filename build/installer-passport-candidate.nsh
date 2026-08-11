@@ -1,4 +1,4 @@
-!include "installer.nsh"
+!include "${BUILD_RESOURCES_DIR}\installer.nsh"
 
 # Passport candidate packages are installable only. The installer owns the
 # callback registration so it is bound to the stable installed executable and
