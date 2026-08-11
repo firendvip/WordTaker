@@ -13,6 +13,8 @@ export default defineConfig({
       "tests/authFailureCoordinator.test.js",
       "tests/passportAimMapper.test.js",
       "tests/backendClientAuth.test.js",
+      "tests/passportOpaqueContract.test.js",
+      "tests/passportCapability.test.js",
     ],
     coverage: {
       provider: "v8",
@@ -25,6 +27,7 @@ export default defineConfig({
         "src/helpers/authFailureCoordinator.js",
         "src/helpers/passportAimMapper.js",
         "src/helpers/backendClient.js",
+        "src/helpers/passportCapability.js",
       ],
       reporter: ["text", "json-summary"],
       thresholds: {

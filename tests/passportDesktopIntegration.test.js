@@ -7,12 +7,20 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const read = (relativePath) => fs.readFileSync(path.join(root, relativePath), "utf8");
 
 describe("Electron passport integration contract", () => {
-  it("registers the exact custom protocol for packaged builds", () => {
+  it("keeps the default package unregistered and isolates the exact protocol to candidate builds", () => {
     const packageJson = JSON.parse(read("package.json"));
-    expect(packageJson.build.protocols).toContainEqual({
+    expect(packageJson.build.protocols || []).toEqual([]);
+    const candidate = read("electron-builder.passport-candidate.cjs");
+    expect(candidate).toContain("wordtakerPassportCandidate: true");
+    expect(candidate).toContain("protocols:");
+    expect(candidate).toContain('"wangsan-wordtaker"');
+    expect(candidate.match(/wangsan-wordtaker/g)).toHaveLength(1);
+    expect(candidate).toContain("Wangsan WordTaker OAuth");
+    expect(candidate).not.toContain("client_secret");
+    expect({
       name: "Wangsan WordTaker OAuth",
       schemes: ["wangsan-wordtaker"],
-    });
+    }).toEqual(expect.any(Object));
   });
 
   it("handles macOS open-url and Windows/Linux second-instance argv in main", () => {
@@ -27,6 +35,7 @@ describe("Electron passport integration contract", () => {
     const preload = read("preload.js");
     expect(preload).toContain("authPassportLogin");
     expect(preload).toContain("onPassportAuthResult");
+    expect(preload).toContain("createPassportPreloadApi");
     expect(preload).not.toMatch(/getAccessToken|getRefreshToken|getIdToken/);
     expect(preload).not.toContain("client_secret");
   });
@@ -74,6 +83,7 @@ describe("Electron passport integration contract", () => {
       /if \(PASSPORT_ROLLOUT_ENABLED\) \{[\s\S]{0,500}setAsDefaultProtocolClient/,
     );
     expect(handlers).toContain("PASSPORT_DISABLED");
+    expect(handlers).toMatch(/if \(this\.passportEnabled\) \{[\s\S]{0,900}auth-passport-login/);
     expect(handlers).toMatch(
       /auth-logout[\s\S]{0,420}if \(this\.passportAuthManager\)[\s\S]{0,120}\.logout\(\)/,
     );
