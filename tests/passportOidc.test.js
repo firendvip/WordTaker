@@ -24,8 +24,7 @@ const {
 
 const PASSPORT_USER_ID = "b118e5a6-1258-4d1d-9e42-a25306d3085a";
 const CENTRAL_SESSION_ID = "f430586a-5aad-49a1-85f8-1bb4102f32a6";
-const ID_TOKEN_ID = "0f13be9a-e100-4377-b43e-a2599aaf472d";
-const ACCESS_TOKEN_ID = "8cb4dcc4-8a53-4440-8a2e-b12103b55fde";
+const JWT_IDENTIFIER = "00000000-0000-4000-8000-000000000007";
 
 function metadata(overrides = {}) {
   return {
@@ -78,20 +77,13 @@ function tokenFixture({ nonce = "nonce-value-is-long-enough", now = 1_800_000_00
     nonce,
     token_use: "id",
     auth_time: now - 20,
-    jti: ID_TOKEN_ID,
+    jti: JWT_IDENTIFIER,
     sid: CENTRAL_SESSION_ID,
     name: "弦外小猫用户",
     picture: `${OIDC_ISSUER}/api/profile/avatar/${PASSPORT_USER_ID}?v=7`,
     profile_version: 7,
   });
-  const accessToken = signJwt(privateKey, {
-    ...common,
-    exp: now + 900,
-    token_use: "access",
-    scope: REQUESTED_SCOPE,
-    sid: CENTRAL_SESSION_ID,
-    jti: ACCESS_TOKEN_ID,
-  });
+  const accessToken = "opaque.access.fixture";
   return {
     privateKey,
     jwks: { keys: [{ ...jwk, alg: "RS256", kid: "test-key", use: "sig" }] },
@@ -211,7 +203,7 @@ describe("passport OIDC contract", () => {
         nonce: "nonce-value-is-long-enough",
         token_use: "id",
         auth_time: now,
-        jti: ID_TOKEN_ID,
+        jti: JWT_IDENTIFIER,
         sid: CENTRAL_SESSION_ID,
         iat: now,
         exp: now + 300,
