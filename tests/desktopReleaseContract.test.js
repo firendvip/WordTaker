@@ -148,10 +148,18 @@ function secureSnapshot(overrides = {}) {
       "workflow_dispatch:",
       "permissions:",
       "contents: read",
+      "environment: release-signing",
+      "persist-credentials: false",
+      "- uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262",
+      "- uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02",
       "forceCodeSigning=true",
       "codesign --verify --deep --strict",
       "spctl --assess --type execute",
       "xcrun stapler validate",
+      "xcrun notarytool submit",
+      "security create-keychain",
+      "security delete-keychain",
+      "if: always()",
       "MACOS_SIGNER_SHA256",
       "APPLE_TEAM_ID",
       "Get-AuthenticodeSignature",
@@ -160,6 +168,8 @@ function secureSnapshot(overrides = {}) {
       "signtool verify /pa /all /v",
       "WORDTAKER_PACKAGED_RUNTIME_SMOKE",
       "signed-artifact-gate.js",
+      "signed-gate-artifacts-macos",
+      "signed-gate-artifacts-windows",
       "--publish never",
     ].join("\n"),
     changelogSource: "# Changelog\n\n## [1.29.0] - 2026-08-11",
@@ -257,6 +267,24 @@ describe("desktop release contract", () => {
     const publishing = secureSnapshot();
     publishing.releaseGateWorkflow += "\ncontents: write\naction-gh-release\n--publish always";
     expect(validateDesktopReleaseSnapshot(publishing)).toEqual(
+      expect.arrayContaining([expect.stringContaining("signed artifact")]),
+    );
+  });
+
+  it("requires pinned actions, isolated signing state and retained verified artifact bytes", () => {
+    const safe = secureSnapshot();
+    expect(validateDesktopReleaseSnapshot(safe).filter((issue) => issue.includes("signed artifact")))
+      .toEqual([]);
+
+    const unsafe = secureSnapshot();
+    unsafe.releaseGateWorkflow = unsafe.releaseGateWorkflow
+      .replace("security delete-keychain", "echo keychain-left-behind")
+      .replace(
+        "actions/checkout@11d5960a326750d5838078e36cf38b85af677262",
+        "actions/checkout@v4",
+      )
+      .replace("signed-gate-artifacts-windows", "receipt-only");
+    expect(validateDesktopReleaseSnapshot(unsafe)).toEqual(
       expect.arrayContaining([expect.stringContaining("signed artifact")]),
     );
   });

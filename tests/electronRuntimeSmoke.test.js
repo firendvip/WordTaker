@@ -82,6 +82,9 @@ describe("Electron authentication runtime smoke", () => {
       backend: "keychain",
       encryptedBytes: expect.any(Number),
     });
+    safeStorage.getSelectedStorageBackend.mockReturnValue("platform-default");
+    expect(assertSafeStorageRoundTrip(safeStorage, "darwin").backend).toBe("keychain");
+    expect(assertSafeStorageRoundTrip(safeStorage, "win32").backend).toBe("dpapi");
   });
 
   it("fails closed when encryption is unavailable or Linux selects basic_text", () => {

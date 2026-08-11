@@ -69,6 +69,7 @@ function writeRuntimeResult(filePath, arch = "arm64") {
 }
 
 afterEach(() => {
+  vi.restoreAllMocks();
   while (tempDirectories.length) {
     fs.rmSync(tempDirectories.pop(), { recursive: true, force: true });
   }
@@ -93,11 +94,17 @@ describe("signed packaged artifact gate", () => {
       authority: "Developer ID Application: Wangsan (ABCDE12345)",
       teamId: TEAM_ID,
     });
-    expect(validateMacAssessment("accepted\nsource=Notarized Developer ID"))
+    expect(validateMacAssessment([
+      "/Volumes/弦外小猫/弦外小猫.app: accepted",
+      "source=Notarized Developer ID",
+      `origin=Developer ID Application: Wangsan (${TEAM_ID})`,
+    ].join("\n")))
       .toBe("Notarized Developer ID");
     expect(() => parseMacSignatureDetails("Authority=Apple Development\nTeamIdentifier=not-valid"))
       .toThrow(/Developer ID|TeamIdentifier/);
     expect(() => validateMacAssessment("rejected\nsource=Unnotarized Developer ID"))
+      .toThrow(/notarized/i);
+    expect(() => validateMacAssessment("maliciousaccepted\nsource=Notarized Developer ID"))
       .toThrow(/notarized/i);
     expect(parseMacSignatureDetails([
       "ignored line",
@@ -174,6 +181,17 @@ describe("signed packaged artifact gate", () => {
     }
     expect(() => writeReceipt("relative.json", receipt)).toThrow(/absolute/i);
     expect(writeReceipt(undefined, receipt)).toBeUndefined();
+  });
+
+  it("hashes large release artifacts in bounded chunks", () => {
+    const directory = tempDirectory();
+    const artifactPath = path.join(directory, "large-artifact.bin");
+    const bytes = Buffer.alloc(5 * 1024 * 1024 + 17, 0x5a);
+    fs.writeFileSync(artifactPath, bytes);
+    const expected = crypto.createHash("sha256").update(bytes).digest("hex");
+    const readFile = vi.spyOn(fs, "readFileSync");
+    expect(sha256File(artifactPath)).toBe(expected);
+    expect(readFile).not.toHaveBeenCalled();
   });
 
   it("executes child commands without a shell and fails closed on a non-zero exit", () => {
@@ -649,6 +667,48 @@ describe("signed packaged artifact gate", () => {
     expect(mountCleanup).toHaveBeenCalledTimes(2);
   });
 
+  it("always detaches a mounted DMG even when runtime cleanup fails", () => {
+    const directory = tempDirectory();
+    const artifactPath = path.join(directory, "KittyEcho.dmg");
+    const appPath = path.join(directory, "KittyEcho.app");
+    const runtimePath = path.join(directory, "runtime.json");
+    fs.writeFileSync(artifactPath, "dmg");
+    fs.mkdirSync(appPath);
+    writeRuntimeResult(runtimePath, "arm64");
+    const runtimeCleanup = vi.fn(() => { throw new Error("runtime cleanup failed"); });
+    const mountCleanup = vi.fn();
+    const run = vi.fn((command, args) => {
+      if (command === "codesign" && args.includes("--verbose=4")) {
+        return { stdout: [
+          "Identifier=com.kittyecho.app",
+          `Authority=Developer ID Application: Wangsan (${TEAM_ID})`,
+          `TeamIdentifier=${TEAM_ID}`,
+        ].join("\n"), stderr: "" };
+      }
+      return { stdout: "accepted\nsource=Notarized Developer ID", stderr: "" };
+    });
+    expect(() => verifyMacArtifact({
+      artifactPath,
+      version: "1.29.0",
+      electronVersion: "43.3.0",
+      arch: "arm64",
+      variant: "default",
+      commit: "a".repeat(40),
+      tree: "b".repeat(40),
+      expectedTeamId: TEAM_ID,
+      expectedSignerFingerprint: FINGERPRINT,
+    }, {
+      run,
+      verifyProvenance: vi.fn(),
+      validateProtocolVariant: vi.fn(),
+      mountArtifact: () => ({ appPath, cleanup: mountCleanup }),
+      runPackagedRuntime: () => ({ resultPath: runtimePath, cleanup: runtimeCleanup }),
+      extractCertificateFingerprint: () => FINGERPRINT,
+    })).toThrow(/runtime cleanup failed/i);
+    expect(runtimeCleanup).toHaveBeenCalledOnce();
+    expect(mountCleanup).toHaveBeenCalledOnce();
+  });
+
   it("executes Windows installer, portable and installed-exe Authenticode gates", () => {
     const directory = tempDirectory();
     const installerPath = path.join(directory, "KittyEcho-1.29.0-x64-setup.exe");
@@ -748,6 +808,75 @@ describe("signed packaged artifact gate", () => {
     });
     expect(run.mock.calls.some(([command, args]) => /Uninstall\.exe$/.test(command) && args[0] === "/S"))
       .toBe(true);
+  });
+
+  it("verifies Windows distributable signatures before executing the installer", () => {
+    const directory = tempDirectory();
+    const installerPath = path.join(directory, "setup.exe");
+    const portablePath = path.join(directory, "portable.exe");
+    fs.writeFileSync(installerPath, "installer");
+    fs.writeFileSync(portablePath, "portable");
+    const installArtifact = vi.fn(() => {
+      throw new Error("installer must not execute");
+    });
+    const run = vi.fn((command) => command === "powershell.exe"
+      ? { stdout: JSON.stringify({ Status: "NotSigned" }), stderr: "" }
+      : { stdout: "", stderr: "" });
+    expect(() => verifyWindowsArtifact({
+      installerPath,
+      portablePath,
+      version: "1.29.0",
+      electronVersion: "43.3.0",
+      arch: "x64",
+      variant: "default",
+      commit: "a".repeat(40),
+      tree: "b".repeat(40),
+      expectedSignerFingerprint: FINGERPRINT,
+    }, { run, verifyProvenance: vi.fn(), installArtifact })).toThrow(/Authenticode/i);
+    expect(installArtifact).not.toHaveBeenCalled();
+  });
+
+  it("always uninstalls Windows artifacts when either runtime cleanup fails", () => {
+    const directory = tempDirectory();
+    const installerPath = path.join(directory, "setup.exe");
+    const portablePath = path.join(directory, "portable.exe");
+    const installedAppPath = path.join(directory, "KittyEcho.exe");
+    const runtimePath = path.join(directory, "runtime.json");
+    for (const filePath of [installerPath, portablePath, installedAppPath]) fs.writeFileSync(filePath, "x");
+    writeRuntimeResult(runtimePath, "x64");
+    const installedCleanup = vi.fn(() => { throw new Error("installed cleanup failed"); });
+    const portableCleanup = vi.fn();
+    const installationCleanup = vi.fn();
+    const run = vi.fn((command) => command === "powershell.exe"
+      ? { stdout: JSON.stringify({
+        Status: "Valid",
+        SignerSha256: FINGERPRINT,
+        TimestampSha256: "B2".repeat(32),
+      }), stderr: "" }
+      : { stdout: "", stderr: "" });
+    expect(() => verifyWindowsArtifact({
+      installerPath,
+      portablePath,
+      version: "1.29.0",
+      electronVersion: "43.3.0",
+      arch: "x64",
+      variant: "default",
+      commit: "a".repeat(40),
+      tree: "b".repeat(40),
+      expectedSignerFingerprint: FINGERPRINT,
+    }, {
+      run,
+      verifyProvenance: vi.fn(),
+      validateProtocolVariant: vi.fn(),
+      installArtifact: () => ({ installedAppPath, cleanup: installationCleanup }),
+      runPackagedRuntime: (target) => ({
+        resultPath: runtimePath,
+        cleanup: target === installedAppPath ? installedCleanup : portableCleanup,
+      }),
+    })).toThrow(/installed cleanup failed/i);
+    expect(installedCleanup).toHaveBeenCalledOnce();
+    expect(portableCleanup).toHaveBeenCalledOnce();
+    expect(installationCleanup).toHaveBeenCalledOnce();
   });
 
   it("rejects malformed Authenticode JSON and generates the SHA-256 signer command", () => {
