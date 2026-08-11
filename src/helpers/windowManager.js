@@ -1,6 +1,7 @@
 const { BrowserWindow, app } = require("electron");
 const path = require("path");
 const { execFile } = require("child_process");
+const { isTrustedSettingsUrl } = require("./passportDesktopPolicy");
 
 // 取前台焦点窗口位置/尺寸的超时（毫秒）：放宽到 1500ms，避免 osascript 偶发卡顿被 SIGKILL
 // 后误回退到光标屏（胶囊"跟随鼠标"）。超时/失败时优先复用上次成功的焦点屏。
@@ -727,6 +728,7 @@ class WindowManager {
       webPreferences: {
         nodeIntegration: false,
         contextIsolation: true,
+        sandbox: true,
         preload: path.join(__dirname, "..", "..", "preload.js"),
       },
     });
@@ -734,6 +736,19 @@ class WindowManager {
     this._wireRendererDiagnostics(this.settingsWindow, "settings");
 
     const isDev = process.env.NODE_ENV === "development";
+    const settingsFilePath = path.join(__dirname, "..", "dist", "settings.html");
+    const blockUntrustedNavigation = (event, targetUrl) => {
+      if (!isTrustedSettingsUrl(targetUrl, {
+        development: isDev,
+        settingsFilePath,
+      })) {
+        event.preventDefault();
+      }
+    };
+    this.settingsWindow.webContents.on("will-navigate", blockUntrustedNavigation);
+    this.settingsWindow.webContents.on("will-redirect", blockUntrustedNavigation);
+    this.settingsWindow.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
+
     // 仅允许已知的安全分类标识透传，避免把任意字符串注入 URL。
     const safeTab =
       typeof initialTab === "string" && /^[a-z]+$/.test(initialTab) ? initialTab : null;
@@ -746,7 +761,7 @@ class WindowManager {
     } else {
       const loadOptions = safeTab ? { query: { tab: safeTab } } : undefined;
       await this.settingsWindow.loadFile(
-        path.join(__dirname, "..", "dist", "settings.html"),
+        settingsFilePath,
         loadOptions
       );
     }

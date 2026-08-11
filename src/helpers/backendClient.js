@@ -19,6 +19,30 @@ const {
 } = require("./backendConfig");
 const deviceIdentity = require("./deviceIdentity");
 const tokenStore = require("./tokenStore");
+const { fetchWithAuthFallback } = require("./authenticatedFetch");
+
+let authFailureHandler = null;
+let sensitiveAuthPreflightHandler = null;
+const SENSITIVE_AUTH_PATHS = new Set([
+  "/polish",
+  "/payment/order",
+  "/payment/mock/pay",
+  "/redeem",
+]);
+
+function setAuthFailureHandler(handler) {
+  if (handler !== null && typeof handler !== "function") {
+    throw new TypeError("auth failure handler must be a function or null");
+  }
+  authFailureHandler = handler;
+}
+
+function setSensitiveAuthPreflightHandler(handler) {
+  if (handler !== null && typeof handler !== "function") {
+    throw new TypeError("sensitive auth preflight handler must be a function or null");
+  }
+  sensitiveAuthPreflightHandler = handler;
+}
 
 function makeError(kind, message, extra = {}) {
   const err = new Error(message);
@@ -31,37 +55,193 @@ function baseUrl() {
   return `${AI_BACKEND_URL}${API_PREFIX}`;
 }
 
-// 组装公共头：device / platform / fingerprint / Bearer。
+// 组装公共头：device / platform。Bearer 由 authenticatedFetch 按来源注入，
+// 以便统一通行证灰度期间保留旧 AIM 会话的只读回退。
 function buildHeaders(extra = {}) {
-  const headers = {
+  return {
     "Content-Type": "application/json",
     "x-device-id": deviceIdentity.getDeviceId(),
     "x-platform": CLIENT_PLATFORM,
     ...extra,
   };
-  const token = tokenStore.getAccessToken();
-  if (token) headers["Authorization"] = `Bearer ${token}`;
-  return headers;
+}
+
+function captureAuthSnapshot(method, authPurpose) {
+  const credentials = tokenStore
+    .getAccessTokenCandidates({ method, purpose: authPurpose })
+    .map((credential) => ({ ...credential }));
+  const passport = tokenStore.getPassport();
+  const passportIdentity = passport
+    ? {
+        issuer: passport.issuer,
+        passport_user_id: passport.account?.passport_user_id || null,
+      }
+    : null;
+  const authContext = {
+    passport: credentials.some((credential) => credential.provider === "passport")
+      ? {
+          identity: passportIdentity,
+          generation: tokenStore.getProviderGeneration("passport"),
+        }
+      : null,
+    legacy: credentials.some((credential) => credential.provider === "legacy")
+      ? { generation: tokenStore.getProviderGeneration("legacy") }
+      : null,
+  };
+  return { credentials, passportIdentity, authContext };
+}
+
+function sameIdentity(left, right) {
+  if (left === null || right === null) return left === right;
+  return (
+    left?.issuer === right?.issuer &&
+    left?.passport_user_id === right?.passport_user_id
+  );
+}
+
+function sameAuthContext(left, right) {
+  return (
+    left?.passport?.generation === right?.passport?.generation &&
+    sameIdentity(left?.passport?.identity || null, right?.passport?.identity || null) &&
+    left?.legacy?.generation === right?.legacy?.generation
+  );
+}
+
+function sameAuthSnapshot(left, right) {
+  return (
+    left.credentials.length === right.credentials.length &&
+    left.credentials.every((credential, index) => (
+      credential.provider === right.credentials[index]?.provider &&
+      credential.accessToken === right.credentials[index]?.accessToken
+    )) &&
+    sameAuthContext(left.authContext, right.authContext)
+  );
+}
+
+function primaryAuthEvidence(snapshot) {
+  const provider = snapshot.credentials[0]?.provider || null;
+  if (!provider) return { provider: null, generation: null, identity: null };
+  return {
+    provider,
+    generation: snapshot.authContext[provider]?.generation ?? null,
+    identity: provider === "passport" ? snapshot.passportIdentity : null,
+  };
+}
+
+function approvalMatchesInitialIdentity(initialSnapshot, approvedCredential) {
+  const initial = primaryAuthEvidence(initialSnapshot);
+  if (initial.provider) {
+    return (
+      approvedCredential.provider === initial.provider &&
+      (initial.provider !== "passport" ||
+        sameIdentity(initial.identity, approvedCredential.identity || null))
+    );
+  }
+  return (
+    approvedCredential.provider === "passport" &&
+    sameIdentity(initialSnapshot.passportIdentity, approvedCredential.identity || null)
+  );
+}
+
+function matchesApprovedCredential(snapshot, approvedCredential, initialSnapshot) {
+  if (!approvedCredential || !["passport", "legacy"].includes(approvedCredential.provider)) {
+    return false;
+  }
+  const current = primaryAuthEvidence(snapshot);
+  return (
+    approvalMatchesInitialIdentity(initialSnapshot, approvedCredential) &&
+    current.provider === approvedCredential.provider &&
+    current.generation === approvedCredential.generation &&
+    sameIdentity(current.identity, approvedCredential.identity || null)
+  );
+}
+
+function publicAuthSnapshot(snapshot) {
+  return {
+    credentials: snapshot.credentials.map(({ provider }) => ({ provider })),
+    authContext: {
+      passport: snapshot.authContext.passport
+        ? {
+            generation: snapshot.authContext.passport.generation,
+            identity: snapshot.authContext.passport.identity
+              ? { ...snapshot.authContext.passport.identity }
+              : null,
+          }
+        : null,
+      legacy: snapshot.authContext.legacy
+        ? { generation: snapshot.authContext.legacy.generation }
+        : null,
+    },
+  };
 }
 
 /**
  * 统一请求。成功返回后端 JSON（已解析）；失败抛结构化错误。
  * 只对「后端计费接口」用超时（避免后端挂死），到点 abort → timeout 错误。
  */
-async function request(pathname, { method = "GET", body = null, timeoutMs } = {}) {
+async function request(
+  pathname,
+  {
+    method = "GET",
+    body = null,
+    timeoutMs,
+    includeAuthMetadata = false,
+    authPurpose = null,
+  } = {},
+) {
+  let authSnapshot = captureAuthSnapshot(method, authPurpose);
+  if (sensitiveAuthPreflightHandler && SENSITIVE_AUTH_PATHS.has(pathname)) {
+    const approval = await sensitiveAuthPreflightHandler({
+      pathname,
+      method,
+      authSnapshot: publicAuthSnapshot(authSnapshot),
+    });
+    const currentSnapshot = captureAuthSnapshot(method, authPurpose);
+    if (approval?.refreshAuthSnapshot === true) {
+      if (!matchesApprovedCredential(
+        currentSnapshot,
+        approval.approvedCredential,
+        authSnapshot,
+      )) {
+        throw makeError("auth", "登录状态已变化，请重试", { code: "AUTH_REQUIRED" });
+      }
+      authSnapshot = currentSnapshot;
+    } else if (!sameAuthSnapshot(authSnapshot, currentSnapshot)) {
+      throw makeError("auth", "登录状态已变化，请重试", { code: "AUTH_REQUIRED" });
+    }
+  }
   const url = `${baseUrl()}${pathname}`;
   const controller = new AbortController();
   const to = timeoutMs ?? BACKEND_REQUEST_TIMEOUT_MS;
   const timer = to > 0 ? setTimeout(() => controller.abort(), to) : null;
 
   let res;
+  let authProvider = null;
+  let authIdentity = null;
+  let authContext = { passport: null, legacy: null };
+  let rejectedProviders = [];
   try {
-    res = await fetch(url, {
-      method,
-      headers: buildHeaders(),
-      body: body != null ? JSON.stringify(body) : undefined,
-      signal: controller.signal,
+    const { credentials, passportIdentity } = authSnapshot;
+    authContext = authSnapshot.authContext;
+    const result = await fetchWithAuthFallback({
+      fetchFn: fetch,
+      url,
+      options: {
+        method,
+        headers: buildHeaders(),
+        body: body != null ? JSON.stringify(body) : undefined,
+        signal: controller.signal,
+      },
+      credentials,
     });
+    res = result.response;
+    authProvider = result.provider;
+    authIdentity = authProvider === "passport" ? passportIdentity : null;
+    rejectedProviders = result.rejectedProviders.map((provider) => ({
+      provider,
+      identity: provider === "passport" ? passportIdentity : null,
+      generation: authContext[provider]?.generation ?? null,
+    }));
   } catch (e) {
     if (timer) clearTimeout(timer);
     if (e && e.name === "AbortError") {
@@ -71,6 +251,10 @@ async function request(pathname, { method = "GET", body = null, timeoutMs } = {}
     throw makeError("network", `无法连接后端: ${e?.message || e}`, { cause: e });
   } finally {
     if (timer) clearTimeout(timer);
+  }
+
+  if (authFailureHandler && rejectedProviders.length > 0) {
+    await authFailureHandler(rejectedProviders);
   }
 
   const text = await res.text().catch(() => "");
@@ -86,10 +270,19 @@ async function request(pathname, { method = "GET", body = null, timeoutMs } = {}
     const code = json && (json.code || json.error) ? json.code || json.error : null;
     const message =
       (json && json.message) || `后端错误 HTTP ${res.status}`;
-    throw makeError("http", message, { status: res.status, code, body: json });
+    throw makeError("http", message, {
+      status: res.status,
+      code,
+      body: json,
+      authProvider,
+      authIdentity,
+      authContext,
+    });
   }
 
-  return json;
+  return includeAuthMetadata
+    ? { response: json, authProvider, authIdentity, authContext }
+    : json;
 }
 
 /**
@@ -209,7 +402,11 @@ async function authEmailLogin(email, code, inviteCode) {
   return request("/auth/email/login", { method: "POST", body });
 }
 async function authMe() {
-  return request("/auth/me", { method: "GET" });
+  return request("/auth/me", {
+    method: "GET",
+    includeAuthMetadata: true,
+    authPurpose: "aim-mapping",
+  });
 }
 
 // 微信登录：先取官方 qrconnect 授权 URL（含 redirect_uri + state），
@@ -230,6 +427,8 @@ async function authWechatLogin(code, inviteCode) {
 }
 
 module.exports = {
+  setAuthFailureHandler,
+  setSensitiveAuthPreflightHandler,
   request,
   polish,
   getQuota,

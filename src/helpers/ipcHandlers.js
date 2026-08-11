@@ -1,5 +1,9 @@
 const { ipcMain } = require("electron");
+const path = require("path");
 const AiService = require("./aiService");
+const {
+  isTrustedSettingsUrl,
+} = require("./passportDesktopPolicy");
 
 // 已停用 IPC 硬超时兜底：长语音转写润色可能耗时较久，硬超时会把长文本的润色请求
 // 提前中断并回退直贴原文（已确诊 BUG）。按用户要求去除该时间兜底，直接 await
@@ -67,6 +71,9 @@ class IPCHandlers {
     this.llmManager = managers.llmManager;
     this.windowManager = managers.windowManager;
     this.hotkeyManager = managers.hotkeyManager;
+    this.passportAuthManager = managers.passportAuthManager || null;
+    this.passportAimMapper = managers.passportAimMapper || null;
+    this.passportEnabled = managers.passportEnabled === true;
     this.aiService = new AiService({
       databaseManager: managers.databaseManager,
       logger: managers.logger,
@@ -78,6 +85,26 @@ class IPCHandlers {
     this.f2RegisteredSenders = new Set();
     
     this.setupHandlers();
+  }
+
+  isTrustedSettingsRenderer(event) {
+    try {
+      const settingsContents = this.windowManager?.settingsWindow?.webContents;
+      if (
+        !settingsContents ||
+        event?.sender !== settingsContents ||
+        event?.senderFrame !== settingsContents.mainFrame
+      ) {
+        return false;
+      }
+      const raw = event?.senderFrame?.url || event?.sender?.getURL?.() || "";
+      return isTrustedSettingsUrl(raw, {
+        development: process.env.NODE_ENV === "development",
+        settingsFilePath: path.join(__dirname, "..", "dist", "settings.html"),
+      });
+    } catch {
+      return false;
+    }
   }
 
   setupHandlers() {
@@ -1428,7 +1455,9 @@ class IPCHandlers {
       kind: error?.kind,
       code: error?.code,
     });
-    const requireLogin = () => !!tokenStore.getAccessToken();
+    const requireLogin = () => Boolean(
+      tokenStore.getLegacy() || (this.passportEnabled && tokenStore.getPassport()),
+    );
 
     // 套餐列表（公开，无需登录）
     ipcMain.handle("list-plans", async () => {
@@ -1443,12 +1472,15 @@ class IPCHandlers {
 
     // 下单（需登录）
     ipcMain.handle("create-order", async (event, planCode, channel) => {
+      if (!this.isTrustedSettingsRenderer(event)) {
+        return { success: false, error: "不允许的购买来源", code: "AUTH_FORBIDDEN" };
+      }
       if (typeof planCode !== "string" || !planCode.trim()) {
         return { success: false, error: "无效的套餐", code: "INVALID_PLAN" };
       }
       const ch = channel === "alipay" ? "alipay" : "wechat";
       if (!requireLogin()) {
-        return { success: false, error: "请先登录后再购买", code: "UNAUTHORIZED" };
+        return { success: false, error: "请先登录后再购买", code: "AUTH_REQUIRED" };
       }
       try {
         const order = await backendClient.createOrder(planCode.trim(), ch);
@@ -1461,11 +1493,14 @@ class IPCHandlers {
 
     // dev 直付（需登录）
     ipcMain.handle("mock-pay", async (event, orderId) => {
+      if (!this.isTrustedSettingsRenderer(event)) {
+        return { success: false, error: "不允许的支付来源", code: "AUTH_FORBIDDEN" };
+      }
       if (orderId == null || String(orderId).trim() === "") {
         return { success: false, error: "无效的订单", code: "INVALID_ORDER" };
       }
       if (!requireLogin()) {
-        return { success: false, error: "请先登录", code: "UNAUTHORIZED" };
+        return { success: false, error: "请先登录", code: "AUTH_REQUIRED" };
       }
       try {
         const result = await backendClient.mockPay(String(orderId));
@@ -1478,11 +1513,14 @@ class IPCHandlers {
 
     // 兑换码（需登录）
     ipcMain.handle("redeem-code", async (event, code) => {
+      if (!this.isTrustedSettingsRenderer(event)) {
+        return { success: false, error: "不允许的兑换来源", code: "AUTH_FORBIDDEN" };
+      }
       if (typeof code !== "string" || !code.trim()) {
         return { success: false, error: "请输入兑换码", code: "INVALID_CODE" };
       }
       if (!requireLogin()) {
-        return { success: false, error: "请先登录后再兑换", code: "UNAUTHORIZED" };
+        return { success: false, error: "请先登录后再兑换", code: "AUTH_REQUIRED" };
       }
       try {
         const data = await backendClient.redeem(code.trim());
@@ -1509,6 +1547,7 @@ class IPCHandlers {
     const isValidEmail = (e) =>
       typeof e === "string" && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e.trim());
     const isValidCode = (c) => typeof c === "string" && /^\d{4,8}$/.test(c.trim());
+    const isTrustedRenderer = (event) => this.isTrustedSettingsRenderer(event);
 
     // 把后端结构化错误映射为渲染层友好的 { success:false, error, kind, code }。
     const failFromError = (error, fallbackMsg) => ({
@@ -1521,7 +1560,16 @@ class IPCHandlers {
     // 登录成功统一收尾：写 tokenStore（token + 账号摘要），返回登录态。
     const persistLogin = (data) => {
       const account = (data && data.account) || null;
-      tokenStore.set({ accessToken: data.accessToken, account });
+      const stored = tokenStore.setLegacy({ accessToken: data.accessToken, account });
+      if (!stored) {
+        tokenStore.clearProvider("legacy");
+        return {
+          success: false,
+          code: "SECURE_STORAGE_REQUIRED",
+          error: "系统安全凭据存储不可用，无法保持旧版登录",
+        };
+      }
+      this.passportAuthManager?.drainPendingRevocations?.();
       return {
         success: true,
         loggedIn: true,
@@ -1533,8 +1581,41 @@ class IPCHandlers {
       };
     };
 
+    // 统一登录：主进程从 discovery 构造 Authorization Code + PKCE 请求，
+    // 仅让系统浏览器看到 authorize URL；renderer 永远拿不到 verifier/token。
+    ipcMain.handle("auth-passport-login", async (event) => {
+      if (!isTrustedRenderer(event)) {
+        return { success: false, code: "AUTH_FORBIDDEN", error: "不允许的登录来源" };
+      }
+      if (!this.passportEnabled || !this.passportAuthManager) {
+        return { success: false, code: "PASSPORT_DISABLED", error: "统一登录尚未启用" };
+      }
+      try {
+        return await this.passportAuthManager.startLogin();
+      } catch (error) {
+        return failFromError(error, "统一登录暂不可用");
+      }
+    });
+
+    ipcMain.handle("auth-passport-account", async (event) => {
+      if (!isTrustedRenderer(event)) {
+        return { success: false, code: "AUTH_FORBIDDEN", error: "不允许的账号操作来源" };
+      }
+      if (!this.passportEnabled || !this.passportAuthManager) {
+        return { success: false, code: "PASSPORT_DISABLED", error: "统一登录尚未启用" };
+      }
+      try {
+        return await this.passportAuthManager.openAccountCenter();
+      } catch (error) {
+        return failFromError(error, "账号中心暂不可用");
+      }
+    });
+
     // 发码：手机
     ipcMain.handle("auth-sms-send", async (event, phone) => {
+      if (!isTrustedRenderer(event)) {
+        return { success: false, code: "AUTH_FORBIDDEN", error: "不允许的登录来源" };
+      }
       if (!isValidPhone(phone)) {
         return { success: false, error: "手机号格式不正确", code: "INVALID_PHONE" };
       }
@@ -1549,6 +1630,9 @@ class IPCHandlers {
 
     // 登录：手机 + 验证码
     ipcMain.handle("auth-sms-login", async (event, phone, code, inviteCode) => {
+      if (!isTrustedRenderer(event)) {
+        return { success: false, code: "AUTH_FORBIDDEN", error: "不允许的登录来源" };
+      }
       if (!isValidPhone(phone)) {
         return { success: false, error: "手机号格式不正确", code: "INVALID_PHONE" };
       }
@@ -1572,6 +1656,9 @@ class IPCHandlers {
 
     // 发码：邮箱
     ipcMain.handle("auth-email-send", async (event, email) => {
+      if (!isTrustedRenderer(event)) {
+        return { success: false, code: "AUTH_FORBIDDEN", error: "不允许的登录来源" };
+      }
       if (!isValidEmail(email)) {
         return { success: false, error: "邮箱格式不正确", code: "INVALID_EMAIL" };
       }
@@ -1586,6 +1673,9 @@ class IPCHandlers {
 
     // 登录：邮箱 + 验证码
     ipcMain.handle("auth-email-login", async (event, email, code, inviteCode) => {
+      if (!isTrustedRenderer(event)) {
+        return { success: false, code: "AUTH_FORBIDDEN", error: "不允许的登录来源" };
+      }
       if (!isValidEmail(email)) {
         return { success: false, error: "邮箱格式不正确", code: "INVALID_EMAIL" };
       }
@@ -1611,6 +1701,9 @@ class IPCHandlers {
     // 编排：取授权 URL(含 redirect_uri+state) → 开内嵌窗打开官方页
     //   → 拦截回调（阻止真正载入，避免 code 被消耗）→ 校验 state → 换取 JWT。
     ipcMain.handle("auth-wechat-login", async (event, inviteCode) => {
+      if (!isTrustedRenderer(event)) {
+        return { success: false, code: "AUTH_FORBIDDEN", error: "不允许的登录来源" };
+      }
       const invite = typeof inviteCode === "string" ? inviteCode.trim() : undefined;
       const WECHAT_TIMEOUT_MS = 180000;
       const { BrowserWindow } = require("electron");
@@ -1826,49 +1919,64 @@ class IPCHandlers {
     });
 
     // 拉取当前账号（校验 token 有效 + 刷新账号摘要）
-    ipcMain.handle("auth-me", async () => {
-      try {
-        const json = await backendClient.authMe();
-        const d = (json && json.data) || {};
-        // auth/me 的 data 形如 { account, cloudRemaining, subscription }；
-        // 兼容后端直接返回账号对象的情况（无 data.account 时回退 data 本身）。
-        const account = d.account || (json && json.data) || null;
-        // 刷新本地账号摘要（token 不变）
-        const t = tokenStore.get();
-        if (t && account) tokenStore.set({ accessToken: t.accessToken, account });
-        return {
-          success: true,
-          account,
-          cloudRemaining: d.cloudRemaining ?? null,
-          subscription: d.subscription ?? null,
-        };
-      } catch (error) {
-        // 401 视为登录态失效：清除本地 token
-        if (error && error.status === 401) {
-          tokenStore.clear();
-          return { success: false, error: "登录已失效", code: "UNAUTHORIZED", loggedIn: false };
-        }
-        return failFromError(error, "获取账号失败");
+    ipcMain.handle("auth-me", async (event) => {
+      if (!isTrustedRenderer(event)) {
+        return { success: false, code: "AUTH_FORBIDDEN", error: "不允许的账号来源" };
       }
+      if (!this.passportAimMapper) {
+        return { success: false, code: "PASSPORT_UNAVAILABLE", error: "账号服务暂不可用" };
+      }
+      return this.passportAimMapper.resolve();
     });
 
     // 退出登录：清除本地 token
-    ipcMain.handle("auth-logout", async () => {
+    ipcMain.handle("auth-logout", async (event) => {
+      if (!isTrustedRenderer(event)) {
+        return { success: false, code: "AUTH_FORBIDDEN", error: "不允许的退出来源" };
+      }
       try {
-        tokenStore.clear();
-        return { success: true };
+        // The rollout switch blocks new/automatic Passport activity. Explicit
+        // local logout must still revoke a previously stored Passport family
+        // after durable local deletion, even after the feature is rolled back.
+        if (this.passportAuthManager) {
+          return await this.passportAuthManager.logout();
+        }
+        return tokenStore.clear()
+          ? { success: true, globalLogout: false }
+          : {
+              success: false,
+              code: "LOCAL_LOGOUT_FAILED",
+              error: "无法清除本地登录凭据，请重试",
+              globalLogout: false,
+            };
       } catch (error) {
         return { success: false, error: error?.message || "退出登录失败" };
       }
     });
 
     // 启动/初始化时查询登录态（读本地 tokenStore，不打网络）
-    ipcMain.handle("get-auth-state", async () => {
+    ipcMain.handle("get-auth-state", async (event) => {
+      if (!isTrustedRenderer(event)) {
+        return {
+          success: false,
+          code: "AUTH_FORBIDDEN",
+          loggedIn: false,
+          account: null,
+          passportEnabled: false,
+        };
+      }
       try {
-        const t = tokenStore.get();
-        return { success: true, loggedIn: !!t, account: (t && t.account) || null };
+        const state = this.passportEnabled && this.passportAuthManager
+          ? await this.passportAuthManager.getAuthState()
+          : { success: true, ...tokenStore.getAuthState() };
+        return { ...state, passportEnabled: this.passportEnabled };
       } catch (error) {
-        return { success: false, loggedIn: false, account: null };
+        return {
+          success: false,
+          loggedIn: false,
+          account: null,
+          passportEnabled: this.passportEnabled,
+        };
       }
     });
   }

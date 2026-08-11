@@ -10,6 +10,12 @@ export function useCloudQuota(api, isLoggedIn = true) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const aliveRef = useRef(true);
+  const requestGenerationRef = useRef(0);
+  const loginStateRef = useRef(isLoggedIn);
+  if (loginStateRef.current !== isLoggedIn) {
+    loginStateRef.current = isLoggedIn;
+    requestGenerationRef.current += 1;
+  }
 
   useEffect(() => {
     aliveRef.current = true;
@@ -19,15 +25,16 @@ export function useCloudQuota(api, isLoggedIn = true) {
   }, []);
 
   const refresh = useCallback(async () => {
+    const requestGeneration = ++requestGenerationRef.current;
     if (!api?.getCloudQuota) {
-      setLoading(false);
+      if (requestGeneration === requestGenerationRef.current) setLoading(false);
       return;
     }
     setLoading(true);
     setError(null);
     try {
       const r = await api.getCloudQuota();
-      if (!aliveRef.current) return;
+      if (!aliveRef.current || requestGeneration !== requestGenerationRef.current) return;
       if (r && r.success) {
         setQuota({
           cloudRemaining: r.cloudRemaining ?? null,
@@ -40,15 +47,20 @@ export function useCloudQuota(api, isLoggedIn = true) {
         setError((r && r.error) || "查询额度失败");
       }
     } catch (e) {
-      if (aliveRef.current) setError("查询额度失败，请检查网络");
+      if (aliveRef.current && requestGeneration === requestGenerationRef.current) {
+        setError("查询额度失败，请检查网络");
+      }
     } finally {
-      if (aliveRef.current) setLoading(false);
+      if (aliveRef.current && requestGeneration === requestGenerationRef.current) {
+        setLoading(false);
+      }
     }
     // isLoggedIn 变化时重建 refresh → useEffect 自动重新拉取（登录拿账号额度 / 退出拿匿名设备额度）
   }, [api, isLoggedIn]);
 
   // 立即清空本地额度态（退出登录时用）：不打网络，随后 refresh 会拿到匿名设备额度（可能为 0）
   const clear = useCallback(() => {
+    requestGenerationRef.current += 1;
     setQuota(null);
     setError(null);
     setLoading(false);

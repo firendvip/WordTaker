@@ -464,13 +464,11 @@ class AiService {
       const kind = err && err.kind;
       const code = err && err.code;
 
-      // 401 NOT_LOGGED_IN（token 过期/失效）：清 token + 降级本地/直贴 + 通知重新登录。
+      // 401 NOT_LOGGED_IN（token 过期/失效）：只清除被拒绝的认证来源，
+      // 保留灰度期另一条通行证/旧 AIM 兼容会话。
       if (code === 'NOT_LOGGED_IN' || (kind === 'http' && err.status === 401)) {
-        try {
-          require('./tokenStore').clear();
-        } catch (e) { /* 清除失败不阻断降级 */ }
         const localReady = this._isLocalReady();
-        this.logger.warn('云端润色 401，登录已过期，清 token 并降级:', {
+        this.logger.warn('云端润色 401，认证已过期并降级:', {
           action: localReady ? 'local' : 'passthrough',
         });
         // 过期通知直接发（一次性事件：清 token 后后续走未登录节流路径），并同步节流时间戳防紧跟着重复弹

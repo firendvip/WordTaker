@@ -119,9 +119,57 @@ if (process.platform === "win32") {
 
 // 导入日志管理器
 const LogManager = require("./src/helpers/logManager");
+const tokenStore = require("./src/helpers/tokenStore");
+const { PassportAuthManager } = require("./src/helpers/passportAuthManager");
+const { createAuthFailureHandler } = require("./src/helpers/authFailureCoordinator");
+const { createPassportAimMapper } = require("./src/helpers/passportAimMapper");
+const backendClient = require("./src/helpers/backendClient");
+const { extractCallbackUrl } = require("./src/helpers/passportOidc");
+const {
+  isPassportRolloutEnabled,
+  isTrustedSettingsUrl,
+  shouldPreflightSensitivePassport,
+} = require("./src/helpers/passportDesktopPolicy");
+const PASSPORT_ROLLOUT_ENABLED = isPassportRolloutEnabled(
+  process.env.WORDTAKER_PASSPORT_ENABLED,
+);
+tokenStore.setPassportRolloutEnabled(PASSPORT_ROLLOUT_ENABLED);
 
 // 初始化日志管理器
 const logger = new LogManager();
+
+// OAuth deep links can arrive before app.ready on macOS. Keep only exact,
+// bounded callback URLs in memory; never log argv or the authorization code.
+const pendingPassportCallbacks = [];
+let passportAuthManager = null;
+
+function deliverPassportCallback(rawUrl) {
+  if (!PASSPORT_ROLLOUT_ENABLED) return false;
+  const callbackUrl = extractCallbackUrl([rawUrl]);
+  if (!callbackUrl) return false;
+  if (!passportAuthManager || !app.isReady()) {
+    if (pendingPassportCallbacks.length < 4) pendingPassportCallbacks.push(callbackUrl);
+    return true;
+  }
+  passportAuthManager
+    .handleCallback(callbackUrl)
+    .then(() => {
+      try {
+        windowManager.showSettingsWindow();
+      } catch (_) { /* settings window may not exist during shutdown */ }
+    })
+    .catch((error) => {
+      logger.warn("处理通行证回调失败", { code: error?.code || "INVALID_CALLBACK" });
+    });
+  return true;
+}
+
+app.on("open-url", (event, rawUrl) => {
+  if (!PASSPORT_ROLLOUT_ENABLED) return;
+  if (!extractCallbackUrl([rawUrl])) return;
+  event.preventDefault();
+  deliverPassportCallback(rawUrl);
+});
 
 // 添加全局错误处理（同时写入早期 app.log，保证崩溃栈一定落盘）
 process.on("uncaughtException", (error) => {
@@ -262,6 +310,58 @@ const cancelTriggerManager = new TriggerManager(logger);
 // 第三个触发器：「转英文」全局键（默认单击左 Ctrl）。仅在非录音时生效，
 // 录音期间让位给录音结束，二者由 isRecording 互斥。
 const translateTriggerManager = new TriggerManager(logger);
+
+passportAuthManager = new PassportAuthManager({
+  tokenStore,
+  openExternal: (url) => shell.openExternal(url),
+  logger,
+  onAuthResult: (result) => {
+    const win = windowManager.settingsWindow;
+    try {
+      const settingsFilePath = path.join(__dirname, "src", "dist", "settings.html");
+      const rendererUrl = win?.webContents?.mainFrame?.url || win?.webContents?.getURL?.() || "";
+      if (
+        win &&
+        !win.isDestroyed() &&
+        isTrustedSettingsUrl(rendererUrl, {
+          development: process.env.NODE_ENV === "development",
+          settingsFilePath,
+        })
+      ) {
+        win.webContents.send("passport-auth-result", result);
+      }
+    } catch (_) { /* the settings renderer may disappear during notification */ }
+  },
+});
+backendClient.setAuthFailureHandler(createAuthFailureHandler({
+  tokenStore,
+  passportAuthManager,
+}));
+const passportAimMapper = createPassportAimMapper({
+  tokenStore,
+  passportAuthManager,
+  backendClient,
+  passportEnabled: PASSPORT_ROLLOUT_ENABLED,
+});
+backendClient.setSensitiveAuthPreflightHandler(async ({ authSnapshot }) => {
+  const passport = tokenStore.getPassport();
+  const writeCandidates = authSnapshot.credentials;
+  if (
+    !PASSPORT_ROLLOUT_ENABLED ||
+    !shouldPreflightSensitivePassport({ hasPassport: Boolean(passport), writeCandidates })
+  ) return { refreshAuthSnapshot: false };
+  const result = await passportAimMapper.resolve({ sensitive: true });
+  if (result.success && result.authEvidence) {
+    return {
+      refreshAuthSnapshot: true,
+      approvedCredential: result.authEvidence,
+    };
+  }
+  const error = new Error(result.error || "统一登录校验失败");
+  error.kind = "auth";
+  error.code = result.code || "AUTH_REQUIRED";
+  throw error;
+});
 
 // 录音状态（由 recorder-state 同步）：转英文键在录音中必须让位。
 let isRecording = false;
@@ -885,6 +985,9 @@ const ipcHandlers = new IPCHandlers({
   llmManager,
   windowManager,
   hotkeyManager,
+  passportAuthManager,
+  passportAimMapper,
+  passportEnabled: PASSPORT_ROLLOUT_ENABLED,
   logger, // 传递logger实例
 });
 
@@ -1190,9 +1293,26 @@ if (!gotTheLock) {
   logger.info("检测到已有实例在运行，本次启动退出");
   app.quit();
 } else {
-  // 用户再次尝试启动时，把已有窗口带到前台（后台常驻应用通常无常显窗口，尽力聚焦）
-  app.on("second-instance", () => {
+  if (PASSPORT_ROLLOUT_ENABLED) {
     try {
+      const protocolRegistered = process.defaultApp && process.argv[1]
+        ? app.setAsDefaultProtocolClient(
+            "wangsan-wordtaker",
+            process.execPath,
+            [path.resolve(process.argv[1])],
+          )
+        : app.setAsDefaultProtocolClient("wangsan-wordtaker");
+      if (!protocolRegistered) logger.warn("通行证回调协议注册未成功");
+    } catch (error) {
+      logger.warn("通行证回调协议注册失败", { code: error?.code || "PROTOCOL_ERROR" });
+    }
+  }
+
+  // 用户再次尝试启动时，把已有窗口带到前台（后台常驻应用通常无常显窗口，尽力聚焦）
+  app.on("second-instance", (_event, argv) => {
+    try {
+      const callbackUrl = extractCallbackUrl(argv);
+      if (callbackUrl) deliverPassportCallback(callbackUrl);
       // 后台常驻应用：再次启动时打开"设置"这种正常可聚焦窗口，
       // 绝不要去 show()/focus() 那个 focusable:false 的透明胶囊——对不可聚焦窗口
       // 强行 focus 在 macOS 上可能造成焦点/事件异常。
@@ -1208,6 +1328,28 @@ app.whenReady().then(() => {
   // 第二实例不会拿到锁：直接不启动（app.quit 已触发）
   if (!gotTheLock) return;
   startApp();
+  if (PASSPORT_ROLLOUT_ENABLED) {
+    passportAuthManager
+      .initialize()
+      .then(() => passportAimMapper.resolve())
+      .then((result) => {
+        if (!result.success && result.code !== "AUTH_REQUIRED") {
+          logger.warn("启动统一身份映射复核未完成", { code: result.code || "PASSPORT_UNAVAILABLE" });
+        }
+      })
+      .catch((error) => {
+        logger.warn("恢复通行证会话失败", { code: error?.code || "PASSPORT_UNAVAILABLE" });
+      });
+  }
+  const initialCallback = extractCallbackUrl(process.argv);
+  if (initialCallback && !pendingPassportCallbacks.includes(initialCallback)) {
+    pendingPassportCallbacks.push(initialCallback);
+  }
+  // A PKCE verifier is intentionally memory-only, so only the callback for the
+  // current in-process authorization transaction can succeed.
+  const callback = pendingPassportCallbacks.shift();
+  pendingPassportCallbacks.length = 0;
+  if (callback) deliverPassportCallback(callback);
 });
 
 app.on("window-all-closed", () => {
@@ -1220,6 +1362,13 @@ app.on("activate", () => {
   if (BrowserWindow.getAllWindows().length === 0) {
     windowManager.createMainWindow();
   }
+});
+
+app.on("browser-window-focus", () => {
+  if (!PASSPORT_ROLLOUT_ENABLED) return;
+  passportAuthManager.handleForeground().catch((error) => {
+    logger.warn("前台复核通行证资料失败", { code: error?.code || "PASSPORT_UNAVAILABLE" });
+  });
 });
 
 app.on("will-quit", () => {

@@ -177,7 +177,15 @@ contextBridge.exposeInMainWorld("electronAPI", {
   // 用系统默认浏览器打开链接（主进程校验 http/https + 域名白名单：支付宝收银台/look3.cn）
   openExternal: (url) => ipcRenderer.invoke("open-external", url),
   redeemCode: (code) => ipcRenderer.invoke("redeem-code", code),
-  // CP2 登录：手机验证码 / 邮箱验证码 / 微信(mock) + 账号态
+  // 望三通行证：只暴露启动、账号中心与脱敏结果；PKCE verifier/token 始终留在主进程。
+  authPassportLogin: () => ipcRenderer.invoke("auth-passport-login"),
+  authPassportAccount: () => ipcRenderer.invoke("auth-passport-account"),
+  onPassportAuthResult: (callback) => {
+    const listener = (_event, result) => callback(result);
+    ipcRenderer.on("passport-auth-result", listener);
+    return () => ipcRenderer.removeListener("passport-auth-result", listener);
+  },
+  // CP2 兼容登录：手机验证码 / 邮箱验证码 / 微信 + 账号态
   authSmsSend: (phone) => ipcRenderer.invoke("auth-sms-send", phone),
   authSmsLogin: (phone, code, inviteCode) => ipcRenderer.invoke("auth-sms-login", phone, code, inviteCode),
   authEmailSend: (email) => ipcRenderer.invoke("auth-email-send", email),

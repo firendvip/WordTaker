@@ -30,6 +30,7 @@
     "dist": "npm run prepare:python:embedded && npm run build:renderer && electron-builder",
     "lint": "cd src && eslint .",
     "test": "vitest run",
+    "test:auth:coverage": "vitest run --config vitest.auth.config.mjs --coverage",
     "preview": "cd src && vite preview",
     "clean": "node cleanup.js && rm -rf python",
     "patch:uiohook": "bash scripts/patch-uiohook-listenonly.sh"
@@ -57,6 +58,7 @@
     "@types/react": "^19.1.2",
     "@types/react-dom": "^19.1.2",
     "@vitejs/plugin-react": "^4.4.1",
+    "@vitest/coverage-v8": "4.1.9",
     "autoprefixer": "^10.4.21",
     "concurrently": "^8.2.2",
     "cross-env": "^10.0.0",
@@ -161,6 +163,14 @@
       "**/*.node",
       "node_modules/.pnpm/**/uiohook-napi/**/*",
       "node_modules/.pnpm/**/better-sqlite3/**/*"
+    ],
+    "protocols": [
+      {
+        "name": "Wangsan WordTaker OAuth",
+        "schemes": [
+          "wangsan-wordtaker"
+        ]
+      }
     ],
     "mac": {
       "category": "public.app-category.productivity",

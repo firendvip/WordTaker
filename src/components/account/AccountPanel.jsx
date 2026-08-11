@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import { toast } from "sonner";
-import { Loader2, LogOut, Mail, Smartphone, MessageCircle } from "lucide-react";
+import { Loader2, Mail, Smartphone, MessageCircle, ShieldCheck } from "lucide-react";
 import { useCloudQuota } from "./useCloudQuota";
 import { QuotaCard } from "./QuotaCard";
 import { InviteCard } from "./InviteCard";
@@ -36,9 +36,12 @@ export function AccountPanel({ rowLabelClass }) {
   const [inviteCode, setInviteCode] = useState("");
   const [sending, setSending] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  const [passportPending, setPassportPending] = useState(false);
+  const [passportEnabled, setPassportEnabled] = useState(false);
   const [countdown, setCountdown] = useState(0);
   const [showLoginModal, setShowLoginModal] = useState(false);
   const timerRef = useRef(null);
+  const compatibilityNoticeRef = useRef(false);
 
   const isLoggedIn = !!account;
 
@@ -49,18 +52,73 @@ export function AccountPanel({ rowLabelClass }) {
 
   // 已登录时向后端拉最新账号摘要（含 inviteCode / 订阅），失败静默不影响本地态。
   const refreshAccount = useCallback(async () => {
-    if (!api?.authMe) return;
+    if (!api?.authMe) return null;
     try {
       const r = await api.authMe();
       if (r && r.success && r.account) {
-        setAccount((prev) => ({ ...(prev || {}), ...r.account }));
-      } else if (r && r.loggedIn === false) {
+        setAccount((prev) =>
+          prev?.authProvider &&
+          r.account.authProvider &&
+          prev.authProvider !== r.account.authProvider
+            ? r.account
+            : { ...(prev || {}), ...r.account },
+        );
+        if (r.compatibilityFallback && !compatibilityNoticeRef.current) {
+          compatibilityNoticeRef.current = true;
+          toast.warning("统一身份尚未完成 AIM 映射，当前继续使用旧版账号");
+        }
+      } else if (r?.code === "IDENTITY_CONFLICT") {
+        clearQuota();
+        setAccount(
+          r.fallbackAccount ? { ...r.fallbackAccount, authProvider: "legacy" } : null,
+        );
+        if (!compatibilityNoticeRef.current) {
+          compatibilityNoticeRef.current = true;
+          toast.error(
+            r.fallbackAccount
+              ? "统一身份与旧版账号不一致，已保留旧版账号与业务数据"
+              : "统一身份尚未绑定本项目账号，请继续使用旧版登录",
+          );
+        }
+      } else if (r && (r.loggedIn === false || r.code === "AUTH_REQUIRED")) {
+        clearQuota();
         setAccount(null);
       }
+      return r;
     } catch (e) {
       /* 网络失败保留本地摘要 */
+      return null;
     }
-  }, [api]);
+  }, [api, clearQuota]);
+
+  useEffect(() => {
+    const off = api?.onPassportAuthResult?.((result) => {
+      if (result?.success && result.event === "login-completed") {
+        setPassportPending(false);
+        setShowLoginModal(false);
+        // The OIDC profile alone is not an AIM account. Expose it only after
+        // Passport-authenticated /auth/me proves the stable business mapping.
+        void refreshAccount().then((accountResult) => {
+          if (accountResult?.success && accountResult.authProvider === "passport") {
+            toast.success("望三通行证登录成功");
+          }
+        });
+      } else if (result?.success && result?.loggedIn) {
+        if (result.provider === "legacy") setAccount(result.account || {});
+        else void refreshAccount();
+      } else if (result?.success && result?.loggedIn === false) {
+        setPassportPending(false);
+        clearQuota();
+        setAccount(null);
+      } else if (result?.error) {
+        setPassportPending(false);
+        toast.error(result.error);
+      }
+    });
+    return () => {
+      if (typeof off === "function") off();
+    };
+  }, [api, clearQuota, refreshAccount]);
 
   // 启动时读取本地登录态（不打网络），登录时再联网刷新账号摘要
   useEffect(() => {
@@ -69,9 +127,10 @@ export function AccountPanel({ rowLabelClass }) {
       try {
         const st = api?.getAuthState ? await api.getAuthState() : null;
         if (alive && st && st.loggedIn) {
-          setAccount(st.account || {});
-          refreshAccount();
+          if (st.provider === "legacy") setAccount(st.account || {});
+          await refreshAccount();
         }
+        if (alive) setPassportEnabled(st?.passportEnabled === true);
       } catch (e) {
         /* 读取失败视为未登录 */
       } finally {
@@ -170,6 +229,23 @@ export function AccountPanel({ rowLabelClass }) {
     }
   };
 
+  const handlePassportLogin = async () => {
+    if (passportPending || submitting) return;
+    setPassportPending(true);
+    try {
+      const result = await api.authPassportLogin();
+      if (result?.success && result?.pending) {
+        toast.info("已在系统浏览器打开望三通行证");
+      } else {
+        setPassportPending(false);
+        toast.error(result?.error || "统一登录暂不可用");
+      }
+    } catch {
+      setPassportPending(false);
+      toast.error("统一登录暂不可用");
+    }
+  };
+
   // 微信登录（mock）
   const handleWechat = async () => {
     if (submitting) return;
@@ -193,15 +269,29 @@ export function AccountPanel({ rowLabelClass }) {
   };
 
   const handleLogout = async () => {
+    let result;
     try {
-      await api.authLogout();
+      result = await api.authLogout();
     } catch (e) {
-      /* 即便失败也清本地态 */
+      result = null;
+    }
+    if (!result?.success) {
+      toast.error(result?.error || "无法清除本地登录凭据，请重试");
+      return;
     }
     setAccount(null);
     // 立即清零本地额度态：不能让原账号的云端字数在退出后继续显示
     clearQuota();
-    toast.success("已退出登录");
+    toast.success("已退出弦外小猫，不影响其他应用的登录状态");
+  };
+
+  const handleManagePassport = async () => {
+    try {
+      const result = await api?.authPassportAccount?.();
+      if (!result?.success) toast.error(result?.error || "账号中心暂不可用");
+    } catch {
+      toast.error("账号中心暂不可用");
+    }
   };
 
   if (initializing) {
@@ -261,12 +351,37 @@ export function AccountPanel({ rowLabelClass }) {
           quotaError={quotaError}
           onRefreshQuota={refreshQuota}
           onLogout={handleLogout}
+          onManagePassport={
+            account.authProvider === "passport"
+              ? handleManagePassport
+              : undefined
+          }
           api={api}
           onRedeemed={() => {
             refreshQuota();
             refreshAccount();
           }}
         />
+        {passportEnabled && account.authProvider !== "passport" && (
+          <div className="rounded-2xl border border-indigo-100 dark:border-indigo-900/50 bg-indigo-50/70 dark:bg-indigo-950/20 px-4 py-3">
+            <p className="text-[12px] text-gray-600 dark:text-neutral-300 mb-2">
+              保留当前旧版账号作为回退，并验证它与望三通行证属于同一业务账号。
+            </p>
+            <button
+              type="button"
+              onClick={handlePassportLogin}
+              disabled={passportPending || submitting}
+              className="inline-flex items-center justify-center gap-2 px-3.5 py-2 rounded-lg text-[13px] font-semibold text-white bg-indigo-600 hover:bg-indigo-700 disabled:opacity-60 disabled:cursor-not-allowed transition-colors"
+            >
+              {passportPending ? (
+                <Loader2 className="w-4 h-4 animate-spin" />
+              ) : (
+                <ShieldCheck className="w-4 h-4" />
+              )}
+              {passportPending ? "等待浏览器授权…" : "验证望三通行证"}
+            </button>
+          </div>
+        )}
         <PlansCard
           api={api}
           isLoggedIn={true}
@@ -314,6 +429,30 @@ export function AccountPanel({ rowLabelClass }) {
           <p className="text-[12px] text-gray-500 dark:text-neutral-400 mb-4">
             登录后可跨设备同步、购买套餐、使用邀请与兑换码。
           </p>
+
+          {passportEnabled && (
+            <>
+              <button
+                type="button"
+                onClick={handlePassportLogin}
+                disabled={passportPending || submitting}
+                className="w-full inline-flex items-center justify-center gap-2 px-4 py-2.5 mb-4 rounded-lg text-[14px] font-semibold text-white bg-indigo-600 hover:bg-indigo-700 disabled:opacity-60 disabled:cursor-not-allowed transition-colors"
+              >
+                {passportPending ? (
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                ) : (
+                  <ShieldCheck className="w-4 h-4" />
+                )}
+                {passportPending ? "等待浏览器授权…" : "望三通行证登录"}
+              </button>
+
+              <div className="flex items-center gap-3 mb-4">
+                <span className="flex-1 h-px bg-gray-100 dark:bg-neutral-800" />
+                <span className="text-[12px] text-gray-400 dark:text-neutral-500">旧版登录（兼容）</span>
+                <span className="flex-1 h-px bg-gray-100 dark:bg-neutral-800" />
+              </div>
+            </>
+          )}
 
           {/* 方式切换 */}
           <div className="inline-flex p-1 rounded-xl bg-gray-100 dark:bg-neutral-800 mb-4">

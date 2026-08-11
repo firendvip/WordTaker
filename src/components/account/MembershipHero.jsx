@@ -1,5 +1,5 @@
 import React from "react";
-import { LogOut, Zap } from "lucide-react";
+import { ExternalLink, LogOut, Zap } from "lucide-react";
 import { QuotaCard } from "./QuotaCard";
 import { InviteCard } from "./InviteCard";
 import { RedeemCard } from "./RedeemCard";
@@ -14,6 +14,7 @@ export function MembershipHero({
   quotaError,
   onRefreshQuota,
   onLogout,
+  onManagePassport,
   api,
   onRedeemed,
 }) {
@@ -23,7 +24,9 @@ export function MembershipHero({
     account.email ||
     (account.wechatOpenId ? "微信用户" : "已登录用户");
 
-  const loginType = account.email
+  const loginType = account.authProvider === "passport"
+    ? "望三通行证"
+    : account.email
     ? "邮箱登录"
     : account.phone
     ? "手机登录"
@@ -40,22 +43,45 @@ export function MembershipHero({
       {/* 账号头 */}
       <div className="flex items-start justify-between gap-3 mb-4 relative">
         <div className="flex items-center gap-3 min-w-0">
-          <div className="w-11 h-11 rounded-full bg-white/20 flex items-center justify-center text-white text-lg font-semibold flex-shrink-0">
-            {String(displayName).slice(0, 1).toUpperCase()}
+          <div className="w-11 h-11 rounded-full bg-white/20 flex items-center justify-center text-white text-lg font-semibold flex-shrink-0 relative overflow-hidden">
+            <span>{String(displayName).slice(0, 1).toUpperCase()}</span>
+            {account.picture && (
+              <img
+                src={account.picture}
+                alt="通行证头像"
+                referrerPolicy="no-referrer"
+                className="absolute inset-0 w-full h-full object-cover"
+                onError={(event) => {
+                  event.currentTarget.style.display = "none";
+                }}
+              />
+            )}
           </div>
           <div className="min-w-0">
             <p className="text-[15px] font-medium text-white truncate">{displayName}</p>
             <p className="text-[12px] text-white/70 truncate">{loginType}</p>
           </div>
         </div>
-        <button
-          type="button"
-          onClick={onLogout}
-          className="flex-shrink-0 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[13px] font-medium text-white bg-white/15 hover:bg-white/25 transition-colors"
-        >
-          <LogOut className="w-4 h-4" />
-          退出
-        </button>
+        <div className="flex-shrink-0 flex items-center gap-2">
+          {onManagePassport && (
+            <button
+              type="button"
+              onClick={onManagePassport}
+              className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-[12px] font-medium text-white bg-white/15 hover:bg-white/25 transition-colors"
+            >
+              <ExternalLink className="w-3.5 h-3.5" />
+              编辑资料
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={onLogout}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[13px] font-medium text-white bg-white/15 hover:bg-white/25 transition-colors"
+          >
+            <LogOut className="w-4 h-4" />
+            退出
+          </button>
+        </div>
       </div>
 
       {/* 云端剩余字数（复用 QuotaCard 内层，无独立渐变外壳） */}
