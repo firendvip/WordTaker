@@ -258,11 +258,12 @@ jobs:
           $env:WORDTAKER_EXPECTED_APP_VERSION = $package.version
           $env:WORDTAKER_EXPECTED_ELECTRON_VERSION = $package.devDependencies.electron
           $env:WORDTAKER_EXPECTED_ARCH = "x64"
+          $env:WORDTAKER_EXPECTED_VARIANT = "default"
           $env:WORDTAKER_RUNTIME_SMOKE_RESULT = $result
           & $exe.FullName "--user-data-dir=$userData"
           if ($LASTEXITCODE -ne 0) { Write-Error "FAIL: x64 packaged runtime smoke failed"; exit 1 }
           node scripts/electron-runtime-smoke.js --verify-result `
-            $result $package.devDependencies.electron $package.version "x64"
+            $result $package.devDependencies.electron $package.version "x64" "default"
           if ($LASTEXITCODE -ne 0) { exit 1 }
 
       # 用同一固定 revision/size/SHA-256 清单复核最终包，不能只检查文件存在。
@@ -480,11 +481,12 @@ jobs:
           $env:WORDTAKER_EXPECTED_APP_VERSION = $package.version
           $env:WORDTAKER_EXPECTED_ELECTRON_VERSION = $package.devDependencies.electron
           $env:WORDTAKER_EXPECTED_ARCH = "arm64"
+          $env:WORDTAKER_EXPECTED_VARIANT = "default"
           $env:WORDTAKER_RUNTIME_SMOKE_RESULT = $result
           & $exe.FullName "--user-data-dir=$userData"
           if ($LASTEXITCODE -ne 0) { Write-Error "FAIL: ARM64 packaged runtime smoke failed"; exit 1 }
           node scripts/electron-runtime-smoke.js --verify-result `
-            $result $package.devDependencies.electron $package.version "arm64"
+            $result $package.devDependencies.electron $package.version "arm64" "default"
           if ($LASTEXITCODE -ne 0) { exit 1 }
       - name: Verify packaged embedded Python (ARM64)
         shell: pwsh

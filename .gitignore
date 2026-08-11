@@ -21,6 +21,7 @@ build/*
 !build/icon.ico
 # NSIS 安装器定制资源 + 原生按键注入器源码（CI 编译 sendkeys.exe）
 !build/installer.nsh
+!build/installer-passport-candidate.nsh
 !build/installerSidebar.bmp
 !build/installerHeader.bmp
 !build/win/

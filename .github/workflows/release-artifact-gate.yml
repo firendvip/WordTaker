@@ -258,7 +258,7 @@ jobs:
         shell: cmd
         run: cl /nologo /O1 /W3 build\win\sendkeys.c /Fe:build\win\sendkeys.exe /link user32.lib
 
-      - name: Build signed setup and portable without publishing
+      - name: Build signed Windows artifacts without publishing
         shell: pwsh
         env:
           CSC_LINK: ${{ secrets.WINDOWS_CSC_LINK }}
@@ -268,27 +268,38 @@ jobs:
           if ("${{ inputs.variant }}" -eq "passport-candidate") {
             $config = @("--config", "electron-builder.passport-candidate.cjs")
           }
-          pnpm exec electron-builder @config --win "nsis:${{ matrix.arch }}" "portable:${{ matrix.arch }}" `
-            --config.forceCodeSigning=true --publish never
+          $builderArgs = @($config) + @("--win", "nsis:${{ matrix.arch }}")
+          if ("${{ inputs.variant }}" -eq "default") {
+            $builderArgs += "portable:${{ matrix.arch }}"
+          }
+          # The argument array below is the fail-closed equivalent of --publish never.
+          $builderArgs += @("--config.forceCodeSigning=true", "--publish", "never")
+          pnpm exec electron-builder @builderArgs
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-      # The gate derives the installed executable from setup, checks all three files with
-      # Get-AuthenticodeSignature (including TimeStamperCertificate + SHA-256 signer),
-      # runs signtool verify /pa /all /v, starts installed + portable apps, then uninstalls.
-      - name: Verify installed and portable signed runtimes
+      # Candidate packages intentionally omit portable: a movable wrapper cannot own a durable
+      # OAuth callback registration. The gate uses Get-AuthenticodeSignature with
+      # TimeStamperCertificate evidence and signtool verify /pa /all /v before execution.
+      # The default profile still verifies both setup and portable.
+      - name: Verify installed and allowed portable signed runtimes
         shell: pwsh
         env:
           WINDOWS_SIGNER_SHA256: ${{ vars.WINDOWS_SIGNER_SHA256 }}
         run: |
           $setup = Get-ChildItem dist -File -Filter "KittyEcho-*-${{ matrix.arch }}-setup.exe" | Select-Object -First 1
           $portable = Get-ChildItem dist -File -Filter "KittyEcho-*-${{ matrix.arch }}-portable.exe" | Select-Object -First 1
-          if (-not $setup -or -not $portable) { throw "Signed setup or portable artifact is missing" }
+          if (-not $setup) { throw "Signed setup artifact is missing" }
+          if ("${{ inputs.variant }}" -eq "default" -and -not $portable) {
+            throw "Default signed portable artifact is missing"
+          }
+          if ("${{ inputs.variant }}" -eq "passport-candidate" -and $portable) {
+            throw "Passport candidate releases must not include a portable Windows app"
+          }
           $package = Get-Content package.json | ConvertFrom-Json
           $manifest = @{
             platform = "windows"
             variant = "${{ inputs.variant }}"
             installerPath = $setup.FullName
-            portablePath = $portable.FullName
             receiptPath = Join-Path $env:RUNNER_TEMP "wordtaker-windows-${{ matrix.arch }}-receipt.json"
             version = $package.version
             electronVersion = $package.devDependencies.electron
@@ -297,6 +308,7 @@ jobs:
             tree = (git rev-parse 'HEAD^{tree}').Trim()
             expectedSignerFingerprint = $env:WINDOWS_SIGNER_SHA256
           }
+          if ($portable) { $manifest.portablePath = $portable.FullName }
           $manifestPath = Join-Path $env:RUNNER_TEMP "wordtaker-windows-manifest.json"
           $manifest | ConvertTo-Json | Set-Content -LiteralPath $manifestPath -Encoding utf8
           node scripts/signed-artifact-gate.js --manifest $manifestPath

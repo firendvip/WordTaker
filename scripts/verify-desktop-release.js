@@ -151,10 +151,29 @@ function validateDesktopReleaseSnapshot(snapshot) {
       "protocols:",
       "Wangsan WordTaker OAuth",
       OAUTH_SCHEME,
+      'include: "build/installer-passport-candidate.nsh"',
+      'target: "nsis"',
     ])
     || countOccurrences(snapshot.candidateConfigSource, OAUTH_SCHEME) !== 1
+    || String(snapshot.candidateConfigSource || "").includes('target: "portable"')
   ) {
-    issues.push("Passport candidate package must register exactly one reviewed OAuth scheme");
+    issues.push(
+      "Passport candidate package must register one OAuth scheme and exclude portable Windows targets",
+    );
+  }
+  if (!includesAll(snapshot.candidateInstallerSource, [
+    '!include "installer.nsh"',
+    "!macro customInstall",
+    "WriteRegStr HKCU",
+    "Software\\Classes\\wangsan-wordtaker",
+    "$INSTDIR\\${APP_EXECUTABLE_FILENAME}",
+    "%1",
+    "!macro customUnInstall",
+    "ReadRegStr",
+    "StrCmp",
+    "DeleteRegKey HKCU",
+  ])) {
+    issues.push("Passport candidate NSIS package must register and remove its exact callback command");
   }
 
   for (const [target, config] of [
@@ -389,6 +408,7 @@ async function inspectDesktopRelease(rootDir = path.resolve(__dirname, "..")) {
     macWorkflow: await read(".github/workflows/build-macos.yml"),
     releaseGateWorkflow: await read(".github/workflows/release-artifact-gate.yml"),
     candidateConfigSource: await read("electron-builder.passport-candidate.cjs"),
+    candidateInstallerSource: await read("build/installer-passport-candidate.nsh"),
     changelogSource: await read("CHANGELOG.md"),
     mainSource: await read("main.js"),
     appSource: await read("src/App.jsx"),

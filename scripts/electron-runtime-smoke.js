@@ -41,6 +41,18 @@ function assertRuntimeArch(actualArch, expectedArch) {
   return actual;
 }
 
+function assertReleaseVariant(actualVariant, expectedVariant) {
+  const actual = String(actualVariant || "").trim();
+  const expected = String(expectedVariant || "").trim();
+  const supported = new Set(["default", "passport-candidate"]);
+  if (!supported.has(actual) || !supported.has(expected) || actual !== expected) {
+    throw new Error(
+      `Packaged release variant mismatch: expected ${expected || "<missing>"}, got ${actual || "<missing>"}`,
+    );
+  }
+  return actual;
+}
+
 function assertSafeStorageRoundTrip(safeStorage, platform) {
   if (!safeStorage || safeStorage.isEncryptionAvailable() !== true) {
     throw new Error("Electron safeStorage encryption is unavailable");
@@ -244,6 +256,8 @@ async function runElectronRuntimeSmoke({
   expectedAppVersion,
   actualArch,
   expectedArch,
+  actualVariant,
+  expectedVariant,
   platform,
   nativeCheck,
 }) {
@@ -251,11 +265,12 @@ async function runElectronRuntimeSmoke({
   const version = assertRuntimeVersion(actualVersion, expectedVersion);
   const appVersion = assertAppVersion(actualAppVersion, expectedAppVersion);
   const arch = assertRuntimeArch(actualArch, expectedArch);
+  const variant = assertReleaseVariant(actualVariant, expectedVariant);
   const storage = assertSafeStorageRoundTrip(safeStorage, platform);
   const native = typeof nativeCheck === "function" ? nativeCheck() : undefined;
   return native
-    ? { version, appVersion, arch, storage, native }
-    : { version, appVersion, arch, storage };
+    ? { version, appVersion, arch, variant, storage, native }
+    : { version, appVersion, arch, variant, storage };
 }
 
 function formatRuntimeSmokeResult(result) {
@@ -291,6 +306,11 @@ async function runElectronRuntimeSmokeCli(options = {}) {
         processLike.env.WORDTAKER_EXPECTED_APP_VERSION || packageJson.version,
       actualArch: processLike.arch,
       expectedArch: processLike.env.WORDTAKER_EXPECTED_ARCH || processLike.arch,
+      actualVariant: packageJson.wordtakerPassportCandidate === true
+        ? "passport-candidate"
+        : "default",
+      expectedVariant: processLike.env.WORDTAKER_EXPECTED_VARIANT
+        || (packageJson.wordtakerPassportCandidate === true ? "passport-candidate" : "default"),
       platform: processLike.platform,
       nativeCheck: () => ({
         database: runDatabaseMigrationSmoke({ Database, DatabaseManager }),
@@ -317,13 +337,14 @@ async function runElectronRuntimeSmokeCli(options = {}) {
 
 function validateRuntimeSmokeResult(
   result,
-  { expectedElectronVersion, expectedAppVersion, expectedArch },
+  { expectedElectronVersion, expectedAppVersion, expectedArch, expectedVariant },
 ) {
   try {
     if (!result || result.success !== true) throw new Error("success marker missing");
     assertRuntimeVersion(result.version, expectedElectronVersion);
     assertAppVersion(result.appVersion, expectedAppVersion);
     assertRuntimeArch(result.arch, expectedArch);
+    assertReleaseVariant(result.variant, expectedVariant);
     if (
       !result.storage ||
       result.storage.backend === "basic_text" ||
@@ -354,9 +375,23 @@ function runRuntimeSmokeResultCli({
   processLike = process,
 } = {}) {
   try {
-    const [resultPath, expectedElectronVersion, expectedAppVersion, expectedArch] = argv;
-    if (!resultPath || !expectedElectronVersion || !expectedAppVersion || !expectedArch) {
-      throw new Error("result path, Electron version, app version and architecture are required");
+    const [
+      resultPath,
+      expectedElectronVersion,
+      expectedAppVersion,
+      expectedArch,
+      expectedVariant,
+    ] = argv;
+    if (
+      !resultPath
+      || !expectedElectronVersion
+      || !expectedAppVersion
+      || !expectedArch
+      || !expectedVariant
+    ) {
+      throw new Error(
+        "result path, Electron version, app version, architecture and release variant are required",
+      );
     }
     const serialized = readFile(resultPath, "utf8");
     if (typeof serialized !== "string" || Buffer.byteLength(serialized) > 64 * 1024) {
@@ -366,6 +401,7 @@ function runRuntimeSmokeResultCli({
       expectedElectronVersion,
       expectedAppVersion,
       expectedArch,
+      expectedVariant,
     });
     processLike.stdout.write(
       `Packaged runtime smoke verified: app ${result.appVersion}, Electron ${result.version}, ${result.arch}\n`,
@@ -387,6 +423,7 @@ if (require.main === module && process.argv[2] === "--verify-result") {
 module.exports = {
   SENTINEL,
   assertAppVersion,
+  assertReleaseVariant,
   assertRuntimeArch,
   assertUiohookApi,
   assertRuntimeVersion,

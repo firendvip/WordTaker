@@ -99,10 +99,11 @@ jobs:
             --env "WORDTAKER_EXPECTED_APP_VERSION=$expected_version" \
             --env "WORDTAKER_EXPECTED_ELECTRON_VERSION=$expected_electron" \
             --env "WORDTAKER_EXPECTED_ARCH=${{ matrix.arch }}" \
+            --env "WORDTAKER_EXPECTED_VARIANT=default" \
             --env "WORDTAKER_RUNTIME_SMOKE_RESULT=$result_path" \
             "$app_path" --args "--user-data-dir=$user_data"
           node scripts/electron-runtime-smoke.js --verify-result \
-            "$result_path" "$expected_electron" "$expected_version" "${{ matrix.arch }}"
+            "$result_path" "$expected_electron" "$expected_version" "${{ matrix.arch }}" default
       - name: Verify packaged version and OAuth scheme
         shell: bash
         run: |

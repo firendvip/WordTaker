@@ -103,6 +103,7 @@ function validateRuntimeResult(result, expected) {
       expectedElectronVersion: expected.electronVersion,
       expectedAppVersion: expected.version,
       expectedArch: expected.arch,
+      expectedVariant: expected.variant,
     });
     const requiredBackend = expected.platform === "macos"
       ? "keychain"
@@ -124,7 +125,7 @@ function safeRuntimeSummary(runtime) {
   const summary = {
     success: runtime.success === true,
   };
-  for (const key of ["version", "appVersion", "arch"]) {
+  for (const key of ["version", "appVersion", "arch", "variant"]) {
     if (typeof runtime[key] === "string") summary[key] = runtime[key];
   }
   if (runtime.storage && typeof runtime.storage.backend === "string") {
@@ -171,8 +172,14 @@ function safeSignerSummary(signer) {
   return summary;
 }
 
-function safeSignatureSummaries(signatures) {
-  return Object.fromEntries(["installer", "portable", "installedApp"].map((key) => {
+function windowsReceiptKeys(variant) {
+  return validateReleaseVariant(variant) === "passport-candidate"
+    ? ["installer", "installedApp"]
+    : ["installer", "portable", "installedApp"];
+}
+
+function safeSignatureSummaries(signatures, variant = "default") {
+  return Object.fromEntries(windowsReceiptKeys(variant).map((key) => {
     const signature = signatures?.[key];
     if (!signature || signature.timestamped !== true) {
       throw new Error(`Release signature summary is invalid for ${key}`);
@@ -204,7 +211,7 @@ function createReleaseReceipt(input) {
   if (input.artifact !== undefined) receipt.artifact = safeArtifactSummary(input.artifact);
   if (input.artifacts !== undefined) {
     receipt.artifacts = Object.fromEntries(
-      ["installer", "portable", "installedApp"].map((key) => [
+      windowsReceiptKeys(receipt.variant).map((key) => [
         key,
         safeArtifactSummary(input.artifacts?.[key]),
       ]),
@@ -212,7 +219,7 @@ function createReleaseReceipt(input) {
   }
   if (input.signer !== undefined) receipt.signer = safeSignerSummary(input.signer);
   if (input.signatures !== undefined) {
-    receipt.signatures = safeSignatureSummaries(input.signatures);
+    receipt.signatures = safeSignatureSummaries(input.signatures, receipt.variant);
   }
   if (input.notarization !== undefined) {
     if (
@@ -226,10 +233,10 @@ function createReleaseReceipt(input) {
   }
   if (input.runtime !== undefined) {
     if (input.runtime.installed || input.runtime.portable) {
-      receipt.runtime = {
-        installed: safeRuntimeSummary(input.runtime.installed),
-        portable: safeRuntimeSummary(input.runtime.portable),
-      };
+      receipt.runtime = Object.fromEntries(
+        (receipt.variant === "passport-candidate" ? ["installed"] : ["installed", "portable"])
+          .map((key) => [key, safeRuntimeSummary(input.runtime[key])]),
+      );
     } else {
       receipt.runtime = safeRuntimeSummary(input.runtime);
     }
@@ -435,6 +442,7 @@ function runPackagedRuntime(targetPath, manifest, run = defaultRun, platform = p
     WORDTAKER_EXPECTED_APP_VERSION: manifest.version,
     WORDTAKER_EXPECTED_ELECTRON_VERSION: manifest.electronVersion,
     WORDTAKER_EXPECTED_ARCH: manifest.arch,
+    WORDTAKER_EXPECTED_VARIANT: manifest.variant,
     WORDTAKER_RUNTIME_SMOKE_RESULT: resultPath,
   };
   try {
@@ -516,6 +524,7 @@ function verifyMacArtifact(manifest, dependencies = {}) {
         version: manifest.version,
         electronVersion: manifest.electronVersion,
         arch: manifest.arch,
+        variant: manifest.variant,
         platform: "macos",
       },
     );
@@ -531,13 +540,13 @@ function verifyMacArtifact(manifest, dependencies = {}) {
       notarization: { accepted: true, appStapled: true, artifactStapled: true },
       runtime,
     });
-    writeReceipt(manifest.receiptPath, receipt);
   } catch (error) {
     verificationError = error;
   }
   const cleanupError = runCleanupSteps([runtimeExecution?.cleanup, mounted.cleanup]);
   if (verificationError) throw verificationError;
   if (cleanupError) throw cleanupError;
+  writeReceipt(manifest.receiptPath, receipt);
   return receipt;
 }
 
@@ -556,19 +565,62 @@ function windowsSignatureCommand(targetPath) {
   ];
 }
 
-function validateWindowsProtocolVariant(variant, run = defaultRun) {
+function validateWindowsProtocolVariant(installedAppPath, variant, run = defaultRun) {
   const command = [
     "-NoProfile",
     "-NonInteractive",
     "-Command",
-    "[bool](Test-Path -LiteralPath 'Registry::HKEY_CURRENT_USER\\Software\\Classes\\wangsan-wordtaker')",
+    [
+      "$root = 'Registry::HKEY_CURRENT_USER\\Software\\Classes\\wangsan-wordtaker'",
+      "$exists = Test-Path -LiteralPath $root",
+      "$urlProtocol = $false",
+      "$openCommand = $null",
+      "if ($exists) {",
+      "  $rootKey = Get-Item -LiteralPath $root",
+      "  $urlProtocol = $rootKey.GetValueNames() -contains 'URL Protocol'",
+      "  $commandPath = Join-Path $root 'shell\\open\\command'",
+      "  if (Test-Path -LiteralPath $commandPath) { $openCommand = [string](Get-Item -LiteralPath $commandPath).GetValue('') }",
+      "}",
+      "[pscustomobject]@{ Exists = [bool]$exists; UrlProtocolPresent = [bool]$urlProtocol; Command = $openCommand } | ConvertTo-Json -Compress",
+    ].join("; "),
   ];
-  const output = run("powershell.exe", command).stdout.trim().toLowerCase();
-  const registered = output === "true";
-  if (output !== "true" && output !== "false") {
-    throw new Error("Windows protocol registration check returned an invalid result");
+  let evidence;
+  try {
+    evidence = JSON.parse(run("powershell.exe", command).stdout);
+  } catch {
+    throw new Error("Windows protocol registration check returned invalid JSON");
   }
-  return validateProtocolVariant(registered ? [OAUTH_SCHEME] : [], variant);
+  if (
+    !evidence
+    || typeof evidence !== "object"
+    || typeof evidence.Exists !== "boolean"
+    || typeof evidence.UrlProtocolPresent !== "boolean"
+    || (evidence.Command !== null && typeof evidence.Command !== "string")
+  ) {
+    throw new Error("Windows protocol registration check returned invalid evidence");
+  }
+
+  const releaseVariant = validateReleaseVariant(variant);
+  if (releaseVariant === "default") {
+    if (evidence.Exists || evidence.UrlProtocolPresent || evidence.Command !== null) {
+      throw new Error("Default Windows package must not register the Passport protocol");
+    }
+    return [];
+  }
+
+  const executable = String(installedAppPath || "");
+  if (!executable || /[\u0000-\u001F\u007F]/.test(executable)) {
+    throw new Error("Installed Windows executable path is invalid");
+  }
+  const expectedCommand = `"${executable}" "%1"`;
+  if (
+    evidence.Exists !== true
+    || evidence.UrlProtocolPresent !== true
+    || String(evidence.Command || "").toLowerCase() !== expectedCommand.toLowerCase()
+  ) {
+    throw new Error("Windows Passport protocol command is not bound to the installed executable");
+  }
+  return validateProtocolVariant([OAUTH_SCHEME], releaseVariant);
 }
 
 function verifyWindowsSignature(targetPath, expectedSignerFingerprint, run) {
@@ -648,15 +700,30 @@ function verifyWindowsArtifact(manifest, dependencies = {}) {
     || ((appPath) => runPackagedRuntime(appPath, manifest, run, "win32"));
   const verifyProvenance = dependencies.verifyProvenance || verifyManifestProvenance;
   const verifyProtocolVariant = dependencies.validateProtocolVariant
-    || (() => validateWindowsProtocolVariant(manifest.variant, run));
+    || ((installedAppPath) => validateWindowsProtocolVariant(
+      installedAppPath,
+      manifest.variant,
+      run,
+    ));
+  const verifyProtocolRemoval = dependencies.validateProtocolRemoval
+    || (() => validateWindowsProtocolVariant(null, "default", run));
   verifyProvenance(manifest);
+  const releaseVariant = validateReleaseVariant(manifest.variant);
+  const requiresPortable = releaseVariant === "default";
+  if (!requiresPortable && manifest.portablePath !== undefined) {
+    throw new Error("Passport candidate releases must not include a portable Windows app");
+  }
   const installerPath = requirePath(manifest.installerPath, "Windows installer", "file");
-  const portablePath = requirePath(manifest.portablePath, "Windows portable app", "file");
+  const portablePath = requiresPortable
+    ? requirePath(manifest.portablePath, "Windows portable app", "file")
+    : null;
   const expectedSignerFingerprint = normalizeFingerprint(manifest.expectedSignerFingerprint);
   const signatures = {
     installer: verifyWindowsSignature(installerPath, expectedSignerFingerprint, run),
-    portable: verifyWindowsSignature(portablePath, expectedSignerFingerprint, run),
   };
+  if (portablePath) {
+    signatures.portable = verifyWindowsSignature(portablePath, expectedSignerFingerprint, run);
+  }
   const installation = installArtifact(installerPath);
   let installedRuntimeExecution;
   let portableRuntimeExecution;
@@ -675,11 +742,14 @@ function verifyWindowsArtifact(manifest, dependencies = {}) {
       run,
     );
     installedRuntimeExecution = normalizeRuntimeExecution(executeRuntime(installedAppPath));
-    portableRuntimeExecution = normalizeRuntimeExecution(executeRuntime(portablePath));
+    if (portablePath) {
+      portableRuntimeExecution = normalizeRuntimeExecution(executeRuntime(portablePath));
+    }
     const expectedRuntime = {
       version: manifest.version,
       electronVersion: manifest.electronVersion,
       arch: manifest.arch,
+      variant: releaseVariant,
       platform: "windows",
     };
     const runtime = {
@@ -687,23 +757,28 @@ function verifyWindowsArtifact(manifest, dependencies = {}) {
         readJsonFile(installedRuntimeExecution.resultPath, "installed Windows runtime receipt"),
         expectedRuntime,
       ),
-      portable: validateRuntimeResult(
+    };
+    if (portableRuntimeExecution) {
+      runtime.portable = validateRuntimeResult(
         readJsonFile(portableRuntimeExecution.resultPath, "portable Windows runtime receipt"),
         expectedRuntime,
-      ),
+      );
+    }
+    verifyProtocolVariant(installedAppPath);
+    const artifacts = {
+      installer: { name: path.basename(installerPath), sha256: sha256File(installerPath) },
+      installedApp: { name: path.basename(installedAppPath), sha256: sha256File(installedAppPath) },
     };
+    if (portablePath) {
+      artifacts.portable = { name: path.basename(portablePath), sha256: sha256File(portablePath) };
+    }
     receipt = createReleaseReceipt({
       ...manifest,
       platform: "windows",
-      artifacts: {
-        installer: { name: path.basename(installerPath), sha256: sha256File(installerPath) },
-        portable: { name: path.basename(portablePath), sha256: sha256File(portablePath) },
-        installedApp: { name: path.basename(installedAppPath), sha256: sha256File(installedAppPath) },
-      },
+      artifacts,
       signatures,
       runtime,
     });
-    writeReceipt(manifest.receiptPath, receipt);
   } catch (error) {
     verificationError = error;
   }
@@ -712,8 +787,16 @@ function verifyWindowsArtifact(manifest, dependencies = {}) {
     portableRuntimeExecution?.cleanup,
     installation.cleanup,
   ]);
+  let protocolRemovalError;
+  try {
+    verifyProtocolRemoval();
+  } catch (error) {
+    protocolRemovalError = error;
+  }
   if (verificationError) throw verificationError;
   if (cleanupError) throw cleanupError;
+  if (protocolRemovalError) throw protocolRemovalError;
+  writeReceipt(manifest.receiptPath, receipt);
   return receipt;
 }
 
