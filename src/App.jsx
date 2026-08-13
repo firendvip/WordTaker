@@ -21,6 +21,7 @@ import {
   writeQuotaReminderTimestamp,
 } from "./utils/quotaReminder";
 import { syncRuntimeDocumentTitle } from "./utils/appTitle";
+import { normalizePillSkin } from "./utils/pillSkin";
 
 void syncRuntimeDocumentTitle({
   getAppVersion: window.electronAPI?.getAppVersion,
@@ -71,7 +72,7 @@ function RecorderApp() {
   const [showTextArea, setShowTextArea] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [translatePhase, setTranslatePhase] = useState('idle'); // idle | translating | done | error
-  const [pillSkin, setPillSkin] = useState('music'); // music | voiceink
+  const [pillSkin, setPillSkin] = useState(null); // 未读取设置前不渲染胶囊
   const [polishActive, setPolishActive] = useState(false); // 长润色：是否正在生成
   const [polishCharCount, setPolishCharCount] = useState(0); // 长润色：累计已生成字符数
   const [sharedIsRecording, setSharedIsRecording] = useState(false);
@@ -189,9 +190,9 @@ function RecorderApp() {
       try {
         if (!window.electronAPI || !window.electronAPI.getSetting) return;
         const skin = await window.electronAPI.getSetting('pill_skin', 'music');
-        if (active && skin) setPillSkin(skin);
+        if (active) setPillSkin(normalizePillSkin(skin));
       } catch (e) {
-        // 读取失败时使用默认皮肤 music
+        // 读取失败时皮肤仍未解析；保持透明，避免错误地闪现 music。
       }
     })();
     return () => { active = false; };
@@ -201,7 +202,7 @@ function RecorderApp() {
   useEffect(() => {
     if (!window.electronAPI || !window.electronAPI.onPillSkinChanged) return;
     const off = window.electronAPI.onPillSkinChanged((_e, data) => {
-      if (data && data.skin) setPillSkin(data.skin);
+      if (data && data.skin) setPillSkin(normalizePillSkin(data.skin));
     });
     return () => { if (typeof off === 'function') off(); };
   }, []);
@@ -787,7 +788,7 @@ function RecorderApp() {
 
   const micProps = getMicButtonProps();
 
-  return (
+  return pillSkin ? (
     <RecorderPill
       micState={micState}
       audioLevel={audioLevel}
@@ -808,5 +809,5 @@ function RecorderApp() {
       onOpenHistory={handleOpenHistory}
       onDownloadModels={handleDownloadModels}
     />
-  );
+  ) : null;
 }

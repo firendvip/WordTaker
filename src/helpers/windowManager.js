@@ -48,12 +48,13 @@ const MIN_FIELD_HEIGHT_PX = 8;
 const MAX_FIELD_HEIGHT_SCREEN_RATIO = 0.9;
 
 class WindowManager {
-  constructor(logger = null) {
+  constructor(logger = null, { passportEnabled = false } = {}) {
     this.mainWindow = null;
     this.controlPanelWindow = null;
     this.historyWindow = null;
     this.settingsWindow = null;
     this.logger = logger;
+    this.passportEnabled = passportEnabled === true;
     this._pillSkin = "music";
     this._quotaBubbleVisible = false;
     // 上次成功解析到的「焦点窗口所在屏」：osascript 超时/失败时复用它，
@@ -64,6 +65,14 @@ class WindowManager {
     this._lastFocusPoint = null;
     // 数据库管理器（由 main.js 注入同一实例）：读取 pill_follow_focus 等设置。
     this.databaseManager = null;
+  }
+
+  _preloadAdditionalArguments() {
+    return [
+      this.passportEnabled
+        ? "--wordtaker-passport-enabled=1"
+        : "--wordtaker-passport-enabled=0",
+    ];
   }
 
   // 注入数据库管理器（与 main.js 使用同一实例）。胶囊定位需读 pill_follow_focus。
@@ -222,6 +231,7 @@ class WindowManager {
         backgroundThrottling: false,
         autoplayPolicy: "no-user-gesture-required",
         preload: path.join(__dirname, "..", "..", "preload.js"),
+        additionalArguments: this._preloadAdditionalArguments(),
       },
     });
 
@@ -669,6 +679,7 @@ class WindowManager {
         nodeIntegration: false,
         contextIsolation: true,
         preload: path.join(__dirname, "..", "..", "preload.js"),
+        additionalArguments: this._preloadAdditionalArguments(),
       },
     });
 
@@ -708,6 +719,7 @@ class WindowManager {
         nodeIntegration: false,
         contextIsolation: true,
         preload: path.join(__dirname, "..", "..", "preload.js"),
+        additionalArguments: this._preloadAdditionalArguments(),
       },
     });
 
@@ -750,6 +762,7 @@ class WindowManager {
         contextIsolation: true,
         sandbox: true,
         preload: path.join(__dirname, "..", "..", "preload.js"),
+        additionalArguments: this._preloadAdditionalArguments(),
       },
     });
 

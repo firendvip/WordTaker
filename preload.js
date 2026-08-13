@@ -1,22 +1,23 @@
 const { contextBridge, ipcRenderer } = require("electron");
-const packageMetadata = require("./package.json");
-const {
-  createPassportPreloadApi,
-  resolvePassportCapability,
-} = require("./src/helpers/passportCapability");
 
-const passportCapability = resolvePassportCapability({
-  // Electron sets process.defaultApp only when running through the default
-  // development app. NODE_ENV is caller-controlled and must not decide whether
-  // a packaged preload exposes authentication channels.
-  isPackaged: process.defaultApp !== true,
-  packageMetadata,
-  environmentValue: process.env.WORDTAKER_PASSPORT_ENABLED,
-});
-const passportPreloadApi = createPassportPreloadApi({
-  enabled: passportCapability.enabled,
-  ipcRenderer,
-});
+// Sandbox preload scripts cannot resolve application-local CommonJS modules
+// reliably from app.asar. The main process owns the capability decision and
+// passes this exact argument to every local BrowserWindow.
+const passportEnabledArgument = process.argv.findLast((argument) =>
+  argument.startsWith("--wordtaker-passport-enabled="),
+);
+const passportEnabled = passportEnabledArgument === "--wordtaker-passport-enabled=1";
+const passportPreloadApi = passportEnabled
+  ? Object.freeze({
+      authPassportLogin: () => ipcRenderer.invoke("auth-passport-login"),
+      authPassportAccount: () => ipcRenderer.invoke("auth-passport-account"),
+      onPassportAuthResult: (callback) => {
+        const listener = (_event, result) => callback(result);
+        ipcRenderer.on("passport-auth-result", listener);
+        return () => ipcRenderer.removeListener("passport-auth-result", listener);
+      },
+    })
+  : Object.freeze({});
 
 // 暴露安全的API给渲染进程
 contextBridge.exposeInMainWorld("electronAPI", {

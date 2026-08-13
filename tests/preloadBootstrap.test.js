@@ -89,5 +89,17 @@ describe("packaged sandbox preload bootstrap", () => {
       const api = executeSandboxedPreload([argument]).exposed.get("electronAPI");
       expect(api.authPassportLogin).toBeUndefined();
     }
+
+    const mainDisabled = executeSandboxedPreload([
+      "--wordtaker-passport-enabled=1",
+      "--wordtaker-passport-enabled=0",
+    ]).exposed.get("electronAPI");
+    expect(mainDisabled.authPassportLogin).toBeUndefined();
+
+    const mainEnabled = executeSandboxedPreload([
+      "--wordtaker-passport-enabled=0",
+      "--wordtaker-passport-enabled=1",
+    ]).exposed.get("electronAPI");
+    expect(mainEnabled.authPassportLogin).toBeTypeOf("function");
   });
 });
