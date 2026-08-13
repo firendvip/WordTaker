@@ -36,12 +36,19 @@ describe("Electron passport integration contract", () => {
     const capability = read("src/helpers/passportCapability.js");
     expect(capability).toContain("authPassportLogin");
     expect(capability).toContain("onPassportAuthResult");
-    expect(preload).toContain("createPassportPreloadApi");
+    expect(preload).not.toMatch(/require\(["']\.\.?\//);
+    expect(preload).toContain('"--wordtaker-passport-enabled=1"');
+    expect(preload).toContain("authPassportLogin");
+    expect(preload).toContain("onPassportAuthResult");
     expect(`${preload}\n${capability}`).not.toMatch(/getAccessToken|getRefreshToken|getIdToken/);
     expect(`${preload}\n${capability}`).not.toContain("client_secret");
-    const capabilitySetup = preload.slice(0, preload.indexOf("// 暴露安全的API"));
-    expect(capabilitySetup).toContain("process.defaultApp !== true");
-    expect(capabilitySetup).not.toContain("process.env.NODE_ENV");
+    expect(preload).not.toContain("process.defaultApp");
+    expect(preload).not.toContain("process.env.WORDTAKER_PASSPORT_ENABLED");
+    const main = read("main.js");
+    const windows = read("src/helpers/windowManager.js");
+    expect(main).toContain("passportEnabled: PASSPORT_ROLLOUT_ENABLED");
+    expect(windows.match(/additionalArguments: this\._preloadAdditionalArguments\(\)/g))
+      .toHaveLength(4);
   });
 
   it("makes unified browser login primary while retaining clearly labelled legacy AIM fallback", () => {
