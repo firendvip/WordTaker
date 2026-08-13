@@ -8,7 +8,7 @@ const path = require("node:path");
 const { validateRuntimeSmokeResult } = require("./electron-runtime-smoke");
 
 const EXACT_ELECTRON_VERSION = "43.3.0";
-const EXACT_APP_VERSION = "1.29.0";
+const EXACT_APP_VERSION = "1.29.1";
 const MAC_APP_IDENTIFIER = "com.kittyecho.app";
 const OAUTH_SCHEME = "wangsan-wordtaker";
 const SHA256_PATTERN = /^[A-F0-9]{64}$/;
