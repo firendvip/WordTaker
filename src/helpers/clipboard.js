@@ -1,4 +1,4 @@
-const { clipboard } = require("electron");
+const { clipboard, systemPreferences } = require("electron");
 const { spawn } = require("child_process");
 const path = require("path");
 const fs = require("fs");
@@ -26,7 +26,6 @@ const WIN_WORKER_RETRY_DELAY_MS = 200;
 // 原生按键注入器 sendkeys.exe 的单次执行超时（纯 Win32 SendInput，正常几十 ms 内退出）
 // 放宽到 1500ms：慢机首次注入偏慢，1000ms 会误杀导致误判失败后无谓降级。
 const SENDKEYS_EXE_TIMEOUT_MS = 1500;
-
 // —— Windows 原生按键注入器 sendkeys.exe（三级链最优先路径①）——
 // 企业策略机上 PowerShell 处于 Constrained Language Mode：Add-Type（.NET SendKeys）
 // 与 New-Object -ComObject（WScript.Shell）全被禁 → PS 常驻 worker 与一次性 PS 全灭。
@@ -145,43 +144,11 @@ class ClipboardManager {
     }
   }
 
-  // 简化的 macOS accessibility 检查
+  // 兼容旧 IPC 名称：只查询当前应用身份，不触发权限弹窗。
   async enableMacOSAccessibility() {
     if (process.platform !== "darwin") return true;
-    
-    try {
-      this.safeLog("🔧 检查 macOS accessibility 权限");
-      
-      // 简化为基本的权限检查，不设置复杂的AXManualAccessibility
-      const script = `
-        tell application "System Events"
-          set frontApp to name of first application process whose frontmost is true
-          return frontApp
-        end tell
-      `;
-      
-      const testProcess = spawn("osascript", ["-e", script]);
-      
-      return new Promise((resolve) => {
-        testProcess.on("close", (code) => {
-          if (code === 0) {
-            this.safeLog("✅ macOS accessibility 权限正常");
-            resolve(true);
-          } else {
-            this.safeLog("⚠️ macOS accessibility 权限不足");
-            resolve(false);
-          }
-        });
-        
-        testProcess.on("error", () => {
-          this.safeLog("❌ accessibility 权限检查失败");
-          resolve(false);
-        });
-      });
-    } catch (error) {
-      this.safeLog("❌ 检查 macOS accessibility 时出错:", error.message);
-      return false;
-    }
+    this.safeLog("🔧 查询当前应用的 macOS 辅助功能权限");
+    return this.checkAccessibilityPermissions();
   }
 
   // 简化的文本插入方法 - 直接使用标准粘贴方式
@@ -627,38 +594,19 @@ class ClipboardManager {
   async checkAccessibilityPermissions() {
     if (process.platform !== "darwin") return true;
 
-    return new Promise((resolve) => {
-      // 检查辅助功能权限
-      const testProcess = spawn("osascript", [
-        "-e",
-        'tell application "System Events" to get name of first process',
-      ]);
-
-      let testOutput = "";
-      let testError = "";
-
-      testProcess.stdout.on("data", (data) => {
-        testOutput += data.toString();
-      });
-
-      testProcess.stderr.on("data", (data) => {
-        testError += data.toString();
-      });
-
-      testProcess.on("close", (code) => {
-        if (code === 0) {
-          resolve(true);
-        } else {
-          // 不弹系统对话框（按需在设置里引导授权），仅记录日志
-          this.safeLog("⚠️ 辅助功能权限不足，请在设置 → 权限中授权");
-          resolve(false);
-        }
-      });
-
-      testProcess.on("error", (error) => {
-        resolve(false);
-      });
-    });
+    // 必须检查“当前应用身份”的 TCC 状态。旧实现只让 osascript 读取进程列表，
+    // 该操作无需发送键盘事件，即使真实 Cmd+V 会被系统拒绝也可能返回 0，造成
+    // “权限已授予”的误报。false 表示仅查询、绝不触发系统授权弹窗。
+    try {
+      const trusted = systemPreferences.isTrustedAccessibilityClient(false);
+      if (!trusted) {
+        this.safeLog("⚠️ 当前应用身份未获辅助功能权限，自动粘贴已静默停用");
+      }
+      return trusted;
+    } catch (error) {
+      this.safeLog("⚠️ 辅助功能权限检测失败，自动粘贴已静默停用", error?.message || error);
+      return false;
+    }
   }
 
   showAccessibilityDialog(testError) {
