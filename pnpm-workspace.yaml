@@ -15,7 +15,7 @@ overrides:
   'brace-expansion@<1.1.18': 1.1.18
   'brace-expansion@>=2.0.0 <3.0.0': 2.1.4
   'postcss@<8.5.18': 8.5.26
-  'nanoid@>=3.0.0 <4.0.0': 3.3.17
+  'nanoid@>=3.0.0 <4.0.0': 3.3.18
 
 allowBuilds:
   '@tailwindcss/oxide': true

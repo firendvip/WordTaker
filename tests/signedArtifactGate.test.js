@@ -214,7 +214,7 @@ describe("signed packaged artifact gate", () => {
       encoding: "utf8",
     }).trim();
     const manifest = {
-      version: "1.29.2",
+      version: "1.29.3",
       electronVersion: "43.3.0",
       variant: "default",
       arch: "arm64",
