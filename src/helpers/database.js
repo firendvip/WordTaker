@@ -155,9 +155,9 @@ class DatabaseManager {
       recording_trigger: process.platform === 'win32'
         ? { type: 'modifier-tap', key: 'LeftAlt', taps: 1 }
         : { type: 'modifier-tap', key: 'LeftOption', taps: 1 },
-      // 取消录音快捷键（默认 Esc，可在设置里改为裸修饰键单/双击）
+      // 取消录音快捷键（默认 Esc，可在设置里改为 Esc/F 键单击或双击）
       cancel_key: 'Escape',
-      // 取消键为裸修饰键时的连击次数（加速键如 Esc 时忽略此值）
+      // 取消键连击次数：单击走 globalShortcut，双击走 tap-aware listener
       cancel_taps: 1,
       // 短文本规则：识别结果 ≤ 6 字时固定跳过模型，保留此键仅兼容已有设置数据。
       skip_polish_max_chars: 6,

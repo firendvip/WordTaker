@@ -321,7 +321,7 @@ const llmManager = new LLMManager(logger); // 本地大模型润色管理器
 const trayManager = new TrayManager();
 const hotkeyManager = new HotkeyManager();
 const triggerManager = new TriggerManager(logger);
-// 第二个触发器：取消键若被设为裸修饰键（单/双击），则用它监听；否则走 globalShortcut（Esc/F 键）。
+// 第二个触发器：取消键设为双击时用它计数；单击 Esc/F 键走 globalShortcut。
 const cancelTriggerManager = new TriggerManager(logger);
 // 第三个触发器：「转英文」全局键（默认单击左 Ctrl）。仅在非录音时生效，
 // 录音期间让位给录音结束，二者由 isRecording 互斥。

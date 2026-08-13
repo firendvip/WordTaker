@@ -59,7 +59,7 @@ function toModifierShortcutValue(key, taps) {
 
 // 取消键选项：仅 Esc / F1 / F2 / F4 / F8 的"单击 / 双击"。
 // value 编码为 "<Key>:<taps>"（如 "Escape:1"、"F1:2"），与 cancel_key + cancel_taps 对应。
-// 这些键经 triggerManager 的 uiohook 触发器识别单/双击（globalShortcut 无法检测双击）。
+// 单击走 globalShortcut；双击经 triggerManager 的 uiohook 触发器识别。
 const CANCEL_KEYS = [
   { key: "Escape", label: "Esc" },
   { key: "F1", label: "F1" },
