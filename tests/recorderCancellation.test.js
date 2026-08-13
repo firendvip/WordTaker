@@ -26,6 +26,24 @@ describe("recorder cancellation", () => {
     });
   });
 
+  it("normalizes missing and invalid single-tap settings to Escape", () => {
+    expect(resolveCancelShortcut()).toEqual({
+      type: "accelerator",
+      accelerator: "Escape",
+    });
+    expect(resolveCancelShortcut({ key: "", taps: 99 })).toEqual({
+      type: "accelerator",
+      accelerator: "Escape",
+    });
+  });
+
+  it("falls back to an accelerator when a key has no tap-aware mapping", () => {
+    expect(resolveCancelShortcut({ key: "F3", taps: "2" })).toEqual({
+      type: "accelerator",
+      accelerator: "F3",
+    });
+  });
+
   it("invalidates an in-flight recognition or polish result immediately", () => {
     const cancelledRef = { current: false };
     const generationRef = { current: 7 };

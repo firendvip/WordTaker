@@ -875,12 +875,10 @@ function isSameModifierTap(a, b) {
   return !!a && !!b && a.key === b.key && Number(a.taps) === Number(b.taps);
 }
 
-// 取消录音：仅在录音期间注册，避免平时吞掉按键。
-// 取消键现支持 Esc / F1 / F2 / F4 / F8 的单/双击；因 globalShortcut 无法识别"双击"，
-// 这些键已加入 TriggerManager.VALID_KEYS，统一走 uiohook 第三触发器（cancelTriggerManager）。
-// 注意：底层 uiohook 为"只监听不拦截"，因此 Esc/F 键会被观察到用于触发取消，
-// 但不会被消费——它们仍会照常送达当前聚焦的应用（可接受）。
-// 下方 globalShortcut 分支对当前选项已基本不会命中，保留为无害回退。
+// 取消键只在录音会话期间注册，避免平时吞掉按键。
+// 单击 Esc / F 键直接走 Electron globalShortcut，不依赖 macOS 辅助功能权限；
+// 双击才使用 tap-aware uiohook 监听器（cancelTriggerManager）。
+// uiohook 为只监听不拦截，双击配置下按键仍会照常送达当前聚焦的应用。
 let cancelKeyRegistered = null; // 仅记录已注册的 globalShortcut 加速键（回退用）
 function fireCancel() {
   const win = windowManager.mainWindow;
