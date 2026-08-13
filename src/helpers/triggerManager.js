@@ -1,4 +1,5 @@
 const { uIOhook, UiohookKey } = require("uiohook-napi");
+const { systemPreferences } = require("electron");
 
 /**
  * 触发管理器（裸修饰键全局触发）
@@ -43,6 +44,7 @@ class TriggerManager {
   constructor(logger = null) {
     this.logger = logger;
     this.started = false;
+    this.startFailureReason = null;
     this.onTrigger = null;
     this.config = null;
     this.targetKeycode = null;
@@ -71,14 +73,40 @@ class TriggerManager {
    */
   start(config, onTrigger) {
     this.stop();
+    this.startFailureReason = null;
 
     this.config = { ...DEFAULTS, ...(config || {}) };
     this.targetKeycode = KEYCODE_BY_NAME[this.config.key];
     if (this.targetKeycode == null) {
+      this.startFailureReason = "invalid-key";
       this._log("error", "triggerManager: 未知的触发键", this.config.key);
       return false;
     }
     this.onTrigger = onTrigger;
+
+    // uiohook-napi 的 macOS 原生层会用 prompt=true 检查 AX 权限，直接调用 start()
+    // 可能触发系统授权窗。必须先用 Electron 的非提示式检查拦住未信任身份；检测异常
+    // 也 fail closed，确保任何情况下都不会因应用启动/重挂触发器而主动弹权限窗。
+    if (process.platform === "darwin") {
+      try {
+        if (!systemPreferences.isTrustedAccessibilityClient(false)) {
+          this.startFailureReason = "accessibility-untrusted";
+          this._log("warn", "macOS 辅助功能未授权，静默停用系统级按键监听", {
+            reason: this.startFailureReason,
+            key: this.config.key,
+            taps: this.config.taps,
+          });
+          return false;
+        }
+      } catch (error) {
+        this.startFailureReason = "accessibility-check-failed";
+        this._log("warn", "macOS 辅助功能状态检测失败，静默停用系统级按键监听", {
+          reason: this.startFailureReason,
+          error: error?.message || String(error),
+        });
+        return false;
+      }
+    }
 
     try {
       uIOhook.on("keydown", this._boundKeydown);
@@ -103,6 +131,7 @@ class TriggerManager {
       });
       return true;
     } catch (error) {
+      this.startFailureReason = "hook-start-failed";
       // start 抛错时把已挂的监听清掉，避免"未启动却挂着监听"的悬挂状态
       this.stop();
       this._log("error", "triggerManager 启动失败（可能缺少辅助功能权限）", error);
@@ -234,6 +263,10 @@ TriggerManager.tryRestartHook = function (logger) {
     log("error", "uIOhook 重启失败", e?.message || e);
     return false;
   }
+};
+TriggerManager.isAccessibilityBlocked = function (manager) {
+  return manager?.startFailureReason === "accessibility-untrusted" ||
+    manager?.startFailureReason === "accessibility-check-failed";
 };
 // 合法触发键名集合（供主进程校验 recording_trigger）
 TriggerManager.VALID_KEYS = new Set(Object.keys(KEYCODE_BY_NAME));

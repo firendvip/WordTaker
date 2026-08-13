@@ -525,8 +525,15 @@ function setupRecordingTrigger() {
       // 裸修饰键走 uiohook；uiohook 启动失败（权限/钩子异常）时降级到组合键并通知。
       const ok = triggerManager.start(trigger, fire);
       if (!ok) {
-        logger.error('[trigger] uiohook 启动失败，尝试降级到兜底组合键');
-        registerFallbackRecordingHotkey(fire, '系统级按键监听启动失败');
+        if (TriggerManager.isAccessibilityBlocked(triggerManager)) {
+          logger.warn('[trigger] macOS 辅助功能不可用，录音裸修饰键已静默停用', {
+            reason: triggerManager.startFailureReason,
+            trigger,
+          });
+        } else {
+          logger.error('[trigger] uiohook 启动失败，尝试降级到兜底组合键');
+          registerFallbackRecordingHotkey(fire, '系统级按键监听启动失败');
+        }
       }
     }
   } catch (error) {
@@ -782,7 +789,14 @@ function setupTranslateTrigger() {
       // 裸修饰键走 uiohook
       const ok = translateTriggerManager.start(trigger, () => { handleTranslateHotkey(); });
       if (!ok) {
-        logger.warn('转英文裸修饰键触发启动失败，请确认已授予“辅助功能”权限');
+        if (TriggerManager.isAccessibilityBlocked(translateTriggerManager)) {
+          logger.warn('macOS 辅助功能不可用，转英文裸修饰键已静默停用', {
+            reason: translateTriggerManager.startFailureReason,
+            trigger,
+          });
+        } else {
+          logger.warn('转英文裸修饰键触发启动失败');
+        }
         logger.warn('转英文触发器挂载失败');
       } else {
         logger.info('转英文触发器已挂载:', JSON.stringify(trigger));
@@ -902,7 +916,14 @@ function registerCancelKey() {
         logger.warn('cancel_key 与录音触发键相同，跳过注册', target);
         return;
       }
-      cancelTriggerManager.start({ type: 'modifier-tap', key, taps }, fireCancel);
+      const ok = cancelTriggerManager.start({ type: 'modifier-tap', key, taps }, fireCancel);
+      if (!ok && TriggerManager.isAccessibilityBlocked(cancelTriggerManager)) {
+        logger.warn('macOS 辅助功能不可用，双击取消键已静默停用', {
+          reason: cancelTriggerManager.startFailureReason,
+          key,
+          taps,
+        });
+      }
       return;
     }
 
