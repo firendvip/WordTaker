@@ -140,6 +140,7 @@ const {
   shouldPreflightSensitivePassport,
 } = require("./src/helpers/passportDesktopPolicy");
 const { resolvePassportCapability } = require("./src/helpers/passportCapability");
+const { resolveCancelShortcut } = require("./src/utils/cancelShortcutPolicy.cjs");
 const PASSPORT_ROLLOUT_ENABLED = resolvePassportCapability({
   isPackaged: app.isPackaged,
   packageMetadata: require("./package.json"),
@@ -389,8 +390,6 @@ let isTranslating = false;
 // 应用是否已完成启动初始化（转英文触发器已挂载）。用于防止早期/边缘的 recorder-state(true)
 // 在触发器尚未挂载前就误调用 stop() 造成的状态错乱。
 let appFullyInitialized = false;
-// 录音开始时间戳：用于最小录音时长守卫，忽略录音刚开始(<800ms)的取消，防止胶囊误消失。
-let recordStartedAt = 0;
 
 // 校验 recording_trigger，非法字段一律回退默认（防止渲染层写入异常对象）
 function validateRecordingTrigger(t, fallback) {
@@ -884,10 +883,6 @@ function isSameModifierTap(a, b) {
 // 下方 globalShortcut 分支对当前选项已基本不会命中，保留为无害回退。
 let cancelKeyRegistered = null; // 仅记录已注册的 globalShortcut 加速键（回退用）
 function fireCancel() {
-  if (Date.now() - recordStartedAt < 800) {
-    logger.info('忽略过早的取消(录音不足800ms)，防止胶囊误消失');
-    return;
-  }
   const win = windowManager.mainWindow;
   if (win && !win.isDestroyed()) win.webContents.send('cancel-recording');
   windowManager.hideMainWindow();
@@ -897,10 +892,12 @@ function fireCancel() {
 function registerCancelKey() {
   try {
     const key = databaseManager.getSetting('cancel_key', 'Escape') || 'Escape';
+    const taps = Number(databaseManager.getSetting('cancel_taps', 1)) === 2 ? 2 : 1;
+    const shortcut = resolveCancelShortcut({ key, taps });
 
-    if (TriggerManager.VALID_KEYS.has(key)) {
-      // 裸修饰键形态：用第三触发器监听单/双击
-      const taps = Number(databaseManager.getSetting('cancel_taps', 1)) === 2 ? 2 : 1;
+    if (shortcut.type === 'tap-listener') {
+      // 双击需要 tap-aware listener；单击 Esc/F 键直接走 globalShortcut，
+      // 不依赖 macOS 辅助功能权限。
       const target = { key, taps };
       const trig = getRecordingTriggerModifier();
       if (isSameModifierTap(trig, target)) {
@@ -911,11 +908,12 @@ function registerCancelKey() {
       return;
     }
 
-    // 加速键形态（Esc/F 键）：走 Electron globalShortcut
-    if (cancelKeyRegistered === key) return;
+    // 单击 Esc/F 键：走 Electron globalShortcut。
+    const accelerator = shortcut.accelerator;
+    if (cancelKeyRegistered === accelerator) return;
     if (cancelKeyRegistered) globalShortcut.unregister(cancelKeyRegistered);
-    const ok = globalShortcut.register(key, fireCancel);
-    cancelKeyRegistered = ok ? key : null;
+    const ok = globalShortcut.register(accelerator, fireCancel);
+    cancelKeyRegistered = ok ? accelerator : null;
   } catch (error) {
     logger.error('注册取消键失败:', error);
   }
@@ -969,7 +967,6 @@ ipcMain.on('recorder-state', (event, recording) => {
     // 会话开始：覆盖 recording + 后续处理/润色阶段，直到胶囊隐藏才结束。
     // 每次新录音都重置 isBusy=true，确保 isBusy 不会因上次异常而卡死。
     isBusy = true;
-    recordStartedAt = Date.now();
     registerCancelKey();
     // 录音期间转英文键必须让位：停掉转英文触发器，避免裸修饰键被双重监听。
     // 仅在应用完成初始化（触发器已挂载）后才停用，避免早期/边缘的 recorder-state(true) 误调用。

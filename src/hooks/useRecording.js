@@ -1,6 +1,9 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
 import { useModelStatus } from './useModelStatus';
 import { shouldSkipPolish } from '../utils/skipPolish';
+import recorderSession from '../utils/recorderSession.cjs';
+
+const { cancelRecorderSession, isRecorderSessionCurrent } = recorderSession;
 
 // 频谱声波：把音频频谱拆成 BAND_COUNT 个独立频段，驱动胶囊里每根柱子各自起伏。
 export const BAND_COUNT = 13;
@@ -710,8 +713,12 @@ export const useRecording = ({ onTranscriptionCompleteRef, onAIOptimizationCompl
 
               // 先出字（最高优先级）：尽快把结果贴到光标处，绝不被数据库写入挡住。
               // 若期间已有更新的录音，作废本次粘贴（入库仍保留），避免贴出过期内容。
-              if (myGen !== generationRef.current) {
-                log('info', '已被更新的录音取代，跳过本次粘贴');
+              if (!isRecorderSessionCurrent({
+                generation: myGen,
+                generationRef,
+                cancelledRef,
+              })) {
+                log('info', '录音已取消或被更新的录音取代，跳过本次粘贴');
               } else if (onAIOptimizationCompleteRef?.current) {
                 const doneP = onAIOptimizationCompleteRef?.current(emit);
                 // 端到端 t_end（非流式）：handleAIOptimizationComplete 为 async，其返回 Promise 在
@@ -899,7 +906,7 @@ export const useRecording = ({ onTranscriptionCompleteRef, onAIOptimizationCompl
 
   // 取消录音（Esc）：丢弃本次音频，不识别不粘贴
   const cancelRecording = useCallback(() => {
-    cancelledRef.current = true;
+    cancelRecorderSession({ cancelledRef, generationRef });
     if (mediaRecorderRef.current) {
       try {
         mediaRecorderRef.current.stop();
