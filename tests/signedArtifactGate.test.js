@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import childProcess from "node:child_process";
 import crypto from "node:crypto";
+import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -204,7 +205,7 @@ describe("signed packaged artifact gate", () => {
   });
 
   it("pins local package, Electron, variant, commit and tree provenance", () => {
-    const rootDir = path.resolve(path.dirname(new URL(import.meta.url).pathname), "..");
+    const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
     const commit = childProcess.execFileSync("git", ["rev-parse", "HEAD"], {
       cwd: rootDir,
       encoding: "utf8",
