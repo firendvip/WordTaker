@@ -84,6 +84,7 @@ describe("signed packaged artifact gate", () => {
     for (const value of [null, "", "A1".repeat(31), "GG".repeat(32)]) {
       expect(() => normalizeFingerprint(value)).toThrow(/fingerprint/i);
     }
+    expect(() => validateReleaseVariant()).toThrow(/variant/i);
   });
 
   it("parses and pins Developer ID, TeamIdentifier and notarized assessment", () => {
@@ -168,6 +169,9 @@ describe("signed packaged artifact gate", () => {
     expect(readJsonFile(jsonPath, "JSON")).toEqual({ ok: true });
     expect(readManifest(jsonPath)).toEqual({ ok: true });
     expect(sha256File(jsonPath)).toMatch(/^[a-f0-9]{64}$/);
+    const emptyPath = path.join(directory, "empty.bin");
+    fs.writeFileSync(emptyPath, "");
+    expect(sha256File(emptyPath)).toBe(crypto.createHash("sha256").digest("hex"));
     fs.writeFileSync(jsonPath, "not-json");
     expect(() => readJsonFile(jsonPath, "JSON")).toThrow(/valid JSON/i);
     fs.writeFileSync(jsonPath, "");
@@ -267,6 +271,12 @@ describe("signed packaged artifact gate", () => {
     expect(validateWindowsProtocolVariant(null, "default", () => ({
       stdout: JSON.stringify({ Exists: false, UrlProtocolPresent: false, Command: null }),
     }))).toEqual([]);
+    expect(() => validateWindowsProtocolVariant(null, "default", () => ({
+      stdout: JSON.stringify({ Exists: "yes", UrlProtocolPresent: false, Command: null }),
+    }))).toThrow(/invalid evidence/i);
+    expect(() => validateWindowsProtocolVariant(null, "passport-candidate", () => ({
+      stdout: JSON.stringify({ Exists: true, UrlProtocolPresent: true, Command: "placeholder" }),
+    }))).toThrow(/executable path/i);
     expect(() => validateWindowsProtocolVariant(installedAppPath, "passport-candidate", () => ({
       stdout: JSON.stringify({
         Exists: true,
@@ -493,6 +503,7 @@ describe("signed packaged artifact gate", () => {
     expect(safeArtifactSummary({ name: "KittyEcho.dmg", sha256: "ab".repeat(32) }))
       .toEqual({ name: "KittyEcho.dmg", sha256: "ab".repeat(32) });
     for (const artifact of [
+      undefined,
       { name: "../escape.dmg", sha256: "ab".repeat(32) },
       { name: "ok.dmg", sha256: "bad" },
     ]) {
