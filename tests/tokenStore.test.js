@@ -90,7 +90,12 @@ describe("OS-protected credential store", () => {
     expect(store.setLegacy({ accessToken: "legacy-sensitive-token", account: { userId: "42" } })).toBe(true);
     const bytes = fs.readFileSync(path.join(directory, SECURE_FILE_NAME));
     expect(bytes.toString()).not.toContain("legacy-sensitive-token");
-    expect(fs.statSync(path.join(directory, SECURE_FILE_NAME)).mode & 0o077).toBe(0);
+    // Windows reports synthetic POSIX mode bits even after chmod; access is
+    // governed by the user's ACL there. Keep the owner-only mode assertion on
+    // platforms where Node exposes real POSIX permissions.
+    if (process.platform !== "win32") {
+      expect(fs.statSync(path.join(directory, SECURE_FILE_NAME)).mode & 0o077).toBe(0);
+    }
 
     const reloaded = createTokenStore(options);
     expect(reloaded.getLegacy()).toMatchObject({
