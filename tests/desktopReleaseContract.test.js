@@ -98,6 +98,10 @@ function secureSnapshot(overrides = {}) {
       "WORDTAKER_PACKAGED_RUNTIME_SMOKE",
       "Verify packaged Electron runtime",
       "Verify packaged Electron runtime (x64)",
+      "Start-Process",
+      "-Wait",
+      "-PassThru",
+      ".ExitCode",
       "verify-arm64-package:",
       "needs: build-win",
       "Verify packaged Electron runtime (ARM64)",
@@ -412,6 +416,17 @@ describe("desktop release contract", () => {
         expect.stringContaining("Windows"),
         expect.stringContaining("macOS"),
       ]),
+    );
+  });
+
+  it("waits for the packaged Windows GUI process before validating its exit code", () => {
+    const snapshot = secureSnapshot();
+    snapshot.windowsWorkflow = snapshot.windowsWorkflow
+      .replace("-Wait", "# launched asynchronously")
+      .replace(".ExitCode", "$LASTEXITCODE");
+
+    expect(validateDesktopReleaseSnapshot(snapshot)).toEqual(
+      expect.arrayContaining([expect.stringContaining("Windows")]),
     );
   });
 
