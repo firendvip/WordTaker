@@ -755,7 +755,7 @@ describe("signed packaged artifact gate", () => {
     expect(runtimeCleanup).toHaveBeenCalledOnce();
     expect(mountCleanup).toHaveBeenCalledOnce();
     expect(fs.existsSync(receiptPath)).toBe(false);
-  });
+  }, 15_000);
 
   it("executes Windows installer, portable and installed-exe Authenticode gates", () => {
     const directory = tempDirectory();

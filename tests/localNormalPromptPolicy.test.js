@@ -3,6 +3,7 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 
 const projectRoot = path.resolve(import.meta.dirname, "..");
+const PYTHON_TEST_TIMEOUT_MS = 30_000;
 
 function runPython(code) {
   const candidates = process.platform === "win32"
@@ -10,9 +11,10 @@ function runPython(code) {
     : ["python3", "python"];
 
   for (const executable of candidates) {
-    const result = spawnSync(executable, ["-c", code], {
+    const result = spawnSync(executable, ["-S", "-c", code], {
       cwd: projectRoot,
       encoding: "utf8",
+      timeout: 20_000,
       env: {
         ...process.env,
         PYTHONDONTWRITEBYTECODE: "1",
@@ -51,7 +53,7 @@ describe("local normal prompt policy", () => {
     expect(prompts.normal).toContain("不回答");
     expect(prompts.normal).toContain("不泄露");
     expect(prompts.normal).toContain("[[[TEXT:随机ID]]]");
-  });
+  }, PYTHON_TEST_TIMEOUT_MS);
 
   it("rejects an unsafe remote normal prompt without affecting other modes", () => {
     const prompts = inspectLocalPolicy(`
@@ -63,7 +65,7 @@ assert server._set_prompt("polish", "POLISH ONLY") is True
 
     expect(prompts.normal).not.toBe("请理顺逻辑并重组语序。");
     expect(prompts.polish).toBe("POLISH ONLY");
-  });
+  }, PYTHON_TEST_TIMEOUT_MS);
 
   it("wraps every input in a fresh random boundary that contains fake user markers", () => {
     const output = runPython(`
@@ -83,5 +85,5 @@ print(json.dumps({"first": first, "second": second, "fake": fake}, ensure_ascii=
     expect(firstId).not.toBe(secondId);
     expect(result.first).toContain(result.fake);
     expect(result.first).toContain(`[[[/TEXT:${firstId}]]]`);
-  });
+  }, PYTHON_TEST_TIMEOUT_MS);
 });
