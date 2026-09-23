@@ -12,10 +12,13 @@ describe("AiService.processTextWithAI", () => {
       databaseManager: makeDB({ polish_engine: "cloud", llm_relay_enabled: false, ai_api_key: "" }),
       logger,
     });
-    const r = await svc.processTextWithAI("你好", "copywriting");
+    const r = await svc.processViaRelayFallback(
+      "这是一条超过六字的文本",
+      "copywriting",
+      "云端不可用",
+    );
     expect(r.success).toBe(false);
-    // 严格只走云端中继：未配置 relay 时直接返回「未配置云端中继」错误（不再走直连 API key 分支）。
-    expect(r.error).toMatch(/中继|relay/i);
+    expect(r.error).toMatch(/云端服务暂不可用/);
   });
 
   it("启用中转时只发送 {text, mode} 并带访问令牌头", async () => {
@@ -35,7 +38,11 @@ describe("AiService.processTextWithAI", () => {
       }),
       logger,
     });
-    const r = await svc.processTextWithAI("那个我觉得不错", "copywriting");
+    const r = await svc.processTextViaRelay(
+      "那个我觉得不错",
+      "copywriting",
+      "https://relay.test",
+    );
 
     expect(r).toEqual({ success: true, text: "润色后的文本" });
     expect(fetchMock).toHaveBeenCalledTimes(1);
@@ -73,7 +80,7 @@ describe("AiService.processTextWithAI", () => {
       llmManager,
     });
     const r = await svc.processTextWithAI("那个我我觉得可以", "copywriting");
-    expect(r).toEqual({ success: true, text: "本地润色结果" });
+    expect(r).toEqual({ success: true, text: "本地润色结果", engine: "local-4b" });
     expect(llmManager.polish).toHaveBeenCalledWith("local-4b", "那个我我觉得可以", "copywriting", null);
     // 无兜底：绝不因本地成功/失败而回退到中转
     expect(fetchMock).not.toHaveBeenCalled();

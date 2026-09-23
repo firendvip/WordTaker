@@ -1,6 +1,7 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import path from 'path'
+import { getManualChunkName } from './helpers/viteChunkPolicy.mjs'
 
 // https://vitejs.dev/config/
 export default defineConfig({
@@ -21,20 +22,16 @@ export default defineConfig({
     outDir: 'dist',
     assetsDir: 'assets',
     sourcemap: process.env.NODE_ENV === 'development',
-    minify: 'esbuild',
+    minify: 'oxc',
     target: 'chrome120', // Electron使用的Chrome版本
     rollupOptions: {
       input: {
-        main: path.resolve(__dirname, 'index.html'),
-        history: path.resolve(__dirname, 'history.html'),
-        settings: path.resolve(__dirname, 'settings.html')
+        main: path.resolve(import.meta.dirname, 'index.html'),
+        history: path.resolve(import.meta.dirname, 'history.html'),
+        settings: path.resolve(import.meta.dirname, 'settings.html')
       },
       output: {
-        manualChunks: {
-          vendor: ['react', 'react-dom'],
-          ui: ['@radix-ui/react-dialog', '@radix-ui/react-dropdown-menu', '@radix-ui/react-select'],
-          utils: ['clsx', 'tailwind-merge', 'class-variance-authority']
-        }
+        manualChunks: getManualChunkName
       }
     },
     // 优化配置
@@ -44,12 +41,12 @@ export default defineConfig({
   // 路径别名
   resolve: {
     alias: {
-      '@': path.resolve(__dirname, '.'),
-      '@/components': path.resolve(__dirname, 'components'),
-      '@/hooks': path.resolve(__dirname, 'hooks'),
-      '@/services': path.resolve(__dirname, 'services'),
-      '@/utils': path.resolve(__dirname, 'utils'),
-      '@/assets': path.resolve(__dirname, '../assets')
+      '@': path.resolve(import.meta.dirname, '.'),
+      '@/components': path.resolve(import.meta.dirname, 'components'),
+      '@/hooks': path.resolve(import.meta.dirname, 'hooks'),
+      '@/services': path.resolve(import.meta.dirname, 'services'),
+      '@/utils': path.resolve(import.meta.dirname, 'utils'),
+      '@/assets': path.resolve(import.meta.dirname, '../assets')
     }
   },
   
