@@ -37,7 +37,7 @@ jobs:
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
         with:
-          version: 9
+          version: 11.5.3
 
       - name: Setup Node
         uses: actions/setup-node@v4
@@ -68,14 +68,17 @@ jobs:
       # 安装 JS 依赖。--ignore-scripts 跳过 postinstall（Windows 上 pnpm.cjs 调用会失败），
       # 再单独用 @electron/rebuild 按 Electron ABI + 目标架构重建原生模块。
       - name: Install dependencies
-        run: pnpm install --no-frozen-lockfile --ignore-scripts
+        run: pnpm install --frozen-lockfile --ignore-scripts
+
+      - name: Test Windows SQLite binary discovery
+        run: node --test tests/windowsSqliteBinaries.test.cjs
 
       # 按目标架构重建原生模块。
       #   - x64：默认架构，沿用历史命令。
       #   - arm64：@electron/rebuild --arch arm64 交叉编译 better-sqlite3；
       #     uiohook-napi 有 win32-arm64 预编译，node-gyp-build 运行期自动选用，无需源码重建。
       - name: Rebuild native modules for Electron
-        run: npx --yes @electron/rebuild -f -w better-sqlite3 -w uiohook-napi --arch ${{ matrix.arch }}
+        run: npx --yes @electron/rebuild@4.2.0 -f -w better-sqlite3 -w uiohook-napi --arch ${{ matrix.arch }}
 
       # 下载并准备目标架构的嵌入式 CPython 并装好依赖（两架构统一纯 ONNX 依赖集：
       # numpy + onnxruntime + soundfile，NO torch/funasr）。
@@ -331,12 +334,14 @@ jobs:
             }
           }
 
-          # 校验 better-sqlite3。
-          $sqliteFiles = Get-ChildItem -Path $root -Recurse -Filter "better_sqlite3.node" -ErrorAction SilentlyContinue
+          # SQLite 13 优先加载 prebuilds/win32-<arch>.node；旧版本/重建产物仍使用
+          # better_sqlite3.node。两种路径都必须检查，且不能把其他平台/架构预编译误作目标。
+          $sqliteFiles = @(& node -e "require('./scripts/find-windows-sqlite.cjs').findWindowsSqliteBinaries(process.argv[1], process.argv[2]).forEach(p => process.stdout.write(p + '\n'))" $root $arch)
+          if ($LASTEXITCODE -ne 0) { Write-Error "FAIL: SQLite 原生模块查找失败。"; exit 1 }
           $sqliteCount = 0
-          foreach ($f in $sqliteFiles) { Assert-Pe $f.FullName $expectMachine $expectName; $sqliteCount++ }
+          foreach ($f in $sqliteFiles) { Assert-Pe $f $expectMachine $expectName; $sqliteCount++ }
           if ($sqliteCount -lt 1) {
-            Write-Error "FAIL: 未找到 better_sqlite3.node 进行校验。"
+            Write-Error "FAIL: 未找到 better_sqlite3.node 或目标架构 $winDirToken.node 进行校验。"
             exit 1
           }
 
@@ -367,7 +372,8 @@ jobs:
             if ($pyFiles) {
               foreach ($f in $pyFiles) { Assert-Pe $f.FullName $expectMachine $expectName; $checked++ }
             } else {
-              Write-Host "WARN: 未在 $resources 下找到 python.exe（跳过其 PE 校验）"
+              Write-Error "FAIL: 未在 $resources 下找到 python.exe，无法执行必需的 PE 校验。"
+              exit 1
             }
           }
 
