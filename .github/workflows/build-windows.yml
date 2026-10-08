@@ -438,8 +438,9 @@ jobs:
             publish/SHA256SUMS-${{ matrix.arch }}.txt
 
       # 备份性短保留工件（仅 workflow_dispatch 等无 tag 场景方便取包）。
+      # 本仓库公开；原生模块验证分支不上传未签名安装包，只保留检查日志。
       - name: Upload Windows artifacts (short retention)
-        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+        if: ${{ !startsWith(github.ref, 'refs/tags/') && github.ref_name != 'codex/wordtaker-windows-pe' }}
         uses: actions/upload-artifact@v4
         with:
           name: wordtaker-windows-${{ matrix.arch }}

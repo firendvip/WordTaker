@@ -98,3 +98,9 @@ test('ignores directories whose names resemble native files', (t) => {
   const root = fixture(t, ['better_sqlite3.node/nested.txt']);
   assert.deepEqual(find(root, 'x64'), []);
 });
+
+test('does not upload unsigned installers from the public validation branch', () => {
+  const workflow = fs.readFileSync(path.join(__dirname, '../.github/workflows/build-windows.yml'), 'utf8');
+  const uploadStep = workflow.slice(workflow.indexOf('- name: Upload Windows artifacts'));
+  assert.match(uploadStep, /github\.ref_name != 'codex\/wordtaker-windows-pe'/);
+});
