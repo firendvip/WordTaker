@@ -3,6 +3,7 @@ const fs = require('node:fs'), path = require('node:path'), os = require('node:o
 const assert = require('node:assert/strict');
 const { execFileSync } = require('node:child_process');
 const { PRODUCT, assertHost, assertDraftAsset, assertDownloadedDmg, assertScopedPath } = require('./macos-dmg-guard.cjs');
+const repositoryApiUrl = endpoint => `https://api.github.com/repos/firendvip/WordTaker${endpoint ? `/${endpoint}` : ''}`;
 async function run() {
   const runnerTemp = fs.realpathSync(process.env.RUNNER_TEMP);
   const root = assertScopedPath(fs.mkdtempSync(path.join(runnerTemp, 'wordtaker-macos14-')), runnerTemp);
@@ -10,7 +11,7 @@ async function run() {
   const report = { success: false, harnessSha: process.env.GITHUB_SHA, candidateSourceSha: PRODUCT.candidateSha, originalMacBuildSha: PRODUCT.originalMacBuildSha, contentsPermission: 'read', stage: 'host-preflight' };
   const headers = { Accept: 'application/vnd.github+json', Authorization: `Bearer ${process.env.GH_TOKEN}`, 'X-GitHub-Api-Version': '2026-03-10' };
   const api = async endpoint => {
-    const response = await fetch(`https://api.github.com/repos/firendvip/WordTaker/${endpoint}`, { headers, signal: AbortSignal.timeout(30000) });
+    const response = await fetch(repositoryApiUrl(endpoint), { headers, signal: AbortSignal.timeout(30000) });
     assert.equal(response.status, 200, `Read-only GitHub API ${report.stage}: HTTP ${response.status}`);
     return response.json();
   };
@@ -30,7 +31,7 @@ async function run() {
     report.draftId = release.id;
     report.assetId = asset.id;
     report.stage = 'download-private-draft-asset';
-    let response = await fetch(`https://api.github.com/repos/firendvip/WordTaker/releases/assets/${asset.id}`, { headers: { ...headers, Accept: 'application/octet-stream' }, redirect: 'manual', signal: AbortSignal.timeout(300000) });
+    let response = await fetch(repositoryApiUrl(`releases/assets/${asset.id}`), { headers: { ...headers, Accept: 'application/octet-stream' }, redirect: 'manual', signal: AbortSignal.timeout(300000) });
     if (response.status === 302) {
       const redirect = new URL(response.headers.get('location'));
       assert.equal(redirect.protocol, 'https:');
@@ -67,4 +68,5 @@ async function run() {
     process.stdout.write(JSON.stringify(report) + '\n');
   }
 }
+module.exports = { repositoryApiUrl };
 if (require.main === module) run().catch(error => { process.stderr.write(`${error.message}\n`); process.exitCode = 1; });

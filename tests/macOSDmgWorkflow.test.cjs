@@ -2,6 +2,12 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const source = () => fs.readFileSync(new URL('../.github/workflows/accept-macos14-dmg.yml', `file://${__filename}`), 'utf8');
+test('repository metadata uses the real API root without the observed 404 trailing slash', () => {
+  const { repositoryApiUrl } = require('../scripts/macos-dmg-transport.cjs');
+  assert.equal(repositoryApiUrl(''), 'https://api.github.com/repos/firendvip/WordTaker');
+  assert.equal(repositoryApiUrl('releases/408254714'), 'https://api.github.com/repos/firendvip/WordTaker/releases/408254714');
+  assert.equal(repositoryApiUrl('releases/assets/625938591'), 'https://api.github.com/repos/firendvip/WordTaker/releases/assets/625938591');
+});
 test('only a manual or exact test-branch push invokes the standard read-only macos14 job', () => {
   const text = source();
   assert.match(text, /workflow_dispatch:/);
