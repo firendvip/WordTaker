@@ -6,3 +6,6 @@ torch==2.10.0
 torchaudio==2.10.0
 torchvision==0.25.0
 fsspec==2026.9.0
+requests==2.34.2
+urllib3==2.8.0
+certifi==2026.6.17

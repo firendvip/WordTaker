@@ -144,7 +144,7 @@ async function run() {
   let child;
   let cleanExit = false;
   let firewallAdded = false;
-  const report = { sourceCommit: process.env.GITHUB_SHA, version, platform: os.release(), arch: 'x64', installerSha256: sha256(installer), productionEntry: true, installation: false, runtime: false, cleanExit: false, uninstall: false, productionNetworkBlocked: true, realMicrophoneTested: false, trustedSignatureTested: false };
+  const report = { sourceCommit: process.env.GITHUB_SHA, version, platform: os.release(), arch: 'x64', installerSha256: sha256(installer), productionEntry: true, installation: false, runtime: false, cleanExit: false, uninstall: false, productionNetworkBlocked: true, productionNetworkBlockScope: 'KittyEcho.exe outbound only; child processes are not OS-network-isolated', childProcessNetworkBlocked: false, realMicrophoneTested: false, trustedSignatureTested: false };
   try {
     runNsis(installer, installerArgs(installDir), env);
     assert.ok(fs.existsSync(exe), 'NSIS did not install the expected executable');

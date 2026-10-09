@@ -22,8 +22,9 @@ receipt appear in runner logs; binaries/screenshots are not uploaded.
 
 User data, the legacy WordTaker database profile and temp audio paths are
 redirected to a unique disposable runner directory. A temporary exact-program
-outbound firewall block prevents background model downloads/production requests;
-Windows Firewall is never disabled. No microphones, synthetic global keys,
+outbound firewall block applies ONLY to KittyEcho.exe, not its Python/other child
+processes. It is not whole-process-tree OS network isolation; the receipt explicitly
+reports this scope. Windows Firewall is never disabled. No microphones, synthetic global keys,
 accounts, SMS, paid orders or signing keys are used.
 
 Build success alone does not satisfy this acceptance. Final same-SHA CI results

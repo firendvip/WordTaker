@@ -251,7 +251,7 @@ describe("runtime and packed-resource gates", () => {
     expect(installs).toHaveLength(2);
     for (const [cmd] of installs) expect(cmd).toContain("macOS-arm64-python-constraints.txt");
     const constraints = fs.readFileSync(path.join(path.dirname(require.resolve("../scripts/prepare-embedded-python.js")), "macOS-arm64-python-constraints.txt"), "utf8");
-    expect(constraints.trim().split("\n")).toEqual(["onnxruntime==1.31.0", "scipy==1.17.1", "numpy==1.26.4", "funasr==1.2.7", "torch==2.10.0", "torchaudio==2.10.0", "torchvision==0.25.0", "fsspec==2026.9.0"]);
+    expect(constraints.trim().split("\n")).toEqual(["onnxruntime==1.31.0", "scipy==1.17.1", "numpy==1.26.4", "funasr==1.2.7", "torch==2.10.0", "torchaudio==2.10.0", "torchvision==0.25.0", "fsspec==2026.9.0", "requests==2.34.2", "urllib3==2.8.0", "certifi==2026.6.17"]);
     exec.mockClear();
     builder.targetPlatform = "win32";
     await builder.installDependenciesNative("python", "site", [{ spec: "numpy>=2.3.0" }]);

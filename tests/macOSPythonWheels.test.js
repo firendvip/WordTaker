@@ -34,9 +34,9 @@ afterEach(() => {
 });
 
 describe("official macOS arm64 wheel freeze", () => {
-  it("pins the reviewed Torch ABI family and its only added pure-Python dependency", () => {
+  it("pins the reviewed ABI family and only the three authorized HTTP updates", () => {
     const pins = tools().MACOS_ARM64_WHEELS;
-    expect(pins.map((pin) => [pin.package, pin.version])).toEqual([["onnxruntime", "1.31.0"], ["scipy", "1.17.1"], ["torch", "2.10.0"], ["torchaudio", "2.10.0"], ["torchvision", "0.25.0"], ["fsspec", "2026.9.0"]]);
+    expect(pins.map((pin) => [pin.package, pin.version])).toEqual([["onnxruntime", "1.31.0"], ["scipy", "1.17.1"], ["torch", "2.10.0"], ["torchaudio", "2.10.0"], ["torchvision", "0.25.0"], ["fsspec", "2026.9.0"], ["requests", "2.34.2"], ["urllib3", "2.8.0"], ["certifi", "2026.6.17"]]);
     for (const pin of pins) {
       expect(new URL(pin.url).hostname).toBe("files.pythonhosted.org");
       expect(pin.wheelSHA256).toMatch(/^[a-f0-9]{64}$/);
@@ -44,6 +44,18 @@ describe("official macOS arm64 wheel freeze", () => {
       expect(Object.isFrozen(pin)).toBe(true);
     }
     expect(Object.isFrozen(pins)).toBe(true);
+    expect(pins.slice(-3).every((pin) => pin.url.endsWith('-py3-none-any.whl'))).toBe(true);
+    const constraints = fs.readFileSync(new URL('../scripts/macOS-arm64-python-constraints.txt', import.meta.url), 'utf8');
+    for (const pin of pins.slice(-3)) expect(constraints.split(/\r?\n/)).toContain(`${pin.package}==${pin.version}`);
+    expect(pins.some((pin) => ['idna', 'charset_normalizer', 'modelscope', 'llama_cpp'].includes(pin.package))).toBe(false);
+  });
+
+  it("ships the literal punctuation adapter beside the unpacked Python entrypoint", () => {
+    const manifest = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
+    expect(manifest.build.files).toContain('funasr_punctuation.py');
+    expect(manifest.build.asarUnpack).toContain('funasr_punctuation.py');
+    expect(manifest.version).toBe('1.29.5');
+    expect(manifest.build.mac.minimumSystemVersion).toBe('14.0');
   });
 
   it("hashes exact installed package files in deterministic path order", () => {

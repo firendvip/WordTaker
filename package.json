@@ -141,6 +141,7 @@
       "preload.js",
       "funasr_server.py",
       "funasr_audio.py",
+      "funasr_punctuation.py",
       "pytorch_model_security.py",
       "pytorch-model-manifest.json",
       "sensevoice_onnx_engine.py",
@@ -164,6 +165,7 @@
     "asarUnpack": [
       "funasr_server.py",
       "funasr_audio.py",
+      "funasr_punctuation.py",
       "pytorch_model_security.py",
       "pytorch-model-manifest.json",
       "sensevoice_onnx_engine.py",

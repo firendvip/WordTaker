@@ -55,6 +55,30 @@ const MACOS_ARM64_WHEELS = Object.freeze([
     metadataSHA256: '68f5a262767510638e9b1933b1493f2baadc9616fe1e696f62aedd59c8c0a37c',
     wheelMetadataSHA256: '4c769fa1bee87cdf8db2e30decc838a99c8769023b2a40fe4257106ad6215cfa',
   }),
+  Object.freeze({
+    package: 'requests', version: '2.34.2',
+    url: 'https://files.pythonhosted.org/packages/a0/f4/c67b0b3f1b9245e8d266f0f112c500d50e5b4e83cb6f3b71b6528104182a/requests-2.34.2-py3-none-any.whl',
+    wheelSHA256: '2a0d60c172f83ac6ab31e4554906c0f3b3588d37b5cb939b1c061f4907e278e0',
+    fileCount: 20, contentSHA256: '7b2476ef1df95dbe156db7b1c31b1617c29fd5ff4e844fcbc34e21c1564de3c9',
+    metadataSHA256: '8c384ba3e979480faae2859d3c5e6c1276dd2c3616e322e124d52c8cfc556f27',
+    wheelMetadataSHA256: '69e6228a0d35958183cc1812f07c565ce837b95eb51bd8a33acba9fa4f68d6c9',
+  }),
+  Object.freeze({
+    package: 'urllib3', version: '2.8.0',
+    url: 'https://files.pythonhosted.org/packages/92/9d/c4e665119135114480843e7ab388fa94d8480650450e6f8e26b70d323a4c/urllib3-2.8.0-py3-none-any.whl',
+    wheelSHA256: '0cf3cae568d36aa9576b28dfb35f11328f1cb974ca7647d9475ebb86c75ac6e3',
+    fileCount: 38, contentSHA256: '2131a1f5e6591fbb25aaeff71db213fd4ee24413020c0b9360110e0501b87368',
+    metadataSHA256: '10898c620e8007c030e07fa5622b68358a43010025dfbd78a1cb797699de2bb4',
+    wheelMetadataSHA256: 'ccec20e2307acd7da453dd7437e70c6b08e2bc3ead3bc3445af135da37b56d59',
+  }),
+  Object.freeze({
+    package: 'certifi', version: '2026.6.17',
+    url: 'https://files.pythonhosted.org/packages/ef/2f/c5464532e965badff2f4c4c1a3a83f5697f0d7c407ed0cda44aaa99bb451/certifi-2026.6.17-py3-none-any.whl',
+    wheelSHA256: '2227dcbaafe0d2f59279d1762ddddc37783ed4354594f194ffc31d20f41fc3db',
+    fileCount: 5, contentSHA256: '0b66c5cba389ab1678a8c2af8a03a3ad4ceff12b799ff910189b09ccab09b23a',
+    metadataSHA256: 'ea15c09edd1ad9e97bc66d9ef71bcfb910a7b592e374a0a437cd5ee3b134c0df',
+    wheelMetadataSHA256: '69e6228a0d35958183cc1812f07c565ce837b95eb51bd8a33acba9fa4f68d6c9',
+  }),
 ]);
 
 const sha256 = (bytes) => crypto.createHash('sha256').update(bytes).digest('hex');

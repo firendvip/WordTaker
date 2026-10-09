@@ -18,6 +18,7 @@ import argparse
 import glob
 import threading
 from pathlib import Path
+from funasr_punctuation import generate_punctuation
 from pytorch_model_security import (
     enforce_weights_only_environment, install_restricted_torch_loader,
     verify_model_directory,
@@ -475,7 +476,7 @@ class FunASRServer:
             if self.asr_model:
                 self.asr_model.generate(input=self._audio_input(path), batch_size_s=60, cache={}, disable_pbar=True)
             if self.punc_model:
-                self.punc_model.generate(input="你好")
+                generate_punctuation(self.punc_model, "你好")
             if self.sensevoice_model:
                 # SenseVoice ONNX 首次推理冷启动较久（~7s），预热吸收掉
                 try:
@@ -642,7 +643,7 @@ class FunASRServer:
             try:
                 _punc_t0 = time.time()
                 with suppress_stdout():
-                    punc_result = self.punc_model.generate(input=raw_text)
+                    punc_result = generate_punctuation(self.punc_model, raw_text)
                 logger.info(f"[计时] 标点恢复耗时: {time.time() - _punc_t0:.2f}秒")
                 if isinstance(punc_result, list) and len(punc_result) > 0:
                     if isinstance(punc_result[0], dict) and "text" in punc_result[0]:
@@ -847,7 +848,7 @@ class FunASRServer:
             if default_options["use_punc"] and self.punc_model and raw_text.strip():
                 try:
                     _punc_t0 = time.time()
-                    punc_result = self.punc_model.generate(input=raw_text)
+                    punc_result = generate_punctuation(self.punc_model, raw_text)
                     logger.info(f"[计时] 标点恢复耗时: {time.time() - _punc_t0:.2f}秒")
                     if isinstance(punc_result, list) and len(punc_result) > 0:
                         if (

@@ -52,4 +52,9 @@ describe('isolated Windows installation acceptance', () => {
     expect(ci).toMatch(/name: Publish to GitHub Release\s+if: \$\{\{ false \}\}/);
     expect(ci).toMatch(/name: Upload Windows artifacts \(short retention\)\s+if: \$\{\{ false \}\}/);
   });
+  it('does not describe an executable firewall rule as child-process OS network isolation', () => {
+    const source = fs.readFileSync(new URL('../scripts/windows-install-acceptance.cjs', import.meta.url), 'utf8');
+    expect(source).toContain("productionNetworkBlockScope: 'KittyEcho.exe outbound only; child processes are not OS-network-isolated'");
+    expect(source).toContain('childProcessNetworkBlocked: false');
+  });
 });
