@@ -232,7 +232,7 @@ async function run() {
       for (let i = 0; i < 32000; i++) audio.writeInt16LE(Math.round(1000 * Math.sin(2 * Math.PI * 440 * i / 16000)), 44 + i * 2);
       report.engineInferences = [];
       for (const engine of ['sensevoice', 'paraformer']) {
-        const probe = await pollIpcProbe(connection.evaluate, `engine-${engine}`, 'transcribeAudio', [Array.from(audio), { engine }], { timeout: 120000, interval: 500 });
+        const probe = await pollIpcProbe(connection.evaluate, `engine-${engine}`, 'transcribeAudio', [audio.toString('base64'), { engine }], { timeout: 120000, interval: 500 });
         assert.equal(probe.status, 'fulfilled');
         report.engineInferences.push(probe.value); saveReport();
       }

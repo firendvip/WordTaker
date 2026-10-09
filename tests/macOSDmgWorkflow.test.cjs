@@ -88,4 +88,7 @@ test('A must finish before bounded preparation and separately isolated B, with n
   assert.match(acceptance, /for \(const engine of \['sensevoice', 'paraformer'\]\)/);
   assert.match(acceptance, /assertPreparedReadiness/); assert.doesNotMatch(acceptance, /WORDTAKER_ONNX_ONLY\s*[:=]/);
   assert.match(acceptance, /await waitForWorkerReadiness/); assert.match(acceptance, /worker-startup-\$\{index\}/);
+  assert.match(acceptance, /audio\.toString\('base64'\)/);
+  const backend = fs.readFileSync(new URL('../src/helpers/funasrManager.js', `file://${__filename}`), 'utf8');
+  assert.match(backend, /typeof audioBlob === "string"/); assert.match(backend, /Buffer\.from\(audioBlob, "base64"\)/);
 });

@@ -52,6 +52,15 @@ test('a late ready snapshot cannot bypass the global startup deadline', async ()
   const result = await waitForWorkerReadiness(async () => { clock = 101; return { status: 'fulfilled', value: { ...startup().value, server_ready: true, models_initialized: true } }; }, { timeout: 100, now: () => clock });
   assert.equal(result.ready, false); assert.equal(result.timedOut, true); assert.equal(result.reads, 1);
 });
+test('actual ready IPC shape omits installed and models_downloaded but supplies real readiness flags', async () => {
+  const actual = { success: true, ready: true, server_ready: true, models_initialized: true, initializing: false, engine_status: { available_engines: ['sensevoice', 'paraformer'] } };
+  const result = await waitForWorkerReadiness(async () => ({ status: 'fulfilled', value: actual }));
+  assert.equal(result.ready, true); assert.equal(result.reads, 1);
+});
+test('contradictory explicit missing models cannot pass even if ready flags are present', async () => {
+  const result = await waitForWorkerReadiness(async () => ({ status: 'fulfilled', value: { ...startup().value, models_downloaded: false, server_ready: true, models_initialized: true } }));
+  assert.equal(result.ready, false);
+});
 for (const change of [{ status: 'pending' }, { status: 'rejected' }, { value: { ...startup().value, start_error: 'failed' } }, { value: { ...startup().value, installed: false } }, { value: { ...startup().value, success: false } }]) {
   test(`terminal or unsettled startup cannot retry or claim readiness ${JSON.stringify(change)}`, async () => {
     let calls = 0;

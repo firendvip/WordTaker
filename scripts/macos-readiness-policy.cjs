@@ -40,8 +40,10 @@ async function waitForWorkerReadiness(read, options = {}) {
     lastProbe = await read(reads++, Math.max(1, deadline - now()));
     if (now() > deadline) break;
     const value = lastProbe.value;
-    if (lastProbe.status !== 'fulfilled' || value?.success !== true || value.installed !== true || value.models_downloaded !== true || value.start_error) return { ready: false, timedOut: false, reads, lastProbe, elapsedMs: now() - started };
+    // The real ready branch intentionally omits installation/download fields.
+    if (lastProbe.status !== 'fulfilled' || value?.success !== true || value.installed === false || value.models_downloaded === false || value.start_error) return { ready: false, timedOut: false, reads, lastProbe, elapsedMs: now() - started };
     if (value.server_ready === true && value.models_initialized === true) return { ready: true, timedOut: false, reads, lastProbe, elapsedMs: now() - started };
+    if (value.installed !== true || value.models_downloaded !== true) return { ready: false, timedOut: false, reads, lastProbe, elapsedMs: now() - started };
     await wait(Math.min(interval, Math.max(0, deadline - now())));
   } while (now() < deadline);
   return { ready: false, timedOut: true, reads, lastProbe, elapsedMs: now() - started };
