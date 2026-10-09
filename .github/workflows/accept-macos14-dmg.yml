@@ -8,9 +8,11 @@ on:
       - '.github/workflows/accept-macos14-dmg.yml'
       - 'scripts/macos-dmg-guard.cjs'
       - 'scripts/macos-dmg-transport.cjs'
+      - 'scripts/macos-signed-dmg.cjs'
       - 'scripts/macos-dmg-acceptance.cjs'
       - 'tests/macOSDmgGuard.test.cjs'
       - 'tests/macOSDmgWorkflow.test.cjs'
+      - 'tests/macOSSignedDmg.test.cjs'
   workflow_dispatch:
     inputs:
       draft_release_id:
@@ -25,6 +27,7 @@ permissions:
   contents: read
 jobs:
   accept-existing-dmg:
+    if: github.repository == 'firendvip/WordTaker' && github.ref == 'refs/heads/codex/macos14-acceptance' && github.event.repository.fork == false && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
     runs-on: macos-14
     timeout-minutes: 20
     steps:
@@ -35,12 +38,13 @@ jobs:
         with:
           node-version: '22'
       - name: Test safety boundaries without product execution
-        run: node --test --experimental-test-coverage tests/macOSDmgGuard.test.cjs tests/macOSDmgWorkflow.test.cjs
+        run: node --test --experimental-test-coverage tests/macOSDmgGuard.test.cjs tests/macOSDmgWorkflow.test.cjs tests/macOSSignedDmg.test.cjs
       - name: Preflight and download only the exact private draft DMG
         id: transport
         run: node scripts/macos-dmg-transport.cjs "$DRAFT_RELEASE_ID" "$DMG_ASSET_ID"
         env:
           GH_TOKEN: ${{ github.token }}
+          WORDTAKER_DMG_URL: ${{ secrets.WORDTAKER_MAC_DMG_ONCE_408254714 }}
           DRAFT_RELEASE_ID: ${{ inputs.draft_release_id || '408254714' }}
           DMG_ASSET_ID: ${{ inputs.dmg_asset_id || '625938591' }}
       - name: Accept the actual installed product entry without granting permissions

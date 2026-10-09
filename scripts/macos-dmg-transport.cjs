@@ -1,14 +1,17 @@
-// Same-repository, contents-read-only draft transport. Never log credentials or signed URLs.
-const fs = require('node:fs'), path = require('node:path'), os = require('node:os'), crypto = require('node:crypto');
+// Same-repository, contents-read-only CI plus a locally verified short-lived single-file URL.
+const fs = require('node:fs'), path = require('node:path'), os = require('node:os');
 const assert = require('node:assert/strict');
 const { execFileSync } = require('node:child_process');
-const { PRODUCT, assertHost, assertDraftAsset, assertDownloadedDmg, assertScopedPath } = require('./macos-dmg-guard.cjs');
+const { PRODUCT, assertHost, assertScopedPath } = require('./macos-dmg-guard.cjs');
+const { assertTransportContext, validateSignedUrl, downloadSignedAsset, safeTransportError } = require('./macos-signed-dmg.cjs');
 const repositoryApiUrl = endpoint => `https://api.github.com/repos/firendvip/WordTaker${endpoint ? `/${endpoint}` : ''}`;
 async function run() {
   const runnerTemp = fs.realpathSync(process.env.RUNNER_TEMP);
   const root = assertScopedPath(fs.mkdtempSync(path.join(runnerTemp, 'wordtaker-macos14-')), runnerTemp);
   fs.appendFileSync(process.env.GITHUB_OUTPUT, `root=${root}\n`);
-  const report = { success: false, harnessSha: process.env.GITHUB_SHA, candidateSourceSha: PRODUCT.candidateSha, originalMacBuildSha: PRODUCT.originalMacBuildSha, contentsPermission: 'read', stage: 'host-preflight' };
+  const report = { success: false, harnessSha: process.env.GITHUB_SHA, candidateSourceSha: PRODUCT.candidateSha, originalMacBuildSha: PRODUCT.originalMacBuildSha, contentsPermission: 'read', stage: 'host-preflight', privateDraftApiRead: 'Not attempted: previous read-draft HTTP403; exact metadata verified locally before and after this run', secretName: 'WORDTAKER_MAC_DMG_ONCE_408254714' };
+  let secret = process.env.WORDTAKER_DMG_URL;
+  delete process.env.WORDTAKER_DMG_URL;
   const headers = { Accept: 'application/vnd.github+json', Authorization: `Bearer ${process.env.GH_TOKEN}`, 'X-GitHub-Api-Version': '2026-03-10' };
   const api = async endpoint => {
     const response = await fetch(repositoryApiUrl(endpoint), { headers, signal: AbortSignal.timeout(30000) });
@@ -16,57 +19,37 @@ async function run() {
     return response.json();
   };
   try {
+    assertTransportContext(process.env, process.argv[2], process.argv[3]);
     const repository = await api('');
     const stats = fs.statfsSync(root);
     const host = { platform: process.platform, arch: process.arch, version: execFileSync('/usr/bin/sw_vers', ['-productVersion'], { encoding: 'utf8' }).trim(), totalMemory: os.totalmem(), freeDisk: Number(stats.bavail) * Number(stats.bsize), repositoryPublic: repository.private === false, env: process.env };
     report.host = { version: host.version, kernel: os.release(), arch: host.arch, totalMemory: host.totalMemory, freeMemory: os.freemem(), freeDisk: host.freeDisk, imageOS: process.env.ImageOS, imageVersion: process.env.ImageVersion, runnerEnvironment: process.env.RUNNER_ENVIRONMENT, uname: execFileSync('/usr/bin/uname', ['-a'], { encoding: 'utf8' }).trim() };
     assertHost(host);
-    assert.match(process.argv[2] || '', /^[1-9]\d*$/);
-    assert.match(process.argv[3] || '', /^[1-9]\d*$/);
-    report.stage = 'read-draft';
-    const release = await api(`releases/${process.argv[2]}`);
-    const asset = release.assets.find(asset => String(asset.id) === process.argv[3]);
-    assert.ok(asset, 'Exact DMG asset ID not in the selected draft');
-    assertDraftAsset(release, asset);
-    report.draftId = release.id;
-    report.assetId = asset.id;
-    report.stage = 'download-private-draft-asset';
-    let response = await fetch(repositoryApiUrl(`releases/assets/${asset.id}`), { headers: { ...headers, Accept: 'application/octet-stream' }, redirect: 'manual', signal: AbortSignal.timeout(300000) });
-    if (response.status === 302) {
-      const redirect = new URL(response.headers.get('location'));
-      assert.equal(redirect.protocol, 'https:');
-      assert.equal(redirect.hostname, 'release-assets.githubusercontent.com');
-      // Credentials deliberately do not follow the signed download redirect.
-      response = await fetch(redirect, { signal: AbortSignal.timeout(300000) });
-    }
-    assert.equal(response.status, 200, `Read-only draft asset: HTTP ${response.status}`);
+    report.draftId = 408254714;
+    report.assetId = 625938591;
+    report.stage = 'validate-short-lived-private-url';
+    report.signedUrlLifetime = validateSignedUrl(secret);
+    report.stage = 'download-signed-single-file';
     const file = assertScopedPath(path.join(root, PRODUCT.dmgName), root);
     const descriptor = fs.openSync(file, 'wx');
-    const hash = crypto.createHash('sha256');
-    let size = 0;
+    let downloaded;
     try {
-      for await (const bytes of response.body) {
-        size += bytes.length;
-        assert.ok(size <= PRODUCT.dmgSize, 'Downloaded asset exceeds exact approved size');
-        hash.update(bytes);
+      downloaded = await downloadSignedAsset(secret, bytes => {
         let offset = 0;
         while (offset < bytes.length) offset += fs.writeSync(descriptor, bytes, offset, bytes.length - offset);
-      }
+      });
     } finally { fs.closeSync(descriptor); }
-    const digest = hash.digest('hex');
-    assertDownloadedDmg(size, digest);
-    const again = await api(`releases/${release.id}`);
-    assertDraftAsset(again, again.assets.find(item => item.id === asset.id));
     report.stage = 'download-verified';
-    report.artifact = { name: PRODUCT.dmgName, size, sha256: digest };
+    report.artifact = { name: PRODUCT.dmgName, ...downloaded };
     report.success = true;
   } catch (error) {
-    report.error = String(error.message);
+    report.error = safeTransportError(error);
     process.exitCode = 1;
   } finally {
+    secret = undefined;
     fs.writeFileSync(path.join(root, 'TRANSPORT_RESULT.json'), JSON.stringify(report, null, 2) + '\n');
     process.stdout.write(JSON.stringify(report) + '\n');
   }
 }
 module.exports = { repositoryApiUrl };
-if (require.main === module) run().catch(error => { process.stderr.write(`${error.message}\n`); process.exitCode = 1; });
+if (require.main === module) run().catch(error => { process.stderr.write(`${JSON.stringify(safeTransportError(error))}\n`); process.exitCode = 1; });

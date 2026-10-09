@@ -30,9 +30,21 @@ test('credentials exist only at the read-only transport boundary and evidence ex
   const text = source();
   assert.equal(text.match(/GH_TOKEN:/g)?.length, 1);
   assert.match(text, /GH_TOKEN: \$\{\{ github.token \}\}/);
+  assert.equal(text.match(/secrets\.WORDTAKER_MAC_DMG_ONCE_408254714/g)?.length, 1);
+  assert.match(text, /WORDTAKER_DMG_URL: \$\{\{ secrets\.WORDTAKER_MAC_DMG_ONCE_408254714 \}\}/);
+  assert.match(text, /if:.*github\.repository == 'firendvip\/WordTaker'.*github\.ref == 'refs\/heads\/codex\/macos14-acceptance'/);
+  assert.match(text, /github\.event\.repository\.fork == false/);
+  assert.match(text, /tests\/macOSSignedDmg\.test\.cjs/);
   assert.match(text, /MAC_RUNTIME_ACCEPTANCE\.json/);
   assert.match(text, /settings\.png/);
   assert.doesNotMatch(text, /xattr -d|tccutil|spctl --master-disable|security (?:add|delete|unlock)|\.dmg\s*$|\.exe\s*$|path:.*\*/m);
+});
+test('CI never reclaims a successful private draft metadata read or exposes signed fetch errors', () => {
+  const text = fs.readFileSync(new URL('../scripts/macos-dmg-transport.cjs', `file://${__filename}`), 'utf8');
+  assert.doesNotMatch(text, /await api\(`releases\//);
+  assert.match(text, /safeTransportError\(error\)/);
+  assert.doesNotMatch(text, /String\(error\.message\)|process\.stderr\.write\(`\$\{error\.message\}/);
+  assert.match(text, /delete process\.env\.WORDTAKER_DMG_URL/);
 });
 test('failure cleanup never signals an exited/reused PID or removes a runner home/profile', () => {
   const text = fs.readFileSync(new URL('../scripts/macos-dmg-acceptance.cjs', `file://${__filename}`), 'utf8');
