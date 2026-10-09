@@ -5,7 +5,7 @@ const fs = require('node:fs'), path = require('node:path'), os = require('node:o
 const { spawn, spawnSync, execFileSync } = require('node:child_process');
 const { PRODUCT, assertHost, assertDownloadedDmg, assertFreshHost, assertScopedPath, assertUiHealth, assertWorkerHealth, pollIpcProbe } = require('./macos-dmg-guard.cjs');
 const { assertNetworkLease } = require('./macos-host-isolation.cjs');
-const { assertFirstUseReadiness, assertPreparedReadiness } = require('./macos-readiness-policy.cjs');
+const { assertFirstUseReadiness, assertPreparedReadiness, waitForWorkerReadiness } = require('./macos-readiness-policy.cjs');
 const command = (exe, args, options = {}) => execFileSync(exe, args, { encoding: 'utf8', timeout: 30000, ...options }).trim();
 const hash = file => crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -207,7 +207,15 @@ async function run() {
     report.initialRecorderScreenshotSha256 = await capture(recorderConnection, 'recorder-before-model.png'); saveReport();
     report.stage = 'independent-model-diagnostic';
     report.modelFilesProbe = await pollIpcProbe(connection.evaluate, 'model-files', 'checkModelFiles'); saveReport();
-    report.workerProbe = await pollIpcProbe(connection.evaluate, 'worker', 'checkFunASRStatus', [], { timeout: 120000, interval: 1000 });
+    if (prepared) {
+      report.workerReadiness = await waitForWorkerReadiness(async (index, remaining) => {
+        report.workerProbe = await pollIpcProbe(connection.evaluate, `worker-startup-${index}`, 'checkFunASRStatus', [], { timeout: remaining, interval: 1000 });
+        saveReport(); return report.workerProbe;
+      }, { timeout: 120000, interval: 5000 });
+      assert.equal(report.workerReadiness.ready, true, 'Worker did not become ready within the bounded startup window');
+    } else {
+      report.workerProbe = await pollIpcProbe(connection.evaluate, 'worker', 'checkFunASRStatus', [], { timeout: 120000, interval: 1000 });
+    }
     if (report.workerProbe.status === 'fulfilled' && report.workerProbe.value.server_ready === true && report.workerProbe.value.models_initialized === true) {
       assertWorkerHealth(report.workerProbe.value); report.pythonWorkerReady = true;
     }

@@ -1,6 +1,6 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const { assertFirstUseReadiness, assertPreparedReadiness, assertModelBudget } = require('../scripts/macos-readiness-policy.cjs');
+const { assertFirstUseReadiness, assertPreparedReadiness, assertModelBudget, waitForWorkerReadiness } = require('../scripts/macos-readiness-policy.cjs');
 const first = () => ({
   models: { status: 'fulfilled', value: { success: true, models_downloaded: false, missing_models: ['asr', 'vad', 'punc'] } },
   controls: [{ visible: true, disabled: false, aria: '下载模型' }],
@@ -32,3 +32,30 @@ test('model preparation enforces the exact authorized resource bounds', () => {
   assert.doesNotThrow(() => assertModelBudget(budget));
   for (const bad of [{ freeDisk: 14 * 1024 ** 3 }, { fileCount: 15 }, { totalBytes: 1186817248 }, { maximumWaitMs: 900001 }, { symlinks: 1 }, { extraFiles: 1 }]) assert.throws(() => assertModelBudget({ ...budget, ...bad }));
 });
+const startup = () => ({ status: 'fulfilled', value: { success: true, installed: true, models_downloaded: true, models_initialized: false, server_ready: false, initializing: true, start_error: null } });
+test('a fulfilled starting snapshot is not final failure: bounded sequential reads wait for true readiness', async () => {
+  let clock = 0, active = 0, maximum = 0, calls = 0;
+  const result = await waitForWorkerReadiness(async index => {
+    active++; maximum = Math.max(maximum, active); calls++;
+    await new Promise(resolve => setImmediate(resolve)); active--;
+    return index ? { status: 'fulfilled', value: { ...startup().value, server_ready: true, models_initialized: true } } : startup();
+  }, { timeout: 100, interval: 10, now: () => clock, wait: ms => { clock += ms; } });
+  assert.equal(result.ready, true); assert.equal(result.reads, 2); assert.equal(calls, 2); assert.equal(maximum, 1);
+});
+test('starting snapshots never pass readiness and stop at the global deadline', async () => {
+  let clock = 0;
+  const result = await waitForWorkerReadiness(async () => startup(), { timeout: 15, interval: 5, now: () => clock, wait: ms => { clock += ms; } });
+  assert.equal(result.ready, false); assert.equal(result.timedOut, true); assert.equal(result.reads, 3); assert.equal(result.elapsedMs, 15);
+});
+test('a late ready snapshot cannot bypass the global startup deadline', async () => {
+  let clock = 0;
+  const result = await waitForWorkerReadiness(async () => { clock = 101; return { status: 'fulfilled', value: { ...startup().value, server_ready: true, models_initialized: true } }; }, { timeout: 100, now: () => clock });
+  assert.equal(result.ready, false); assert.equal(result.timedOut, true); assert.equal(result.reads, 1);
+});
+for (const change of [{ status: 'pending' }, { status: 'rejected' }, { value: { ...startup().value, start_error: 'failed' } }, { value: { ...startup().value, installed: false } }, { value: { ...startup().value, success: false } }]) {
+  test(`terminal or unsettled startup cannot retry or claim readiness ${JSON.stringify(change)}`, async () => {
+    let calls = 0;
+    const result = await waitForWorkerReadiness(async () => { calls++; return { ...startup(), ...change }; }, { timeout: 10 });
+    assert.equal(result.ready, false); assert.equal(result.timedOut, false); assert.equal(calls, 1);
+  });
+}

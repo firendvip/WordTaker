@@ -30,4 +30,20 @@ function assertModelBudget(value) {
   assert.equal(value.symlinks, 0);
   assert.equal(value.extraFiles, 0);
 }
-module.exports = { MODEL_BYTES, assertFirstUseReadiness, assertPreparedReadiness, assertModelBudget };
+async function waitForWorkerReadiness(read, options = {}) {
+  const timeout = options.timeout || 120000, interval = options.interval || 5000;
+  const now = options.now || Date.now, wait = options.wait || (ms => new Promise(resolve => setTimeout(resolve, ms)));
+  assert.ok(timeout > 0 && timeout <= 120000 && interval > 0);
+  const started = now(), deadline = started + timeout; let reads = 0, lastProbe;
+  do {
+    // One completed status IPC at a time; pending IPC probes are never duplicated.
+    lastProbe = await read(reads++, Math.max(1, deadline - now()));
+    if (now() > deadline) break;
+    const value = lastProbe.value;
+    if (lastProbe.status !== 'fulfilled' || value?.success !== true || value.installed !== true || value.models_downloaded !== true || value.start_error) return { ready: false, timedOut: false, reads, lastProbe, elapsedMs: now() - started };
+    if (value.server_ready === true && value.models_initialized === true) return { ready: true, timedOut: false, reads, lastProbe, elapsedMs: now() - started };
+    await wait(Math.min(interval, Math.max(0, deadline - now())));
+  } while (now() < deadline);
+  return { ready: false, timedOut: true, reads, lastProbe, elapsedMs: now() - started };
+}
+module.exports = { MODEL_BYTES, assertFirstUseReadiness, assertPreparedReadiness, assertModelBudget, waitForWorkerReadiness };

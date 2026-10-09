@@ -87,4 +87,5 @@ test('A must finish before bounded preparation and separately isolated B, with n
   assert.match(acceptance, /await delay\(65000\)/);
   assert.match(acceptance, /for \(const engine of \['sensevoice', 'paraformer'\]\)/);
   assert.match(acceptance, /assertPreparedReadiness/); assert.doesNotMatch(acceptance, /WORDTAKER_ONNX_ONLY\s*[:=]/);
+  assert.match(acceptance, /await waitForWorkerReadiness/); assert.match(acceptance, /worker-startup-\$\{index\}/);
 });
