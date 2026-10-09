@@ -4,7 +4,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs'), path = require('node:path'), os = require('node:os'), net = require('node:net'), crypto = require('node:crypto');
 const { spawn, spawnSync, execFileSync } = require('node:child_process');
 const { PRODUCT, assertHost, assertDownloadedDmg, assertFreshHost, assertScopedPath, assertUiHealth } = require('./macos-dmg-guard.cjs');
-const NETWORK_PROFILE = '(version 1)(allow default)(deny network-outbound)(allow network-outbound (remote ip "localhost:*"))';
+const { assertNetworkLease } = require('./macos-host-isolation.cjs');
 const command = (exe, args, options = {}) => execFileSync(exe, args, { encoding: 'utf8', timeout: 30000, ...options }).trim();
 const hash = file => crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -59,6 +59,13 @@ async function run() {
   const transport = JSON.parse(fs.readFileSync(path.join(root, 'TRANSPORT_RESULT.json')));
   assert.equal(transport.success, true);
   assertHost({ platform: process.platform, arch: process.arch, version: command('/usr/bin/sw_vers', ['-productVersion']), totalMemory: os.totalmem(), freeDisk: Number(fs.statfsSync(root).bavail) * Number(fs.statfsSync(root).bsize), repositoryPublic: true, env: process.env });
+  const networkLease = () => {
+    const lease = JSON.parse(fs.readFileSync(path.join(root, 'HOST_NETWORK_LEASE_PRIVATE.json')));
+    assertNetworkLease(lease, root, process.env.GITHUB_SHA);
+    process.kill(lease.watchdogPid, 0);
+    return lease;
+  };
+  const lease = networkLease();
   const dmg = assertScopedPath(path.join(root, PRODUCT.dmgName), root);
   assertDownloadedDmg(fs.statSync(dmg).size, hash(dmg));
   const legacy = path.join(os.homedir(), 'Library/Application Support/WordTaker');
@@ -71,7 +78,7 @@ async function run() {
     installation: false, productionEntry: false, realSettingsUi: false, database: false, pythonWorkerReady: false, cleanExit: false, installationDirectoryRemoved: false,
     realMicrophoneTested: false, accessibilityGranted: false, keychainCredentialPersistenceTested: false, actualMacOS14Point0DeviceTested: false,
     permissionsAutomaticallyGranted: false, tccOrKeychainReset: false, gatekeeperDisabled: false, quarantineRemoved: false,
-    networkRestrictions: 'Process-local sandbox: application and descendants, external outbound denied, loopback allowed',
+    networkRestrictions: { scope: 'Disposable hosted VM', method: lease.method, externalDenialVerifiedBeforeEntry: lease.blockedProbesVerified, independentWatchdog: lease.watchdogReady },
     safeExistingSettings: { launch_at_login: false, recording_trigger: { type: 'accelerator', accelerator: 'F8' }, translate_trigger: { type: 'none' }, polish_engine: 'cloud' },
     productPackageModified: false, stage: 'mount-readonly', quarantineBefore: quarantine(dmg) };
   let mounted = false, child, exited, connection, descendants = [], app, cleanExit = false;
@@ -104,10 +111,8 @@ async function run() {
     command('/usr/bin/sqlite3', [database, sql]);
     const env = { ...process.env, NODE_ENV: 'production' };
     for (const key of Object.keys(env)) if (/(?:TOKEN|SECRET|PASSWORD|CREDENTIAL|AUTHORIZATION)/i.test(key) || ['NODE_OPTIONS', 'ELECTRON_RUN_AS_NODE'].includes(key)) delete env[key];
-    // Validate actual inherited network restrictions before starting the product.
-    const probe = `const {spawnSync}=require('node:child_process');const r=spawnSync(process.execPath,['-e',"require('node:net').connect(443,'198.51.100.1').on('error',e=>process.exit(e.code==='EPERM'||e.code==='EACCES'?0:2))"],{timeout:5000});process.exit(r.status===0?0:1)`;
-    command('/usr/bin/sandbox-exec', ['-p', NETWORK_PROFILE, process.execPath, '-e', probe], { env });
-    report.descendantNetworkDenialActuallyProbed = true;
+    // The separate VM controller proves external denial; keep Chromium's own sandbox unchanged.
+    networkLease();
     const server = net.createServer();
     await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
     const port = server.address().port;
@@ -116,7 +121,7 @@ async function run() {
     report.stage = 'actual-bundle-main-entry';
     const output = fs.openSync(path.join(root, 'startup.log'), 'wx');
     try {
-      child = spawn('/usr/bin/sandbox-exec', ['-p', NETWORK_PROFILE, exe, `--user-data-dir=${userData}`, `--remote-debugging-port=${port}`, '--remote-debugging-address=127.0.0.1'], { cwd: root, env, stdio: ['ignore', output, output] });
+      child = spawn(exe, [`--user-data-dir=${userData}`, `--remote-debugging-port=${port}`, '--remote-debugging-address=127.0.0.1'], { cwd: root, env, stdio: ['ignore', output, output] });
     } finally { fs.closeSync(output); }
     let launchError;
     exited = new Promise(resolve => { child.once('error', error => { launchError = error; resolve({ error: error.message }); }); child.once('exit', (code, signal) => resolve({ code, signal })); });
@@ -171,10 +176,10 @@ async function run() {
     if (connection) connection.close();
     // Failure cleanup is scoped to owned PIDs/installation only; never claim a forced exit passed.
     if (child && !cleanExit && child.exitCode === null && child.signalCode === null) {
-      const owned = tree(child.pid).filter(pid => pid !== process.pid);
-      for (const pid of owned.reverse()) try { process.kill(pid, 'SIGTERM'); } catch { /* already exited */ }
+      const owned = () => processes().filter(row => row.command.includes(`${app}/Contents/`) || (row.pid === child.pid && child.exitCode === null && child.signalCode === null)).map(row => row.pid).filter(pid => pid !== process.pid);
+      for (const pid of owned().reverse()) try { process.kill(pid, 'SIGTERM'); } catch { /* already exited */ }
       await delay(1000);
-      for (const pid of owned) try { process.kill(pid, 'SIGKILL'); } catch { /* already exited */ }
+      for (const pid of owned()) try { process.kill(pid, 'SIGKILL'); } catch { /* already exited */ }
       report.forcedFailureCleanup = true;
     }
     if (mounted) { try { command('/usr/bin/hdiutil', ['detach', mount]); report.readonlyMountDetached = true; } catch (error) { report.detachError = error.message; report.success = false; process.exitCode = 1; } }
@@ -183,5 +188,5 @@ async function run() {
     process.stdout.write(JSON.stringify(report) + '\n');
   }
 }
-module.exports = { NETWORK_PROFILE };
+module.exports = { run };
 if (require.main === module) run().catch(error => { process.stderr.write(`${error.message}\n`); process.exitCode = 1; });

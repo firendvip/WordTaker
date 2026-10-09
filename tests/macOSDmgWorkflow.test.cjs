@@ -23,7 +23,7 @@ test('only a manual or exact test-branch push invokes the standard read-only mac
 });
 test('transports frozen assets before real acceptance without building or installing dependencies', () => {
   const text = source();
-  assert.ok(text.indexOf('macos-dmg-transport.cjs') < text.indexOf('macos-dmg-acceptance.cjs'));
+  assert.ok(text.indexOf('macos-dmg-transport.cjs') < text.indexOf('macos-host-network.cjs --accept'));
   assert.doesNotMatch(text, /pnpm install|npm install|pip install|build:mac|prepare:python|brew install|npx .*latest|release (?:create|edit|upload)/);
 });
 test('credentials exist only at the read-only transport boundary and evidence excludes packages', () => {
@@ -52,4 +52,12 @@ test('failure cleanup never signals an exited/reused PID or removes a runner hom
   assert.match(text, /fs\.lstatSync\(install\)\.isDirectory\(\)/);
   assert.doesNotMatch(text, /fs\.rmSync\((?:legacy|root|os\.homedir\(|process\.env\.HOME)/);
   assert.doesNotMatch(text, /xattr.*\['-d'|tccutil|--master-disable|requestPermissions\(/);
+  assert.doesNotMatch(text, /sandbox-exec|--no-sandbox|--disable-gpu-sandbox/);
+  assert.match(text, /assertNetworkLease\(/);
+});
+test('host isolation has an independent watchdog and never overwrites global PF or writes system files', () => {
+  const text = fs.readFileSync(new URL('../scripts/macos-host-network.cjs', `file://${__filename}`), 'utf8');
+  assert.match(text, /detached: true/); assert.match(text, /20 \* 60000/);
+  assert.match(text, /await cleanupOwned\(root\); result\.productProcessesAbsentBeforeRestore = true/);
+  assert.doesNotMatch(text, /\['-d'\]|\['-F', '(?:all|states)'\]|\/etc\/pf\.conf.*write|--no-sandbox/);
 });

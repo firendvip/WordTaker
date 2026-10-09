@@ -12,8 +12,32 @@ function chooseIsolation(snapshot) {
   if (!interfaces.some(item => item.loopback && item.up)) throw new Error('NETWORK_LOOPBACK_NOT_READY');
   const external = interfaces.filter(item => item.up && !item.loopback).map(item => item.name);
   if (!external.length) throw new Error('NETWORK_UPLINK_INVENTORY_UNKNOWN');
-  const attached = snapshot.rootRules.trim() === 'anchor "com.apple/*" all' && !snapshot.states.trim();
+  const attached = snapshot.enabled === true && !snapshot.children?.trim() && snapshot.rootRules.trim() === 'anchor "com.apple/*" all' && !snapshot.states.trim();
   return { method: attached ? 'pf-anchor' : 'uplinks-offline', interfaces: external, pfReason: attached ? 'EXISTING_WILDCARD_AND_EMPTY_STATES' : 'PF_NOT_SAFELY_ATTACHED_OR_EXISTING_STATES' };
+}
+function assertNetworkLease(lease, root, harnessSha, now = Date.now()) {
+  if (lease.root !== root || lease.harnessSha !== harnessSha || lease.active !== true || lease.blockedProbesVerified !== true || lease.watchdogReady !== true || !Number.isSafeInteger(lease.watchdogPid) || lease.watchdogPid <= 0 || !Number.isFinite(lease.deadline) || lease.deadline <= now || lease.deadline - now > 20 * 60000 || !['pf-anchor', 'uplinks-offline'].includes(lease.method)) throw new Error('NETWORK_LEASE_REJECTED');
+}
+async function prepareOwnedAnchor(ops) {
+  if (await ops.exists()) throw new Error('NETWORK_ANCHOR_ALREADY_EXISTS');
+  await ops.validate();
+  await ops.markIntent();
+  await ops.install();
+}
+function retainLease(read, previous, validate) {
+  try { const state = read(); validate(state); return { state, readFailed: false }; }
+  catch { if (!previous) throw new Error('NETWORK_WATCHDOG_LEASE_UNAVAILABLE'); return { state: previous, readFailed: true }; }
+}
+async function restoreWithCleanup(ops) {
+  let stage;
+  for (let attempt = 1; attempt <= 5; attempt++) {
+    try { stage = 'PRODUCT_CLEANUP'; await ops.cleanup(); stage = 'RESTORE'; await ops.restore(); return; }
+    catch {
+      await ops.failure({ attempt, stage });
+      if (attempt === 5) throw new Error(`NETWORK_WATCHDOG_${stage}_FAILED`);
+      await ops.wait();
+    }
+  }
 }
 async function withHostIsolation(ops) {
   await ops.preflight();
@@ -28,4 +52,4 @@ async function withHostIsolation(ops) {
     await ops.verifyRestored();
   }
 }
-module.exports = { parseInterfaces, chooseIsolation, withHostIsolation };
+module.exports = { parseInterfaces, chooseIsolation, withHostIsolation, assertNetworkLease, prepareOwnedAnchor, retainLease, restoreWithCleanup };

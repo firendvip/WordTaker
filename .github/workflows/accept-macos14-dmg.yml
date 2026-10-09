@@ -29,32 +29,10 @@ on:
 permissions:
   contents: read
 jobs:
-  readonly-network-preflight:
-    if: github.repository == 'firendvip/WordTaker' && github.ref == 'refs/heads/codex/macos14-acceptance' && github.event.repository.fork == false
-    runs-on: macos-14
-    timeout-minutes: 3
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-      - run: node --test tests/macOSHostIsolation.test.cjs
-      - name: Read existing PF and VM interface configuration without mutation
-        id: network
-        run: node scripts/macos-host-network.cjs
-      - uses: actions/upload-artifact@v4
-        if: ${{ always() && steps.network.outputs.root != '' }}
-        with:
-          name: macos14-network-readonly-preflight
-          retention-days: 1
-          path: ${{ steps.network.outputs.root }}/HOST_NETWORK_PREFLIGHT.json
   accept-existing-dmg:
-    # This first change performs only the requested read-only network capability probe.
-    if: false && github.repository == 'firendvip/WordTaker' && github.ref == 'refs/heads/codex/macos14-acceptance' && github.event.repository.fork == false && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    if: github.repository == 'firendvip/WordTaker' && github.ref == 'refs/heads/codex/macos14-acceptance' && github.event.repository.fork == false && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
     runs-on: macos-14
-    timeout-minutes: 20
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
         with:
@@ -63,7 +41,7 @@ jobs:
         with:
           node-version: '22'
       - name: Test safety boundaries without product execution
-        run: node --test --experimental-test-coverage tests/macOSDmgGuard.test.cjs tests/macOSDmgWorkflow.test.cjs tests/macOSSignedDmg.test.cjs
+        run: node --test --experimental-test-coverage tests/macOSDmgGuard.test.cjs tests/macOSDmgWorkflow.test.cjs tests/macOSSignedDmg.test.cjs tests/macOSHostIsolation.test.cjs
       - name: Preflight and download only the exact private draft DMG
         id: transport
         run: node scripts/macos-dmg-transport.cjs "$DRAFT_RELEASE_ID" "$DMG_ASSET_ID"
@@ -73,9 +51,10 @@ jobs:
           DRAFT_RELEASE_ID: ${{ inputs.draft_release_id || '408254714' }}
           DMG_ASSET_ID: ${{ inputs.dmg_asset_id || '625938591' }}
       - name: Accept the actual installed product entry without granting permissions
-        run: node scripts/macos-dmg-acceptance.cjs "$QA_ROOT"
+        run: node scripts/macos-host-network.cjs --accept "$QA_ROOT"
         env:
           QA_ROOT: ${{ steps.transport.outputs.root }}
+          WORDTAKER_REPOSITORY_PRIVATE: ${{ github.event.repository.private }}
       - name: Preserve test-only evidence, never upload the DMG or installed payload
         if: ${{ always() && steps.transport.outputs.root != '' }}
         uses: actions/upload-artifact@v4
@@ -88,3 +67,11 @@ jobs:
             ${{ steps.transport.outputs.root }}/MAC_RUNTIME_ACCEPTANCE.json
             ${{ steps.transport.outputs.root }}/settings.png
             ${{ steps.transport.outputs.root }}/startup.log
+            ${{ steps.transport.outputs.root }}/HOST_GUARD_OBSERVATIONS.json
+            ${{ steps.transport.outputs.root }}/HOST_NETWORK_BEFORE.json
+            ${{ steps.transport.outputs.root }}/HOST_NETWORK_AFTER.json
+            ${{ steps.transport.outputs.root }}/HOST_NETWORK_RESULT.json
+            ${{ steps.transport.outputs.root }}/HOST_NETWORK_RESTORED.json
+            ${{ steps.transport.outputs.root }}/HOST_NETWORK_WATCHDOG_READY.json
+            ${{ steps.transport.outputs.root }}/HOST_NETWORK_WATCHDOG_PROGRESS.json
+            ${{ steps.transport.outputs.root }}/network-watchdog.log
