@@ -10,9 +10,12 @@ on:
       - 'scripts/macos-dmg-transport.cjs'
       - 'scripts/macos-signed-dmg.cjs'
       - 'scripts/macos-dmg-acceptance.cjs'
+      - 'scripts/macos-host-isolation.cjs'
+      - 'scripts/macos-host-network.cjs'
       - 'tests/macOSDmgGuard.test.cjs'
       - 'tests/macOSDmgWorkflow.test.cjs'
       - 'tests/macOSSignedDmg.test.cjs'
+      - 'tests/macOSHostIsolation.test.cjs'
   workflow_dispatch:
     inputs:
       draft_release_id:
@@ -26,8 +29,30 @@ on:
 permissions:
   contents: read
 jobs:
+  readonly-network-preflight:
+    if: github.repository == 'firendvip/WordTaker' && github.ref == 'refs/heads/codex/macos14-acceptance' && github.event.repository.fork == false
+    runs-on: macos-14
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: node --test tests/macOSHostIsolation.test.cjs
+      - name: Read existing PF and VM interface configuration without mutation
+        id: network
+        run: node scripts/macos-host-network.cjs
+      - uses: actions/upload-artifact@v4
+        if: ${{ always() && steps.network.outputs.root != '' }}
+        with:
+          name: macos14-network-readonly-preflight
+          retention-days: 1
+          path: ${{ steps.network.outputs.root }}/HOST_NETWORK_PREFLIGHT.json
   accept-existing-dmg:
-    if: github.repository == 'firendvip/WordTaker' && github.ref == 'refs/heads/codex/macos14-acceptance' && github.event.repository.fork == false && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    # This first change performs only the requested read-only network capability probe.
+    if: false && github.repository == 'firendvip/WordTaker' && github.ref == 'refs/heads/codex/macos14-acceptance' && github.event.repository.fork == false && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
     runs-on: macos-14
     timeout-minutes: 20
     steps:
