@@ -3,6 +3,8 @@ const {
   SENSEVOICE_MODEL_MANIFEST,
   verifyModelDirectory,
 } = require('./sensevoice-model');
+const { verifyMacOSRuntime } = require('./macOS-runtime-compatibility');
+const { verifyMacOSPythonWheels } = require('./macOS-python-wheels');
 
 function resolveMacModelDir(context) {
   const productFilename = context.packager?.appInfo?.productFilename;
@@ -35,6 +37,12 @@ async function verifySenseVoicePack(context) {
   if (!result.ok) {
     const details = result.invalid.map(({ name, reason }) => `${name}(${reason})`).join(', ');
     throw new Error(`打包产物缺少或损坏 SenseVoice ${SENSEVOICE_MODEL_MANIFEST.revision} 模型: ${details}`);
+  }
+  if (context.electronPlatformName === 'darwin') {
+    const arch = { 1: 'x64', 3: 'arm64' }[context.arch];
+    const runtime = path.join(modelDir, '..', '..', 'python');
+    verifyMacOSRuntime(runtime, { arch });
+    verifyMacOSPythonWheels(runtime, { arch });
   }
   console.log(`[SenseVoice] 打包产物校验通过: ${modelDir}`);
 }

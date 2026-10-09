@@ -184,7 +184,7 @@
         "NSAppleEventsUsageDescription": "WordTaker 需要读取前台窗口位置，以便将录音胶囊显示在你正在输入的屏幕上。",
         "NSMicrophoneUsageDescription": "弦外小猫需要使用麦克风来录制你的语音并转写为文字。"
       },
-      "minimumSystemVersion": "12.0",
+      "minimumSystemVersion": "14.0",
       "notarize": true
     },
     "win": {

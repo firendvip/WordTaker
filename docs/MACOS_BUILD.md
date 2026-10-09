@@ -5,9 +5,10 @@ macOS 安装包必须内置 SenseVoice Small INT8 ONNX 模型，应用启动和�
 ## 构建环境与安全检查
 
 - Node.js 22.12.0 或更高版本；使用 `package.json` 固定的 pnpm 11.5.3。
-- Electron 43 系列要求 macOS 12 或更高版本；构建配置已同步最低系统版本。
+- Electron 43 自身平台下限为 macOS 12；本产品经用户确认，最低支持 **macOS 14.0**，`mac.minimumSystemVersion` 与运行时字节门禁均为 14.0。Windows 支持范围不变。
 - 使用 `pnpm install --frozen-lockfile`，构建前运行 `pnpm audit:security`。
 - 升级 Electron 后必须重建原生模块，并重新执行 `pnpm patch:uiohook`。macOS 事件钩子必须保持 listen-only。
+- 嵌入式 Python 缓存复用、依赖准备结束、构建前及实际 `afterPack` 均检查目标架构的 Mach-O 最低系统。宿主新系统能 import、wheel 标签都不能替代实际字节检查；`14.0.1`、`14.1` 或更高下限也不满足本项目声明的 `14.0`。
 - `pnpm test:desktop-runtime` 使用隔离的临时目录检查数据库、原生模块、preload、WebAudio 和取消录音 IPC；不会启动全局快捷键或读取真实麦克风，不能替代人工听写验收。
 
 electron-builder 26 使用 `mac.notarize: true`。正式公证使用 Apple ID 凭据时，需要由安全环境提供 `APPLE_ID`、`APPLE_APP_SPECIFIC_PASSWORD` 和 `APPLE_TEAM_ID`；也可使用既有的 App Store Connect API key 或 Keychain profile 流程。不要将凭据写入仓库。此前配置对象中的 Team ID 不再自动传入新版本，正式发布前须核对环境。
@@ -49,7 +50,19 @@ python/bin/python3.11 scripts/smoke-sensevoice.py /path/to/chinese-sample.wav --
 resources/app.asar.unpacked/models/sensevoice/
 ```
 
-该 `afterPack` 断言仅作用于 macOS。Windows 继续使用 `.github/workflows/build-windows.yml` 中既有的下载与安装包断言；Linux 尚未声明内置 SenseVoice，因此不会被本检查阻断。
+四文件固定大小/SHA 断言同时作用于 macOS 与 Windows；macOS 另对包内 Python 的 arm64/x64 对应 thin/fat Mach-O slice 检查最低系统和架构，缺失、损坏、没有系统版本元数据或检查失败均阻断。Windows 的现有 Python/PE/模型门不变；Linux 尚未声明内置 SenseVoice，因此不会被本检查阻断。
+
+兼容运行时必须使用官方、可验 SHA 的目标 wheel，并满足现有依赖与安全要求；不得编辑 wheel 标签或 Mach-O load command、擅自提高已核准的 14.0 下限来豁免检查，也不得无审查地降级 ONNX Runtime。
+
+### Apple Silicon 官方目标 wheel
+
+`scripts/macOS-python-wheels.js` 固定 ONNX Runtime 1.31.0（cp311 / macosx_14_0_arm64）与 SciPy 1.17.1（cp311 / macosx_12_0_arm64，实际最高 minos 12.3，满足 14.0）。前者从旧缓存 1.27.0 升级，后者版本不变，仅选择已验真的官方兼容 wheel。
+
+安装使用官方完整 URL、SHA-256、显式 macOS 14 arm64 / Python 3.11 目标，仅二进制、无依赖解析、无编译、无 pyc，失败不回退无锁来源。安装在既有依赖及 Metal wheel 之后执行；缓存、构建前、Python 测试及包内 `afterPack` 比对两包所有文件的确定性 SHA、文件数和原始 METADATA/WHEEL，拒绝旧残留、不同 wheel、字节变更与符号链接。Mach-O 全运行时检查仍独立执行。
+
+这只冻结两项已审依赖，不是整个 Python 栈的锁定。Torch 2.0.1 / torchaudio 2.0.2 / torchvision 0.15.2 与 Paraformer 保持原状；PyTorch 安全修复仍待专项评估和批准，不得将通过本轮兼容验证描述为安全发布资格。macOS x64 沿用其现有依赖，不套用 arm64 wheel；Windows 与 Linux 依赖流程未变。
+
+`docs/qa/RELEASE_CANDIDATE_20261009.md` 与此前 `dist/qa/mac-arm64-unsigned-internal-59390b12/`、`dist/qa/mac12-compat-r1/` 是旧 macOS 12 产品约束下的历史快照，保留原始结果；不能将其旧提交、包或 Windows CI 冒充本次新候选的验收。
 
 ## 运行时降级契约
 

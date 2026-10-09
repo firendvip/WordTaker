@@ -1,10 +1,14 @@
 const fs = require('fs');
 const path = require('path');
 const { spawn } = require('child_process');
+const { verifyMacOSRuntime } = require('./macOS-runtime-compatibility');
+const { verifyMacOSPythonWheels } = require('./macOS-python-wheels');
 
 class EmbeddedPythonTester {
   constructor() {
     this.pythonDir = path.join(__dirname, '..', 'python');
+    this.targetPlatform = process.platform;
+    this.targetArch = process.arch;
     // 跨平台：Windows 为 python/python.exe，其余为 python/bin/python3.11
     this.isWindows = process.platform === 'win32';
     this.pythonPath = this.isWindows
@@ -66,6 +70,10 @@ class EmbeddedPythonTester {
       throw new Error('Python文件没有执行权限');
     }
     
+    if (this.targetPlatform === 'darwin') {
+      verifyMacOSRuntime(this.pythonDir, { arch: this.targetArch });
+      verifyMacOSPythonWheels(this.pythonDir, { arch: this.targetArch });
+    }
     console.log('   ✅ Python可执行文件存在且有执行权限');
   }
 

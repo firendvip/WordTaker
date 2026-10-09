@@ -6,6 +6,8 @@ const { createWriteStream } = require('fs');
 const { pipeline } = require('stream');
 const { promisify } = require('util');
 const tar = require('tar');
+const { verifyMacOSRuntime } = require('./macOS-runtime-compatibility');
+const { installMacOSPythonWheels, verifyMacOSPythonWheels } = require('./macOS-python-wheels');
 
 const pipelineAsync = promisify(pipeline);
 
@@ -390,6 +392,9 @@ class EmbeddedPythonBuilder {
     // 走 abetlen 的 metal wheel 索引，只取二进制轮子、绝不本机编译。
     if (this.targetPlatform === 'darwin' && this.isArm64) {
       await this.installLlamaCppMetal(pythonPath);
+      // 最后替换两项已审官方目标 wheel；后续不再让宿主解析器覆盖它们。
+      // 不升级尚未核准的 Torch/Paraformer 依赖栈。
+      installMacOSPythonWheels({ pythonPath, sitePackagesPath, env: this.pythonEnv() });
     }
 
     // 验证关键依赖
@@ -425,6 +430,9 @@ class EmbeddedPythonBuilder {
   // 用嵌入式解释器自带 pip 原生安装依赖（目标解释器可在本机执行的场景：
   // macOS/Linux 本机准备、Windows-x64 在 x64 跑机上准备）。
   async installDependenciesNative(pythonPath, sitePackagesPath, dependencies) {
+    const constraints = this.targetPlatform === 'darwin' && this.targetArch === 'arm64'
+      ? ` --constraint "${path.join(__dirname, 'macOS-arm64-python-constraints.txt')}"`
+      : '';
     // 确保pip是最新的
     console.log('⬆️ 升级pip...');
     try {
@@ -445,13 +453,13 @@ class EmbeddedPythonBuilder {
         // 构建完整的环境变量（跨平台）
         const installEnv = this.pythonEnv();
 
-        execSync(`"${pythonPath}" -m pip install --target "${sitePackagesPath}" --no-deps --force-reinstall "${spec}"${extra}`, {
+        execSync(`"${pythonPath}" -m pip install --target "${sitePackagesPath}" --no-deps --force-reinstall "${spec}"${extra}${constraints}`, {
           stdio: 'inherit',
           env: installEnv
         });
 
         // 安装依赖的依赖
-        execSync(`"${pythonPath}" -m pip install --target "${sitePackagesPath}" --only-binary=all "${spec}"${extra}`, {
+        execSync(`"${pythonPath}" -m pip install --target "${sitePackagesPath}" --only-binary=all "${spec}"${extra}${constraints}`, {
           stdio: 'inherit',
           env: installEnv
         });
@@ -464,7 +472,7 @@ class EmbeddedPythonBuilder {
           console.log(`🔄 重试安装 ${spec} (包含依赖)...`);
           const installEnv = this.pythonEnv();
 
-          execSync(`"${pythonPath}" -m pip install --target "${sitePackagesPath}" --force-reinstall "${spec}"${extra}`, {
+          execSync(`"${pythonPath}" -m pip install --target "${sitePackagesPath}" --force-reinstall "${spec}"${extra}${constraints}`, {
             stdio: 'inherit',
             env: installEnv
           });
@@ -545,6 +553,11 @@ class EmbeddedPythonBuilder {
   async verifyDependencies(pythonPath) {
     console.log('🔍 验证依赖安装...');
 
+    if (this.targetPlatform === 'darwin') {
+      verifyMacOSRuntime(this.pythonDir, { arch: this.targetArch });
+      verifyMacOSPythonWheels(this.pythonDir, { arch: this.targetArch });
+    }
+
     const criticalDeps = this.criticalDeps();
 
     // 交叉准备（Windows-ARM64）：用文件系统检查代替执行 aarch64 解释器 import。
@@ -588,6 +601,12 @@ class EmbeddedPythonBuilder {
       if (!fs.existsSync(pythonPath)) {
         console.log('❌ Python可执行文件不存在');
         return false;
+      }
+
+      // 宿主新系统 import 成功不代表运行时符合应用声明的最低 macOS。
+      if (this.targetPlatform === 'darwin') {
+        verifyMacOSRuntime(this.pythonDir, { arch: this.targetArch });
+        verifyMacOSPythonWheels(this.pythonDir, { arch: this.targetArch });
       }
 
       // 交叉准备（Windows-ARM64）：用文件系统检查代替执行 aarch64 解释器 import。

@@ -187,9 +187,13 @@ describe("SenseVoice model preparation", () => {
     it(`accepts ${platform} packaging only after the shared verifier approves its real resource path`, async () => {
       const modelTools = require("../scripts/sensevoice-model.js");
       const verify = vi.spyOn(modelTools, "verifyModelDirectory").mockResolvedValue({ ok: true, invalid: [] });
+      const runtimeTools = require("../scripts/macOS-runtime-compatibility.js");
+      const verifyRuntime = vi.spyOn(runtimeTools, "verifyMacOSRuntime").mockReturnValue({ binariesChecked: 1 });
+      const verifyWheels = vi.spyOn(require("../scripts/macOS-python-wheels.js"), "verifyMacOSPythonWheels").mockReturnValue({ packages: [] });
       const verifySenseVoicePack = require("../scripts/verify-sensevoice-pack.js");
       const context = {
         electronPlatformName: platform,
+        arch: 3,
         appOutDir: makeTempDir(),
         packager: { appInfo: { productFilename: "弦外小猫" } },
       };
@@ -198,6 +202,13 @@ describe("SenseVoice model preparation", () => {
         ? verifySenseVoicePack.resolveMacModelDir(context)
         : verifySenseVoicePack.resolveWindowsModelDir(context);
       expect(verify).toHaveBeenCalledExactlyOnceWith(expected);
+      if (platform === "darwin") {
+        expect(verifyRuntime).toHaveBeenCalledExactlyOnceWith(path.join(expected, "..", "..", "python"), { arch: "arm64" });
+        expect(verifyWheels).toHaveBeenCalledExactlyOnceWith(path.join(expected, "..", "..", "python"), { arch: "arm64" });
+      } else {
+        expect(verifyRuntime).not.toHaveBeenCalled();
+        expect(verifyWheels).not.toHaveBeenCalled();
+      }
     });
   }
 
