@@ -33,7 +33,7 @@
 
 - 极首次依赖导入曾耗时 73.2 秒；完整模型冷进程实测 16.76 秒、后续 12.93 秒，worker 两次约 11.33/11.41 秒。SenseVoice 稳态约 0.09–0.12 秒，Paraformer 约 0.81–1.26 秒（4.67 秒合成语音）。全模型峰值 RSS 约 **4.03 GB**。这些不是旧 Torch 全栈同条件基准，不据此宣称无性能回退；首次使用等待/低内存设备仍需真机验收。
 - 1 样本音频返回结构化错误，空 WAV 明确拒绝；1 秒纯静音仍可能被模型误识别为少量文字，未擅改识别策略。未执行真实 GGUF 模型推理，仅验证未变入口和原生导入。
-- 当前 [GitHub 公告 GHSA-rrmf-rvhw-rf47](https://github.com/advisories/GHSA-rrmf-rvhw-rf47) 对应 **CVE-2025-3000**（不是早先交接中误写的 CVE-2025-36090），低危，影响 ≤2.12.1，2.13.0 修复，仍覆盖 Torch 2.10.0；[PyTorch 原始问题](https://github.com/pytorch/pytorch/issues/149623) 对应 torch.jit.script 内存错误。固定 FunASR import 的四个可信函数编译可达，不等于公告所有条件可达或漏洞已修复。保留 JIT 的残余，不混装缺配套 Audio 的更高 Torch。
+- 当前 [GitHub 公告 GHSA-rrmf-rvhw-rf47](https://github.com/advisories/GHSA-rrmf-rvhw-rf47) 对应 **CVE-2025-3000**，低危，影响 ≤2.12.1，2.13.0 修复，仍覆盖 Torch 2.10.0；[PyTorch 原始问题](https://github.com/pytorch/pytorch/issues/149623) 对应 torch.jit.script 内存错误。固定 FunASR import 的四个可信函数编译可达，不等于公告所有条件可达或漏洞已修复。保留 JIT 的残余，不混装缺配套 Audio 的更高 Torch。
 - 历史 Python 存在代码/重复元数据不一致，QA 仅依据 RECORD 比对可恢复迁走明确陈旧元数据；requests 2.28.1/certifi 2022.12.07 等未自动升级。本次不是全 Python 栈锁定或漏洞清零，pip check 不能替代安全扫描。
 - 内部目录包实际验收：393 个 Mach-O（391 活跃 arm64、2 非运行 x64 prebuild），所有活跃 slice 满足 14.0；373 个 Python native 与六包字节再次通过，53 份运行时源码/26 份 renderer 与候选一致。实际加载 SQLite/uiohook 的 arm64/ABI148/SHA 和 listen-only 指令独立核对；preload/WebAudio/取消 IPC 通过。包内 Python 两引擎、VAD/长短/空/静音/降级和中止重启场景也通过，均为隔离 userData，无麦克风/主应用启动。包内模型冷进程约 12.65 秒、峰值 4.08 GB，worker 首/次启动 21.62/13.74 秒。
 - 本次最终 SHA 的 Windows 双架构 CI 回执仍待收集；不得用旧 SHA 结果替代。任何内部未签名包均不得上传公开安装器/Release。
