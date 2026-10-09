@@ -18,6 +18,12 @@ import argparse
 import glob
 import threading
 from pathlib import Path
+from pytorch_model_security import (
+    enforce_weights_only_environment, install_restricted_torch_loader,
+    verify_model_directory,
+)
+
+enforce_weights_only_environment(os.environ)
 
 # 设置日志
 import tempfile
@@ -115,6 +121,7 @@ class FunASRServer:
 
             # 设置线程数优化
             os.environ["OMP_NUM_THREADS"] = "4"
+            enforce_weights_only_environment(os.environ)
             logger.info("运行时环境变量设置完成")
         except Exception as e:
             logger.warning(f"环境设置失败: {str(e)}")
@@ -128,21 +135,27 @@ class FunASRServer:
         """加载已校验的本地缓存，不把仓库 ID 交给模型库触发隐式联网。"""
         if not self.damo_root:
             raise FileNotFoundError("未指定本地模型目录")
-        model_dir = os.path.abspath(os.path.join(self.damo_root, repository))
-        for filename in ("config.yaml", "model.pt"):
-            if not os.path.isfile(os.path.join(model_dir, filename)):
-                raise FileNotFoundError(f"本地模型不完整: {repository}/{filename}")
-        return model_dir
+        model_dir = verify_model_directory(self.damo_root, repository)
+        import torch
+        install_restricted_torch_loader(torch, self.damo_root)
+        return str(model_dir)
+
+    @staticmethod
+    def _audio_input(audio_path):
+        # Import only on a PyTorch audio path; Windows stays pure ONNX.
+        from funasr_audio import load_funasr_audio
+        return load_funasr_audio(audio_path)
 
     def _load_asr_model(self):
         """加载ASR模型"""
         try:
             logger.info("开始加载ASR模型...")
             with suppress_stdout():
+                model_path = self._local_model_path("speech_paraformer-large_asr_nat-zh-cn-16k-common-vocab8404-pytorch")
                 from funasr import AutoModel
 
                 self.asr_model = AutoModel(
-                    model=self._local_model_path("speech_paraformer-large_asr_nat-zh-cn-16k-common-vocab8404-pytorch"),
+                    model=model_path,
                     model_revision="v2.0.4",
                     check_latest=False,
                     trust_remote_code=False,
@@ -266,10 +279,11 @@ class FunASRServer:
         try:
             logger.info("开始加载VAD模型...")
             with suppress_stdout():
+                model_path = self._local_model_path("speech_fsmn_vad_zh-cn-16k-common-pytorch")
                 from funasr import AutoModel
 
                 self.vad_model = AutoModel(
-                    model=self._local_model_path("speech_fsmn_vad_zh-cn-16k-common-pytorch"),
+                    model=model_path,
                     model_revision="v2.0.4",
                     check_latest=False,
                     trust_remote_code=False,
@@ -293,6 +307,7 @@ class FunASRServer:
             # 记录导入时间
             import_start = time.time()
             with suppress_stdout():
+                model_path = self._local_model_path("punc_ct-transformer_zh-cn-common-vocab272727-pytorch")
                 from funasr import AutoModel
             import_time = time.time() - import_start
             logger.info(f"FunASR导入耗时: {import_time:.2f}秒")
@@ -301,7 +316,7 @@ class FunASRServer:
             model_start = time.time()
             with suppress_stdout():
                 self.punc_model = AutoModel(
-                    model=self._local_model_path("punc_ct-transformer_zh-cn-common-vocab272727-pytorch"),
+                    model=model_path,
                     model_revision="v2.0.4",
                     check_latest=False,
                     trust_remote_code=False,
@@ -458,7 +473,7 @@ class FunASRServer:
                 w.setframerate(16000)
                 w.writeframes(struct.pack("<" + "h" * 1600, *([0] * 1600)))  # 0.1s 静音
             if self.asr_model:
-                self.asr_model.generate(input=path, batch_size_s=60, cache={}, disable_pbar=True)
+                self.asr_model.generate(input=self._audio_input(path), batch_size_s=60, cache={}, disable_pbar=True)
             if self.punc_model:
                 self.punc_model.generate(input="你好")
             if self.sensevoice_model:
@@ -481,7 +496,7 @@ class FunASRServer:
             return None
         try:
             with suppress_stdout():
-                vad_res = self.vad_model.generate(input=audio_path, disable_pbar=True)
+                vad_res = self.vad_model.generate(input=self._audio_input(audio_path), disable_pbar=True)
         except Exception as e:
             logger.warning(f"VAD 分段失败，回退整段: {str(e)}")
             return None
@@ -666,7 +681,7 @@ class FunASRServer:
         # Paraformer
         with suppress_stdout():
             asr_result = self.asr_model.generate(
-                input=seg_path,
+                input=self._audio_input(seg_path),
                 batch_size_s=default_options["batch_size_s"],
                 hotword=default_options["hotword"],
                 cache={},
@@ -797,17 +812,18 @@ class FunASRServer:
                 }
 
             # —— 否则走 Paraformer + 标点 ——
+            audio_input = self._audio_input(audio_path)
             # 可选的独立 VAD（默认关闭；其输出当前不参与 ASR，仅为兼容保留）
             if default_options["use_vad"] and self.vad_model:
                 self.vad_model.generate(
-                    input=audio_path, batch_size_s=default_options["batch_size_s"]
+                    input=audio_input, batch_size_s=default_options["batch_size_s"]
                 )
                 logger.info("VAD处理完成")
 
             # 执行ASR识别（关闭进度条，减少开销）
             _asr_t0 = time.time()
             asr_result = self.asr_model.generate(
-                input=audio_path,
+                input=audio_input,
                 batch_size_s=default_options["batch_size_s"],
                 hotword=default_options["hotword"],
                 cache={},

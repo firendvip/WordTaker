@@ -3,6 +3,7 @@ const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
 const os = require("os");
+const { StringDecoder } = require("string_decoder");
 const PythonInstaller = require("./pythonInstaller");
 const { runCommand, TIMEOUTS } = require("../utils/process");
 
@@ -166,6 +167,8 @@ class FunASRManager {
     
     // 缓存环境变量，避免重复构建和日志输出
     if (this._cachedPythonEnv && this._lastEmbeddedCheck === isUsingEmbedded) {
+      this._cachedPythonEnv.TORCH_FORCE_WEIGHTS_ONLY_LOAD = '1';
+      delete this._cachedPythonEnv.TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD;
       return this._cachedPythonEnv;
     }
     
@@ -175,6 +178,7 @@ class FunASRManager {
       PYTHONDONTWRITEBYTECODE: '1',
       PYTHONIOENCODING: 'utf-8',
       PYTHONUNBUFFERED: '1',
+      TORCH_FORCE_WEIGHTS_ONLY_LOAD: '1',
       
       // 设置用户数据目录用于日志
       ELECTRON_USER_DATA: require('electron').app.getPath('userData')
@@ -222,6 +226,7 @@ class FunASRManager {
     delete env.PYTHONUSERBASE;
     delete env.PYTHONSTARTUP;
     delete env.VIRTUAL_ENV;
+    delete env.TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD;
 
     // Windows（x64 与 ARM64）：嵌入式 Python 统一为纯 ONNX 环境（无 torch/funasr）。
     //   - ARM64：torch 无 win-arm64 轮子，import torch 会崩溃 0xc0000017；
@@ -292,7 +297,9 @@ class FunASRManager {
       process.env.MODELSCOPE_CACHE || path.join(os.homedir(), '.cache', 'modelscope');
 
     // 可能的候选路径 - 添加 hub/models/damo 路径
+    const privateCachePath = path.join(require('electron').app.getPath('userData'), 'models', 'damo');
     const candidates = [
+      privateCachePath,
       path.join(baseCachePath, 'damo'),
       path.join(baseCachePath, 'hub', 'damo'),
       path.join(baseCachePath, 'hub', 'models', 'damo'),  // 新增：支持 hub/models/damo 结构
@@ -315,7 +322,8 @@ class FunASRManager {
       return found;
     }
 
-    throw new Error(`未找到有效的 damo 模型目录，请检查 MODELSCOPE_CACHE 或模型安装路径`);
+    // 新安装在 userData 建立私有缓存；检查路径本身不创建或改动任何目录。
+    return privateCachePath;
   }
 
 
@@ -587,6 +595,20 @@ class FunASRManager {
     }
   }
 
+  async verifyCachedModels(cachePath) {
+    try {
+      const pythonCmd = await this.findPythonExecutable();
+      const verifier = path.join(path.dirname(this.getFunASRServerPath()), 'pytorch_model_security.py');
+      const { output } = await runCommand(pythonCmd, [verifier, '--verify-root', cachePath], {
+        timeout: 60000,
+        env: this.buildPythonEnvironment(),
+      });
+      return JSON.parse(output).success === true;
+    } catch {
+      return false;
+    }
+  }
+
   async downloadModels(progressCallback = null) {
     /**
      * 下载模型文件（使用独立的Python脚本并行下载）
@@ -596,10 +618,17 @@ class FunASRManager {
       
       // 先检查模型状态
       const checkResult = await this.checkModelFiles();
-      if (checkResult.models_downloaded) {
+      if (this.isOnnxOnlyMode()) {
+        if (checkResult.models_downloaded) return { success: true, message: "内置 SenseVoice 模型已就绪" };
+        return { success: false, error: "内置 SenseVoice 模型缺失，请重新安装应用" };
+      }
+      let cachePath = this.getModelCachePath();
+      if (checkResult.models_downloaded && await this.verifyCachedModels(cachePath)) {
         this.logger.info && this.logger.info('模型已存在，无需下载');
         return { success: true, message: "模型已存在，无需下载" };
       }
+      // 旧 ModelScope 缓存可能由其他应用共用：不就地修复或覆盖它。
+      cachePath = path.join(require('electron').app.getPath('userData'), 'models', 'damo');
       
       const pythonCmd = await this.findPythonExecutable();
       const scriptPath = this.getDownloadScriptPath();
@@ -618,16 +647,20 @@ class FunASRManager {
         // 确保使用正确的Python环境
         const pythonEnv = this.buildPythonEnvironment();
         
-        const downloadProcess = spawn(pythonCmd, [scriptPath], {
+        const downloadProcess = spawn(pythonCmd, [scriptPath, '--damo-root', cachePath], {
           stdio: ["pipe", "pipe", "pipe"],
           windowsHide: true,
           env: pythonEnv
         });
         
         let hasError = false;
+        let outputBuffer = '';
+        const decoder = new StringDecoder('utf8');
         
         downloadProcess.stdout.on("data", (data) => {
-          const lines = data.toString().split('\n').filter(line => line.trim());
+          outputBuffer += decoder.write(data);
+          const lines = outputBuffer.split('\n');
+          outputBuffer = lines.pop();
           
           for (const line of lines) {
             try {
@@ -845,7 +878,7 @@ class FunASRManager {
         this.logger.info && this.logger.info('启动FunASR Python进程', {
           command: pythonCmd,
           args: spawnArgs,
-          env: pythonEnv
+          weightsOnly: pythonEnv.TORCH_FORCE_WEIGHTS_ONLY_LOAD === '1'
         });
 
         // 标记本次启动是否已 settle，确保只 resolve 一次且不会无限挂起

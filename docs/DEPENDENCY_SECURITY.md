@@ -1,5 +1,9 @@
 # 依赖安全维护
 
+## 2026-10-09 Torch 安全候选（内部验证，未发布）
+
+macOS arm64 候选采用已核定官方 Torch 2.10.0 build2 / TorchAudio 2.10.0 / torchvision 0.25.0；模型原始下载、完整固定清单、weights-only 和禁止未知 TorchScript 为强制边界。Windows 继续纯 ONNX。实际回归、模型/音频/IPC、来源与性能证据及 JIT/历史 Python 残余见 [本轮验收说明](qa/TORCH_SECURITY_CANDIDATE_20261009.md)。以下均为此前历史快照，不代表本轮完整安全清零或公开发布验收。
+
 ## 2026-10-09 隔离候选集成复验（未正式发布）
 
 候选保留 remote main 的 Vite 8.3.0 / Rolldown、builder 26.15.7、SQLite 13.0.3，与已验证 Electron 43.7.8 合并。主树 package/lock 未改；下方2026-10-08记录是当日历史验证，不是此候选的打包验收。

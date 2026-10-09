@@ -1,0 +1,87 @@
+{
+  "schemaVersion": 1,
+  "provenance": {
+    "source": "Official ModelScope HTTPS API and commit-bound Git/LFS objects",
+    "sourceManifestSHA256": "b69e6ac189675490a3e67fbe9da5a788dfba7305b90cfe263cc35da386fe8598",
+    "publisherSignatureVerified": false
+  },
+  "models": {
+    "speech_paraformer-large_asr_nat-zh-cn-16k-common-vocab8404-pytorch": {
+      "repository": "damo/speech_paraformer-large_asr_nat-zh-cn-16k-common-vocab8404-pytorch",
+      "revision": "v2.0.4",
+      "commit": "ff922d0e9af830cee4d1ec9b57b193196941efd8",
+      "files": {
+        "am.mvn": {
+          "size": 11203,
+          "sha256": "29b3c740a2c0cfc6b308126d31d7f265fa2be74f3bb095cd2f143ea970896ae5"
+        },
+        "config.yaml": {
+          "size": 2509,
+          "sha256": "bfd424b9f61846aac63591e96fe24d66b35f4643bddcb4b9bb759db8f987ab79"
+        },
+        "configuration.json": {
+          "size": 472,
+          "sha256": "b7d2917954fc547e43ad61486a5248596738cf5909907eade11e71c56f446f34"
+        },
+        "model.pt": {
+          "size": 880502012,
+          "sha256": "5bba782a5e9196166233b9ab12ba04cadff9ef9212b4ff6153ed9290ff679025"
+        },
+        "seg_dict": {
+          "size": 8287834,
+          "sha256": "59a2ef803a3f1648ad03a2e1480db1c1ee0c0d7dc4ef4dbd16cea33944329022"
+        },
+        "tokens.json": {
+          "size": 93676,
+          "sha256": "2b20c2b12572d682afff84ce1c8d560f67b8b32a4c1f21567411d141ed352127"
+        }
+      }
+    },
+    "speech_fsmn_vad_zh-cn-16k-common-pytorch": {
+      "repository": "damo/speech_fsmn_vad_zh-cn-16k-common-pytorch",
+      "revision": "v2.0.4",
+      "commit": "662fc7a38813d81305085696d59eb5b1141a204a",
+      "files": {
+        "am.mvn": {
+          "size": 8040,
+          "sha256": "6820fef9687708c4fc3fab2530179c8fcea6262daa25514380056cd8f6eb1754"
+        },
+        "config.yaml": {
+          "size": 1215,
+          "sha256": "486861ca26ddb79081663b6179cb204c6bfae71c52f04aafc48a9e9d8dde1e93"
+        },
+        "configuration.json": {
+          "size": 365,
+          "sha256": "7bce8867e37d55c3dd8f672695ced18077a2be199ea529a5d432d5350fc0acba"
+        },
+        "model.pt": {
+          "size": 1721366,
+          "sha256": "b3be75be477f0780277f3bae0fe489f48718f585f3a6e45d7dd1fbb1a4255fc5"
+        }
+      }
+    },
+    "punc_ct-transformer_zh-cn-common-vocab272727-pytorch": {
+      "repository": "damo/punc_ct-transformer_zh-cn-common-vocab272727-pytorch",
+      "revision": "v2.0.4",
+      "commit": "524de490e17649ffa0900a02ab5b1a66656c7c96",
+      "files": {
+        "config.yaml": {
+          "size": 810,
+          "sha256": "a56ec10925b06fa976ad51af373396be2b13e1eb8dc62a5426b5adebaba7071d"
+        },
+        "configuration.json": {
+          "size": 373,
+          "sha256": "ebca5ff883e03585b2eec84ce80573f851658bdc61f2887db7d076afe6facd91"
+        },
+        "model.pt": {
+          "size": 291979892,
+          "sha256": "a5818bb9d933805a916eebe41eb41648f7f9caad30b4bd59d56f3ca135421916"
+        },
+        "tokens.json": {
+          "size": 4207480,
+          "sha256": "c960ab87bccea4aa15cf49a59f71973c2c330b46668048cd8da253749ec71ee3"
+        }
+      }
+    }
+  }
+}

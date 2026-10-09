@@ -1,2 +1,8 @@
 onnxruntime==1.31.0
 scipy==1.17.1
+numpy==1.26.4
+funasr==1.2.7
+torch==2.10.0
+torchaudio==2.10.0
+torchvision==0.25.0
+fsspec==2026.9.0

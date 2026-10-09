@@ -368,11 +368,20 @@ class EmbeddedPythonBuilder {
     // 故此处只是 macOS/Linux 的全量依赖（torch + funasr + librosa + ONNX runtime）。
     // torch 系用 CPU-only 轮子（--index-url .../whl/cpu），体积更小，ONNX 推理路径不需要 CUDA。
     const CPU_TORCH_INDEX = '--index-url https://download.pytorch.org/whl/cpu';
-    const dependencies = [
-      { spec: 'numpy<2' },  // 先安装numpy，作为其他库的基础依赖
+    const reviewedMacArm64 = this.targetPlatform === 'darwin' && this.targetArch === 'arm64';
+    const torchDependencies = reviewedMacArm64 ? [
+      { spec: 'torch==2.10.0' },
+      { spec: 'torchaudio==2.10.0' },
+      { spec: 'torchvision==0.25.0' },
+      { spec: 'fsspec==2026.9.0' },
+    ] : [
       { spec: 'torch==2.0.1', extraArgs: CPU_TORCH_INDEX },
       { spec: 'torchaudio==2.0.2', extraArgs: CPU_TORCH_INDEX },
       { spec: 'torchvision==0.15.2', extraArgs: CPU_TORCH_INDEX },
+    ];
+    const dependencies = [
+      { spec: 'numpy<2' },  // 先安装numpy，作为其他库的基础依赖
+      ...torchDependencies,
       { spec: 'librosa>=0.11.0' },
       // funasr 必须硬 pin：1.3.x 改了模型解析/注册表行为，'damo/...' 模型名无法解析
       // （报 "model 'damo/...' is not registered"），且其依赖会拉入
@@ -392,9 +401,9 @@ class EmbeddedPythonBuilder {
     // 走 abetlen 的 metal wheel 索引，只取二进制轮子、绝不本机编译。
     if (this.targetPlatform === 'darwin' && this.isArm64) {
       await this.installLlamaCppMetal(pythonPath);
-      // 最后替换两项已审官方目标 wheel；后续不再让宿主解析器覆盖它们。
-      // 不升级尚未核准的 Torch/Paraformer 依赖栈。
-      installMacOSPythonWheels({ pythonPath, sitePackagesPath, env: this.pythonEnv() });
+      // 最后固定已审官方目标 wheel 字节；Torch ABI 配套已在隔离环境核准。
+      const retiredMetadata = installMacOSPythonWheels({ pythonPath, sitePackagesPath, env: this.pythonEnv() });
+      if (retiredMetadata) console.log(`已保留旧版固定依赖元数据: ${retiredMetadata}`);
     }
 
     // 验证关键依赖
