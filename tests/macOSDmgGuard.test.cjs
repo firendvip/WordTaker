@@ -1,7 +1,7 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const path = require('node:path');
-const { assertHost, assertDraftAsset, assertDownloadedDmg, assertFreshHost, assertScopedPath, assertUiHealth, PRODUCT } = require('../scripts/macos-dmg-guard.cjs');
+const { assertHost, assertDraftAsset, assertDownloadedDmg, assertFreshHost, assertScopedPath, assertUiHealth, assertWorkerHealth, ipcProbeExpression, pollIpcProbe, PRODUCT } = require('../scripts/macos-dmg-guard.cjs');
 const host = () => ({ platform: 'darwin', arch: 'arm64', version: '14.8.9', totalMemory: 7 * 1024 ** 3, freeDisk: 10 * 1024 ** 3, repositoryPublic: true, env: { GITHUB_ACTIONS: 'true', RUNNER_ENVIRONMENT: 'github-hosted', RUNNER_OS: 'macOS', RUNNER_ARCH: 'ARM64', GITHUB_REPOSITORY: 'firendvip/WordTaker', RUNNER_TEMP: '/Users/runner/work/_temp', ImageOS: 'macos14', ImageVersion: '20260831.0302.1' } });
 test('accepts only the actually observed macOS14 native public hosted environment', () => assert.doesNotThrow(() => assertHost(host())));
 for (const [key, value] of [['platform', 'linux'], ['arch', 'x64'], ['version', '15.0'], ['totalMemory', 1024], ['freeDisk', 1024], ['repositoryPublic', false]]) {
@@ -34,9 +34,41 @@ test('cleanup accepts only a strict named child and rejects roots sibling paths 
   for (const unsafe of ['/', '/Users/runner', '/Users/runner/work/_temp/qa', '/Users/runner/work/_temp/qa2', '/Users/runner/work/_temp/qa/../other']) assert.throws(() => assertScopedPath(unsafe, '/Users/runner/work/_temp/qa'));
   assert.throws(() => assertScopedPath('/tmp/a', '/'));
 });
-test('requires real visible versioned isolated anonymous settings and worker readiness', () => {
+test('visible isolated anonymous settings can be independently measured before worker readiness', () => {
   const ui = { version: '1.29.5', isolated: true, hasRoot: true, bodyText: '弦外小猫 设置', loggedIn: false, server_ready: true, models_initialized: true };
   assert.doesNotThrow(() => assertUiHealth(ui));
-  for (const change of [{ version: '1.29.4' }, { isolated: false }, { hasRoot: false }, { bodyText: '' }, { bodyText: '应用出现错误' }, { loggedIn: true }, { server_ready: false }, { models_initialized: false }]) assert.throws(() => assertUiHealth({ ...ui, ...change }));
+  for (const change of [{ version: '1.29.4' }, { isolated: false }, { hasRoot: false }, { bodyText: '' }, { bodyText: '应用出现错误' }, { loggedIn: true }]) assert.throws(() => assertUiHealth({ ...ui, ...change }));
+  assert.doesNotThrow(() => assertUiHealth({ ...ui, server_ready: false, models_initialized: false }));
+  assert.doesNotThrow(() => assertWorkerHealth(ui));
+  for (const change of [{ server_ready: false }, { models_initialized: false }]) assert.throws(() => assertWorkerHealth({ ...ui, ...change }));
   assert.equal(path.posix.isAbsolute('/Users/runner/work/_temp'), true);
+});
+test('repeated fast CDP probe queries invoke each async model IPC only once even while pending', async () => {
+  const vm = require('node:vm'); let calls = 0, settle;
+  const context = vm.createContext({ window: { electronAPI: { checkFunASRStatus: () => { calls++; return new Promise(resolve => { settle = resolve; }); } } } });
+  const expression = ipcProbeExpression('model', 'checkFunASRStatus');
+  for (let i = 0; i < 50; i++) assert.equal(vm.runInContext(expression, context).status, 'pending');
+  await new Promise(resolve => setImmediate(resolve)); assert.equal(calls, 1);
+  settle({ server_ready: false, models_initialized: false }); await new Promise(resolve => setImmediate(resolve));
+  assert.equal(vm.runInContext(expression, context).status, 'fulfilled');
+  assert.equal(vm.runInContext(expression, context).value.server_ready, false); assert.equal(calls, 1);
+  assert.throws(() => vm.runInContext(ipcProbeExpression('model', 'getAppVersion'), context), /IPC_PROBE_KEY_COLLISION/);
+});
+test('rejected probes retain a safe failure and never automatically retry or expose thrown secrets', async () => {
+  const vm = require('node:vm'); let calls = 0;
+  const context = vm.createContext({ window: { electronAPI: { getAuthState: () => { calls++; throw Error('credential must not be preserved'); } } } });
+  const expression = ipcProbeExpression('auth', 'getAuthState'); vm.runInContext(expression, context);
+  await new Promise(resolve => setImmediate(resolve));
+  const observed = vm.runInContext(expression, context); assert.equal(observed.status, 'rejected'); assert.equal(observed.error, 'IPC_PROBE_REJECTED'); assert.equal(calls, 1);
+  assert.doesNotMatch(JSON.stringify(observed), /credential/);
+  for (const args of [['bad name', 'getAppVersion'], ['ok', 'downloadModels'], ['ok', 'getSetting', { unsafe: true }]]) assert.throws(() => ipcProbeExpression(...args));
+});
+test('bounded polling reads a pending probe without creating additional invocations or faking success', async () => {
+  let clock = 0, queries = 0, observations = 0;
+  const value = await pollIpcProbe(async () => { queries++; return { status: 'pending' }; }, 'model', 'checkFunASRStatus', [], { timeout: 240000, interval: 10000, now: () => clock, wait: ms => { clock += ms; }, observe: () => { observations++; } });
+  assert.equal(value.status, 'pending'); assert.equal(value.timedOut, true); assert.equal(value.elapsedMs, 240000); assert.equal(queries, 24); assert.equal(observations, queries);
+  for (const status of ['fulfilled', 'rejected']) {
+    const settled = await pollIpcProbe(async () => ({ status, value: false }), 'model', 'checkFunASRStatus', [], { timeout: 100, now: () => 0 });
+    assert.equal(settled.status, status); assert.equal(settled.timedOut, false);
+  }
 });

@@ -3,7 +3,7 @@
 const assert = require('node:assert/strict');
 const fs = require('node:fs'), path = require('node:path'), os = require('node:os'), net = require('node:net'), crypto = require('node:crypto');
 const { spawn, spawnSync, execFileSync } = require('node:child_process');
-const { PRODUCT, assertHost, assertDownloadedDmg, assertFreshHost, assertScopedPath, assertUiHealth } = require('./macos-dmg-guard.cjs');
+const { PRODUCT, assertHost, assertDownloadedDmg, assertFreshHost, assertScopedPath, assertUiHealth, assertWorkerHealth, pollIpcProbe } = require('./macos-dmg-guard.cjs');
 const { assertNetworkLease } = require('./macos-host-isolation.cjs');
 const command = (exe, args, options = {}) => execFileSync(exe, args, { encoding: 'utf8', timeout: 30000, ...options }).trim();
 const hash = file => crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
@@ -75,13 +75,30 @@ async function run() {
   assert.ok(!fs.existsSync(mount) && !fs.existsSync(install));
   const report = { success: false, harnessSha: process.env.GITHUB_SHA, candidateSourceSha: PRODUCT.candidateSha, originalMacBuildSha: PRODUCT.originalMacBuildSha,
     version: PRODUCT.version, actualHost: transport.host, draftId: transport.draftId, assetId: transport.assetId,
+    scope: 'Fresh-install UI/lifecycle plus independent unprepared-model diagnostic',
     installation: false, productionEntry: false, realSettingsUi: false, database: false, pythonWorkerReady: false, cleanExit: false, installationDirectoryRemoved: false,
+    fullModelReadyAcceptance: false, modelPreparationPerformed: false, safetySettingsSeeded: true,
     realMicrophoneTested: false, accessibilityGranted: false, keychainCredentialPersistenceTested: false, actualMacOS14Point0DeviceTested: false,
     permissionsAutomaticallyGranted: false, tccOrKeychainReset: false, gatekeeperDisabled: false, quarantineRemoved: false,
     networkRestrictions: { scope: 'Disposable hosted VM', method: lease.method, externalDenialVerifiedBeforeEntry: lease.blockedProbesVerified, independentWatchdog: lease.watchdogReady },
     safeExistingSettings: { launch_at_login: false, recording_trigger: { type: 'accelerator', accelerator: 'F8' }, translate_trigger: { type: 'none' }, polish_engine: 'cloud' },
     productPackageModified: false, stage: 'mount-readonly', quarantineBefore: quarantine(dmg) };
-  let mounted = false, child, exited, connection, descendants = [], app, cleanExit = false;
+  let mounted = false, child, exited, connection, recorderConnection, metricsTimer, descendants = [], app, cleanExit = false;
+  report.processObservations = [];
+  const saveReport = () => fs.writeFileSync(path.join(root, 'MAC_RUNTIME_ACCEPTANCE.json'), JSON.stringify(report, null, 2) + '\n');
+  const observeProcesses = () => {
+    const rows = command('/bin/ps', ['-axo', 'pid=,ppid=,rss=,etime=,command=']).split('\n').flatMap(line => {
+      const row = line.trim().match(/^(\d+)\s+(\d+)\s+(\d+)\s+([\d:-]+)\s+(.+)$/);
+      return row && app && row[5].includes(`${app}/Contents/`) ? [{ pid: Number(row[1]), parent: Number(row[2]), rssKiB: Number(row[3]), elapsed: row[4], command: row[5].slice(0, 600) }] : [];
+    });
+    report.processObservations.push({ time: new Date().toISOString(), freeMemory: os.freemem(), pendingImportProcessCount: rows.filter(row => /\s-c\s+import funasr/.test(row.command)).length, productProcesses: rows });
+  };
+  const domExpression = rootId => `(()=>({hasRoot:Boolean(document.querySelector(${JSON.stringify(rootId)})?.children.length),hasPreload:Boolean(window.electronAPI),isolated:typeof require==='undefined'&&typeof process==='undefined',bodyText:document.body.innerText,buttons:[...document.querySelectorAll('button,[role="button"]')].map(x=>({text:x.innerText,aria:x.getAttribute('aria-label'),title:x.getAttribute('title'),disabled:x.disabled,visible:x.getBoundingClientRect().width>0&&x.getBoundingClientRect().height>0})),titles:[...document.querySelectorAll('[title]')].map(x=>x.getAttribute('title'))}))()`;
+  const capture = async (client, filename) => {
+    const screenshot = await client.call('Page.captureScreenshot', { format: 'png' });
+    fs.writeFileSync(path.join(root, filename), Buffer.from(screenshot.data, 'base64'));
+    return hash(path.join(root, filename));
+  };
   try {
     fs.mkdirSync(mount);
     report.mountPlist = command('/usr/bin/hdiutil', ['attach', '-readonly', '-nobrowse', '-noautoopen', '-mountpoint', mount, '-plist', dmg]);
@@ -104,6 +121,7 @@ async function run() {
     report.installedHashes = { executable: hash(exe), asar: hash(asar) };
     report.installation = true;
     report.installedQuarantine = quarantine(app);
+    report.initialModelCache = { legacyDamo: fs.existsSync(path.join(os.homedir(), '.cache/modelscope/hub/damo')), userDataDamo: fs.existsSync(path.join(root, 'electron-data/models/damo')), bundledSenseVoice: fs.existsSync(path.join(app, 'Contents/Resources/app.asar.unpacked/models/sensevoice/model_quant.onnx')) };
     // Fresh disposable VM only: seed real settings schema, not a fake backend/model.
     fs.mkdirSync(legacy, { recursive: true });
     const database = path.join(legacy, 'transcriptions.db');
@@ -132,22 +150,49 @@ async function run() {
     };
     const settings = await waitFor(async () => (await pages()).find(page => page.type === 'page' && page.url.includes('settings.html')), 'real first-run settings', 90000);
     report.productionEntry = true;
+    observeProcesses();
+    metricsTimer = setInterval(() => { try { observeProcesses(); } catch { report.processObservationError = true; } }, 5000);
     connection = await cdp(settings.webSocketDebuggerUrl);
-    const ui = await waitFor(async () => connection.evaluate(`(async()=>{ const api=window.electronAPI; if(!api||!document.querySelector('#settings-root')?.children.length) return null; const ready=await api.checkFunASRStatus(); if(!ready.server_ready||!ready.models_initialized) return null; return {version:await api.getAppVersion(),isolated:typeof require==='undefined'&&typeof process==='undefined',hasRoot:true,bodyText:document.body.innerText,loggedIn:(await api.getAuthState()).loggedIn,...ready}; })()`), 'real UI and bundled Python readiness', 240000);
+    report.stage = 'independent-real-settings-ui';
+    const ui = await waitFor(async () => { const value = await connection.evaluate(domExpression('#settings-root')); return value.hasRoot && value.hasPreload && value.bodyText.trim() ? value : null; }, 'real settings DOM and preload', 60000);
+    report.initialSettingsDom = ui; saveReport();
+    report.screenshotSha256 = await capture(connection, 'settings.png'); saveReport();
+    const version = await pollIpcProbe(connection.evaluate, 'version', 'getAppVersion');
+    report.versionProbe = version; saveReport();
+    assert.equal(version.status, 'fulfilled'); ui.version = version.value;
+    const auth = await pollIpcProbe(connection.evaluate, 'auth', 'getAuthState');
+    report.authProbe = auth; saveReport();
+    assert.equal(auth.status, 'fulfilled'); assert.equal(auth.value.success, true); ui.loggedIn = auth.value.loggedIn;
     assertUiHealth(ui);
-    assert.equal(await connection.evaluate('window.electronAPI.getSetting("launch_at_login")'), false);
-    assert.equal(await connection.evaluate('window.electronAPI.getSetting("onboarding_completed")'), true);
+    const login = await pollIpcProbe(connection.evaluate, 'login-setting', 'getSetting', ['launch_at_login']);
+    const onboarding = await pollIpcProbe(connection.evaluate, 'onboarding-setting', 'getSetting', ['onboarding_completed']);
+    assert.equal(login.status, 'fulfilled'); assert.equal(login.value, false);
+    assert.equal(onboarding.status, 'fulfilled'); assert.equal(onboarding.value, true);
     assert.equal(command('/usr/bin/sqlite3', [database, 'PRAGMA integrity_check;']), 'ok');
     assert.equal(command('/usr/bin/sqlite3', [database, 'SELECT count(*) FROM transcriptions;']), '0');
     report.database = true;
     report.realSettingsUi = true;
-    report.pythonWorkerReady = true;
-    report.observedUi = { version: ui.version, isolated: ui.isolated, bodyTextLength: ui.bodyText.length, loggedIn: ui.loggedIn, worker: { server_ready: ui.server_ready, models_initialized: ui.models_initialized } };
-    const screenshot = await connection.call('Page.captureScreenshot', { format: 'png' });
-    fs.writeFileSync(path.join(root, 'settings.png'), Buffer.from(screenshot.data, 'base64'));
-    report.screenshotSha256 = hash(path.join(root, 'settings.png'));
+    report.observedUi = { version: ui.version, isolated: ui.isolated, hasPreload: ui.hasPreload, bodyTextLength: ui.bodyText.length, loggedIn: ui.loggedIn };
+    saveReport();
     assert.deepEqual(connection.errors, []);
-    assert.ok((await pages()).some(page => page.url.includes('index.html')), 'Missing real recorder renderer');
+    const recorder = (await pages()).find(page => page.url.includes('index.html') && !page.url.includes('panel=control'));
+    assert.ok(recorder, 'Missing real recorder renderer');
+    recorderConnection = await cdp(recorder.webSocketDebuggerUrl);
+    report.initialRecorderDom = await recorderConnection.evaluate(domExpression('#root'));
+    report.initialRecorderScreenshotSha256 = await capture(recorderConnection, 'recorder-before-model.png'); saveReport();
+    report.stage = 'independent-model-diagnostic';
+    report.modelFilesProbe = await pollIpcProbe(connection.evaluate, 'model-files', 'checkModelFiles'); saveReport();
+    report.workerProbe = await pollIpcProbe(connection.evaluate, 'worker', 'checkFunASRStatus', [], { timeout: 120000, interval: 1000 });
+    if (report.workerProbe.status === 'fulfilled' && report.workerProbe.value.server_ready === true && report.workerProbe.value.models_initialized === true) {
+      assertWorkerHealth(report.workerProbe.value); report.pythonWorkerReady = true;
+    }
+    report.afterModelRecorderDom = await recorderConnection.evaluate(domExpression('#root'));
+    report.afterModelRecorderScreenshotSha256 = await capture(recorderConnection, 'recorder-after-model.png');
+    report.afterModelSettingsDom = await connection.evaluate(domExpression('#settings-root'));
+    report.afterModelSettingsScreenshotSha256 = await capture(connection, 'settings-after-model.png');
+    report.downloadUiObserved = { explicitNeedDownload: /需要下载|请先下载/.test(report.afterModelRecorderDom.bodyText + report.afterModelSettingsDom.bodyText), modelTooltipMentionsDownload: /需要下载|请先下载/.test([...report.afterModelRecorderDom.titles, ...report.afterModelSettingsDom.titles].join(' ')), enabledDownloadControls: [...report.afterModelRecorderDom.buttons, ...report.afterModelSettingsDom.buttons].filter(button => button.visible && !button.disabled && /下载/.test([button.text, button.aria, button.title].join(' '))) };
+    observeProcesses(); saveReport();
+    fs.writeFileSync(path.join(root, 'MAC_MODEL_DIAGNOSTIC.json'), JSON.stringify({ initialCache: report.initialModelCache, models: report.modelFilesProbe, worker: report.workerProbe, downloadUi: report.downloadUiObserved, processObservations: report.processObservations, modelPreparationPerformed: false, preparedModelAcceptanceAttempted: false }, null, 2) + '\n');
     descendants = tree(child.pid);
     report.processTreeBeforeExit = descendants;
     report.stage = 'normal-browser-lifecycle-quit';
@@ -170,9 +215,12 @@ async function run() {
     assert.ok(!fs.existsSync(install));
     report.installationDirectoryRemoved = true;
     report.stage = 'complete';
+    report.fullModelReadyAcceptance = report.pythonWorkerReady && report.realSettingsUi && report.cleanExit && report.database;
     report.success = true;
   } catch (error) { report.error = String(error.message); process.exitCode = 1; }
   finally {
+    if (metricsTimer) clearInterval(metricsTimer);
+    if (recorderConnection) recorderConnection.close();
     if (connection) connection.close();
     // Failure cleanup is scoped to owned PIDs/installation only; never claim a forced exit passed.
     if (child && !cleanExit && child.exitCode === null && child.signalCode === null) {

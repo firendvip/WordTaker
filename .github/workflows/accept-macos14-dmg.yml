@@ -66,6 +66,10 @@ jobs:
             ${{ steps.transport.outputs.root }}/TRANSPORT_RESULT.json
             ${{ steps.transport.outputs.root }}/MAC_RUNTIME_ACCEPTANCE.json
             ${{ steps.transport.outputs.root }}/settings.png
+            ${{ steps.transport.outputs.root }}/settings-after-model.png
+            ${{ steps.transport.outputs.root }}/recorder-before-model.png
+            ${{ steps.transport.outputs.root }}/recorder-after-model.png
+            ${{ steps.transport.outputs.root }}/MAC_MODEL_DIAGNOSTIC.json
             ${{ steps.transport.outputs.root }}/startup.log
             ${{ steps.transport.outputs.root }}/HOST_GUARD_OBSERVATIONS.json
             ${{ steps.transport.outputs.root }}/HOST_NETWORK_BEFORE.json

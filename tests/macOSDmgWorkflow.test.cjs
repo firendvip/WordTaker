@@ -61,3 +61,15 @@ test('host isolation has an independent watchdog and never overwrites global PF 
   assert.match(text, /await cleanupOwned\(root\); result\.productProcessesAbsentBeforeRestore = true/);
   assert.doesNotMatch(text, /\['-d'\]|\['-F', '(?:all|states)'\]|\/etc\/pf\.conf.*write|--no-sandbox/);
 });
+test('actual UI screenshot and database checks precede a separately bounded single-flight model observation', () => {
+  const text = fs.readFileSync(new URL('../scripts/macos-dmg-acceptance.cjs', `file://${__filename}`), 'utf8');
+  assert.ok(text.indexOf("report.screenshotSha256 = await capture") >= 0);
+  assert.ok(text.indexOf("report.stage = 'independent-model-diagnostic'") > text.indexOf("report.screenshotSha256 = await capture"));
+  assert.ok(text.indexOf("report.stage = 'independent-model-diagnostic'") > text.indexOf('report.database = true'));
+  assert.match(text, /pollIpcProbe\(.*'worker'.*'checkFunASRStatus'/);
+  assert.match(text, /timeout: 120000/);
+  assert.match(text, /fullModelReadyAcceptance/);
+  assert.doesNotMatch(text, /const ready=await api\.checkFunASRStatus\(\)/);
+  assert.match(text, /MAC_MODEL_DIAGNOSTIC\.json/);
+  assert.match(text, /pendingImportProcessCount/);
+});

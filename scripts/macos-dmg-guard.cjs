@@ -54,7 +54,30 @@ function assertUiHealth(value) {
   assert.equal(value.hasRoot, true);
   assert.ok(value.bodyText.trim() && !value.bodyText.includes('应用出现错误'));
   assert.equal(value.loggedIn, false);
+}
+function assertWorkerHealth(value) {
   assert.equal(value.server_ready, true);
   assert.equal(value.models_initialized, true);
 }
-module.exports = { PRODUCT, assertHost, assertDraftAsset, assertDownloadedDmg, assertFreshHost, assertScopedPath, assertUiHealth };
+function ipcProbeExpression(name, method, args = []) {
+  assert.match(name, /^[a-z][a-z0-9-]{0,30}$/);
+  assert.ok(['getAppVersion', 'getAuthState', 'getSetting', 'checkModelFiles', 'checkFunASRStatus'].includes(method));
+  assert.ok(Array.isArray(args));
+  const key = JSON.stringify(`__wordtakerQaProbe_${name}`), operation = JSON.stringify(method), argumentsJson = JSON.stringify(args);
+  return `(()=>{ const key=${key}, method=${operation}, args=${argumentsJson}; let probe=globalThis[key]; if(probe && (probe.method!==method || probe.argumentsJson!==JSON.stringify(args))) throw Error('IPC_PROBE_KEY_COLLISION'); if(!probe){ probe={status:'pending',method,argumentsJson:JSON.stringify(args),startedAt:Date.now()}; globalThis[key]=probe; Promise.resolve().then(()=>window.electronAPI[method](...args)).then(value=>{probe.value=value;probe.status='fulfilled';probe.settledAt=Date.now();},()=>{probe.error='IPC_PROBE_REJECTED';probe.status='rejected';probe.settledAt=Date.now();}); } return probe; })()`;
+}
+async function pollIpcProbe(evaluate, name, method, args = [], options = {}) {
+  const timeout = options.timeout || 10000, interval = options.interval || 250;
+  const now = options.now || Date.now, wait = options.wait || (ms => new Promise(resolve => setTimeout(resolve, ms)));
+  const expression = ipcProbeExpression(name, method, args), started = now();
+  let observed;
+  do {
+    observed = await evaluate(expression);
+    assert.ok(['pending', 'fulfilled', 'rejected'].includes(observed.status), 'IPC_PROBE_INVALID_STATE');
+    if (options.observe) await options.observe(observed);
+    if (observed.status !== 'pending') return { ...observed, timedOut: false, elapsedMs: now() - started };
+    await wait(Math.min(interval, timeout - (now() - started)));
+  } while (now() - started < timeout);
+  return { ...observed, timedOut: true, elapsedMs: now() - started };
+}
+module.exports = { PRODUCT, assertHost, assertDraftAsset, assertDownloadedDmg, assertFreshHost, assertScopedPath, assertUiHealth, assertWorkerHealth, ipcProbeExpression, pollIpcProbe };
