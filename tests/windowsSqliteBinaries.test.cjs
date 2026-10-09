@@ -133,3 +133,11 @@ test('Windows rebuild uses the locked Node CLI and rebuilds both modules in the 
   assert.match(step, /& node \$rebuildCli -f -w better-sqlite3,uiohook-napi --module-dir \. --arch/);
   assert.doesNotMatch(step, /npx/);
 });
+
+test('host model export installs ONNX without adding it to the embedded Python runtime', () => {
+  const workflow = fs.readFileSync(path.join(__dirname, '../.github/workflows/build-windows.yml'), 'utf8');
+  const host = workflow.split('- name: Install host tooling for model download')[1].split('- name: Download SenseVoice ONNX model')[0];
+  assert.match(host, /python -m pip install "numpy<2" onnx==1\.17\.0 onnxruntime/);
+  assert.match(host, /torch==2\.0\.1 torchaudio==2\.0\.2/);
+  assert.doesNotMatch(host, /--target|python\\python\.exe/);
+});
