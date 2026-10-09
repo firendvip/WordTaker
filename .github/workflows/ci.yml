@@ -1,10 +1,14 @@
 name: CI
 
 on:
+  workflow_dispatch:
   push:
     branches: [main]
   pull_request:
     branches: [main]
+
+permissions:
+  contents: read
 
 jobs:
   js:
@@ -35,4 +39,9 @@ jobs:
         with:
           python-version: "3.11"
       - run: pip install pytest numpy==1.26.4 scipy==1.17.1 soundfile==0.14.0
+      # Read the real pinned dispatch source via AST, without importing FunASR/Torch.
+      - name: Install pinned FunASR source for dispatch tests
+        run: |
+          python -m pip --isolated install --no-deps --no-compile --only-binary=:all: --require-hashes -r tests/python/funasr-source-requirements.txt
+          python -c 'from importlib.metadata import version; assert version("funasr") == "1.2.7"'
       - run: python -m pytest tests/python -q

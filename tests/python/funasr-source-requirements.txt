@@ -1,0 +1,2 @@
+# AST-only source fixture; --no-deps keeps Torch/model runtimes out of ordinary CI.
+funasr @ https://files.pythonhosted.org/packages/f7/6f/491bc744f9d23be35d848479dd21ba6576788e4a2cffbdd410725669fe5c/funasr-1.2.7-py3-none-any.whl --hash=sha256:b53f748e479e5bf6af172407c50eccaa6818ed91bdf8656abcd7ea6c5e3d2b0d
