@@ -4,6 +4,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import os from 'node:os';
 import { execFileSync } from 'node:child_process';
+import { runInNewContext } from 'node:vm';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 const require = createRequire(import.meta.url);
@@ -162,6 +163,21 @@ describe('legacy export CLI boundaries', () => {
     expect(test.copy).not.toHaveBeenCalled();
     expect(test.append).not.toHaveBeenCalled();
   });
+  it('never exports on a signature-module exception, empty result or non-NotSigned status', () => {
+    const test = cli();
+    const originalCommand = test.command.getMockImplementation();
+    for (const result of [new Error('CouldNotAutoloadMatchingModule'), '', 'UnknownError', 'Valid']) {
+      test.command.mockImplementation((exe, args) => {
+        if (exe !== 'powershell.exe') return originalCommand(exe, args);
+        if (result instanceof Error) throw result;
+        return result;
+      });
+      expect(() => guard.run(test.command)).toThrow();
+      expect(test.copy).not.toHaveBeenCalled();
+      expect(test.write).not.toHaveBeenCalled();
+      expect(test.append).not.toHaveBeenCalled();
+    }
+  });
 });
 
 describe('Windows generated paths and real Git cleanliness', () => {
@@ -279,5 +295,71 @@ describe('Windows generated paths and real Git cleanliness', () => {
       expect(git(['status', '--porcelain'])).toBe('?? legacy-export/');
       expect(() => guard.run(command)).toThrow(/Release checkout is dirty/);
     });
+  });
+});
+
+describe('process-local Windows signature module environment', () => {
+  const workflow = fs.readFileSync(new URL('../.github/workflows/build-windows.yml', import.meta.url), 'utf8');
+  const preflightName = '- name: Preflight native Authenticode module loading';
+  const preflight = workflow.split(preflightName)[1]?.split('- name: Get pnpm store directory')[0] || '';
+  const validate = workflow.split('- name: Validate exact legacy unsigned x64 export')[1].split('- name: Upload Windows artifacts')[0];
+  const script = () => {
+    const match = preflight.match(/@'\n([\s\S]*?)\n\s*'@ \| node/);
+    expect(match, 'Missing executable Node-to-Windows-PowerShell preflight').not.toBeNull();
+    return match[1];
+  };
+
+  it('clears only the current step module path before the unchanged final guard and preserves nonzero exits', () => {
+    expect(validate).toContain('shell: pwsh');
+    expect(validate).toContain('$env:PSModulePath = $null');
+    expect(validate.indexOf('$env:PSModulePath = $null')).toBeLessThan(validate.indexOf('node scripts/legacy-release-guard.cjs --validate'));
+    expect(validate).toContain('if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }');
+    expect(validate).toContain("success() && matrix.arch == 'x64' && steps.legacy-request.outputs.allowed == 'true'");
+    for (const name of ['EXPECTED_SOURCE_SHA', 'ORDINARY_CI_RUN_ID', 'UNSIGNED_ACKNOWLEDGMENT', 'BUILD_ARCH', 'GH_TOKEN']) expect(validate).toContain(`${name}:`);
+  });
+
+  it('runs a real native module preflight before expensive setup only for explicitly approved x64 exports', () => {
+    expect(preflight).toContain('shell: pwsh');
+    expect(preflight).toContain('$env:PSModulePath = $null');
+    expect(preflight.indexOf('$env:PSModulePath = $null')).toBeLessThan(preflight.indexOf("@'"));
+    expect(preflight).toContain("success() && matrix.arch == 'x64' && steps.legacy-request.outputs.allowed == 'true'");
+    expect(preflight).toContain('if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }');
+    expect(workflow.indexOf(preflightName)).toBeGreaterThan(workflow.indexOf('- name: Check explicit legacy unsigned x64 request'));
+    expect(workflow.indexOf(preflightName)).toBeLessThan(workflow.indexOf('- name: Install dependencies'));
+    expect(preflight).not.toContain('continue-on-error');
+  });
+
+  it('does not persist environment changes or change policy, registry, permissions or other invocation steps', () => {
+    expect(workflow.match(/\$env:PSModulePath = \$null/g)).toHaveLength(2);
+    expect((preflight + validate).match(/\$env:PSModulePath = \$null/g)).toHaveLength(2);
+    expect(preflight + validate).not.toMatch(/GITHUB_ENV|SetEnvironmentVariable|Set-ExecutionPolicy|ExecutionPolicy|HKLM:|HKCU:|Set-ItemProperty/);
+    expect(preflight + validate).not.toMatch(/catch|SilentlyContinue|NotSigned/);
+    expect(workflow).toContain('contents: read');
+    expect(workflow).toContain('actions: read');
+    expect(workflow).not.toMatch(/contents: write|actions: write/);
+  });
+
+  it('executes the inline Node preflight against the native command loader, not a synthetic signature result', () => {
+    const execute = vi.fn();
+    runInNewContext(script(), { require: name => {
+      expect(name).toBe('node:child_process');
+      return { execFileSync: execute };
+    } });
+    expect(execute).toHaveBeenCalledTimes(1);
+    const [exe, args, options] = execute.mock.calls[0];
+    expect(exe).toBe('powershell.exe');
+    expect(Array.from(args).slice(0, 3)).toEqual(['-NoProfile', '-NonInteractive', '-Command']);
+    expect(args[3]).toContain('Import-Module Microsoft.PowerShell.Security -ErrorAction Stop');
+    expect(args[3]).toContain('Get-Command Get-AuthenticodeSignature -ErrorAction Stop');
+    expect(args[3]).toContain('$PSVersionTable.PSVersion');
+    expect(options.stdio).toBe('inherit');
+    expect(preflight).not.toContain('process.env');
+  });
+
+  it('propagates actual child-process command/module failure rather than catching or treating it as unsigned', () => {
+    const error = new Error('native module loader failed');
+    const execute = vi.fn(() => { throw error; });
+    expect(() => runInNewContext(script(), { require: () => ({ execFileSync: execute }) })).toThrow(error);
+    expect(execute).toHaveBeenCalledTimes(1);
   });
 });

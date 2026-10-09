@@ -78,6 +78,22 @@ jobs:
           UNSIGNED_ACKNOWLEDGMENT: ${{ inputs.unsigned_acknowledgment }}
           BUILD_ARCH: ${{ matrix.arch }}
 
+      # pwsh 经 Node 间接启动 Windows PowerShell 时，只在本步骤清除继承的 PS7 模块路径。
+      # 昂贵打包前验证真实原生模块可加载；不能用此预检替代最终 NSIS 签名查询。
+      - name: Preflight native Authenticode module loading
+        if: ${{ success() && matrix.arch == 'x64' && steps.legacy-request.outputs.allowed == 'true' }}
+        shell: pwsh
+        run: |
+          $env:PSModulePath = $null
+          @'
+          const { execFileSync } = require('node:child_process');
+          execFileSync('powershell.exe', [
+            '-NoProfile', '-NonInteractive', '-Command',
+            "Import-Module Microsoft.PowerShell.Security -ErrorAction Stop; Get-Command Get-AuthenticodeSignature -ErrorAction Stop | Out-Null; Write-Output ('Authenticode preflight: PowerShell ' + $PSVersionTable.PSVersion.ToString() + ', Security module ' + (Get-Module Microsoft.PowerShell.Security).Version.ToString())"
+          ], { stdio: 'inherit' });
+          '@ | node
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
       - name: Get pnpm store directory
         id: pnpm-cache
         shell: bash
@@ -441,7 +457,11 @@ jobs:
       - name: Validate exact legacy unsigned x64 export
         id: legacy-validation
         if: ${{ success() && matrix.arch == 'x64' && steps.legacy-request.outputs.allowed == 'true' }}
-        run: node scripts/legacy-release-guard.cjs --validate
+        shell: pwsh
+        run: |
+          $env:PSModulePath = $null
+          node scripts/legacy-release-guard.cjs --validate
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
         env:
           GH_TOKEN: ${{ github.token }}
           LEGACY_EXPORT: ${{ inputs.export_legacy_unsigned_x64 }}
