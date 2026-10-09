@@ -137,7 +137,14 @@ test('Windows rebuild uses the locked Node CLI and rebuilds both modules in the 
 test('host model export installs ONNX without adding it to the embedded Python runtime', () => {
   const workflow = fs.readFileSync(path.join(__dirname, '../.github/workflows/build-windows.yml'), 'utf8');
   const host = workflow.split('- name: Install host tooling for model download')[1].split('- name: Download SenseVoice ONNX model')[0];
-  assert.match(host, /python -m pip install "numpy<2" onnx==1\.17\.0 onnxruntime/);
+  assert.match(host, /python -m pip install "numpy<2" onnx==1\.17\.0 "onnxruntime\[quantization\]"/);
   assert.match(host, /torch==2\.0\.1 torchaudio==2\.0\.2/);
   assert.doesNotMatch(host, /--target|python\\python\.exe/);
+});
+
+test('host model export installs and validates the ONNX Runtime quantization extra', () => {
+  const workflow = fs.readFileSync(path.join(__dirname, '../.github/workflows/build-windows.yml'), 'utf8');
+  const host = workflow.split('- name: Install host tooling for model download')[1].split('- name: Download SenseVoice ONNX model')[0];
+  assert.match(host, /"onnxruntime\[quantization\]"/);
+  assert.match(host, /from onnxruntime\.quantization import QuantType, quantize_dynamic/);
 });
