@@ -30,6 +30,7 @@ class FunASRManager {
     this.serverProcess = null; // FunASR服务器进程
     this.serverReady = false; // 服务器是否就绪
     this.serverStartError = null; // 最近一次启动失败原因（供 checkStatus 暴露，避免静默失败）
+    this.serverEngineStatus = null; // Python 初始化返回的真实可用引擎与降级原因
     this.modelsDownloaded = null; // 缓存模型下载状态
     
     // 简化缓存
@@ -890,9 +891,18 @@ class FunASRManager {
                   this.serverReady = true;
                   this.modelsInitialized = true;
                   this.serverStartError = null;
+                  this.serverEngineStatus = result.engine_status || null;
                   this._restartCount = 0; // 成功就绪，重置自动重启计数
                   this._clearModelCache(); // 清除缓存，确保状态更新
-                  this.logger.info && this.logger.info('FunASR服务器启动成功，模型已初始化');
+                  this.logger.info && this.logger.info('FunASR服务器启动成功，模型已初始化', {
+                    engineStatus: this.serverEngineStatus,
+                  });
+                  if (this.serverEngineStatus?.sensevoice_unavailable_reason) {
+                    this.logger.warn && this.logger.warn('SenseVoice不可用，应用将保留Paraformer降级能力', {
+                      reason: this.serverEngineStatus.sensevoice_unavailable_reason,
+                      availableEngines: this.serverEngineStatus.available_engines || [],
+                    });
+                  }
                 } else {
                   // 初始化失败：记录可见的失败原因（如模型未下载），不静默
                   this.serverStartError = {
@@ -1457,13 +1467,41 @@ class FunASRManager {
       if (!result.success) {
         throw new Error(result.error || '转录失败');
       }
+
+      const engineMetadata = {
+        requested_engine: result.requested_engine || options.engine || null,
+        actual_engine: result.actual_engine || null,
+        fallback_reason: result.fallback_reason || null,
+        model_type: result.model_type || null,
+      };
+      if (
+        engineMetadata.fallback_reason
+        || (engineMetadata.requested_engine
+          && engineMetadata.actual_engine
+          && engineMetadata.requested_engine !== engineMetadata.actual_engine)
+      ) {
+        this.logger.warn && this.logger.warn('ASR识别引擎已降级', {
+          requestedEngine: engineMetadata.requested_engine,
+          actualEngine: engineMetadata.actual_engine,
+          reason: engineMetadata.fallback_reason,
+          modelType: engineMetadata.model_type,
+        });
+      } else {
+        this.logger.info && this.logger.info('ASR识别引擎结果', {
+          requestedEngine: engineMetadata.requested_engine,
+          actualEngine: engineMetadata.actual_engine,
+          modelType: engineMetadata.model_type,
+        });
+      }
       
       return {
         success: true,
         text: result.text.trim(),
         raw_text: result.raw_text,
         confidence: result.confidence || 0.0,
-        language: result.language || "zh-CN"
+        language: result.language || "zh-CN",
+        duration: result.duration || 0,
+        ...engineMetadata,
       };
     } catch (error) {
       throw error;
@@ -1531,6 +1569,7 @@ class FunASRManager {
           server_ready: true,
           models_initialized: this.modelsInitialized,
           initializing: false,
+          engine_status: this.serverEngineStatus,
         };
       } else {
         // 检查FunASR是否已安装

@@ -20,16 +20,9 @@ export function MembershipHero({
   const displayName =
     account.nickname ||
     account.phone ||
-    account.email ||
-    (account.wechatOpenId ? "微信用户" : "已登录用户");
+    "已登录用户";
 
-  const loginType = account.email
-    ? "邮箱登录"
-    : account.phone
-    ? "手机登录"
-    : account.wechatOpenId
-    ? "微信登录"
-    : "已登录";
+  const loginType = account.phone ? "手机验证码登录" : "已登录";
 
   return (
     <div className="rounded-2xl p-5 bg-gradient-to-br from-indigo-500 to-blue-600 text-white shadow-sm relative overflow-hidden">

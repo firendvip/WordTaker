@@ -16,6 +16,12 @@ import {
   describeWakeTrigger,
   wakeTriggersEqual,
 } from "./utils/shortcutOptions";
+import { syncRuntimeDocumentTitle } from "./utils/appTitle";
+
+void syncRuntimeDocumentTitle({
+  getAppVersion: window.electronAPI?.getAppVersion,
+  documentRef: document,
+});
 
 const SettingsPage = () => {
   const [settings, setSettings] = useState({
@@ -342,7 +348,7 @@ const SettingsPage = () => {
           audio_input_device_id: (typeof allSettings.audio_input_device_id === "string" && allSettings.audio_input_device_id)
             ? allSettings.audio_input_device_id : "default",
           llm_streaming_enabled: allSettings.llm_streaming_enabled === true,
-          llm_active_role: allSettings.llm_active_role || "normal",
+          llm_active_role: allSettings.llm_active_role === "gaoeq" ? "normal" : (allSettings.llm_active_role || "normal"),
           pill_skin: allSettings.pill_skin || "catfx",
           translate_trigger_key: (allSettings.translate_trigger && allSettings.translate_trigger.key) || "LeftCtrl",
           translate_trigger_taps: (allSettings.translate_trigger && allSettings.translate_trigger.taps) || 2,
@@ -1733,7 +1739,7 @@ const SettingsPage = () => {
                 <button
                   type="button"
                   onClick={() => updateAndSave('llm_active_role', 'vibecoding')}
-                  className="w-full flex items-center justify-between gap-4 py-4 border-b border-gray-100 dark:border-neutral-800 text-left"
+                  className="w-full flex items-center justify-between gap-4 py-4 text-left"
                 >
                   <div className="min-w-0">
                     <label className={`${rowLabelClass} chinese-title`}>VibeCoding专用</label>
@@ -1750,31 +1756,6 @@ const SettingsPage = () => {
                     }`}
                   >
                     {settings.llm_active_role === 'vibecoding' && (
-                      <span className="w-2.5 h-2.5 rounded-full bg-blue-600 dark:bg-blue-400" />
-                    )}
-                  </span>
-                </button>
-                {/* 高情商 */}
-                <button
-                  type="button"
-                  onClick={() => updateAndSave('llm_active_role', 'gaoeq')}
-                  className="w-full flex items-center justify-between gap-4 py-4 text-left"
-                >
-                  <div className="min-w-0">
-                    <label className={`${rowLabelClass} chinese-title`}>高情商</label>
-                    <p className="mt-0.5 text-[13px] text-gray-500 dark:text-neutral-400">
-                      将你的话改写成得体、有温度的高情商表达
-                    </p>
-                  </div>
-                  <span
-                    aria-hidden="true"
-                    className={`flex-shrink-0 w-5 h-5 rounded-full border-2 flex items-center justify-center ${
-                      settings.llm_active_role === 'gaoeq'
-                        ? 'border-blue-600 dark:border-blue-400'
-                        : 'border-gray-300 dark:border-neutral-600'
-                    }`}
-                  >
-                    {settings.llm_active_role === 'gaoeq' && (
                       <span className="w-2.5 h-2.5 rounded-full bg-blue-600 dark:bg-blue-400" />
                     )}
                   </span>

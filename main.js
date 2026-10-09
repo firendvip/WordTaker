@@ -274,8 +274,6 @@ let isTranslating = false;
 // 应用是否已完成启动初始化（转英文触发器已挂载）。用于防止早期/边缘的 recorder-state(true)
 // 在触发器尚未挂载前就误调用 stop() 造成的状态错乱。
 let appFullyInitialized = false;
-// 录音开始时间戳：用于最小录音时长守卫，忽略录音刚开始(<800ms)的取消，防止胶囊误消失。
-let recordStartedAt = 0;
 
 // 校验 recording_trigger，非法字段一律回退默认（防止渲染层写入异常对象）
 function validateRecordingTrigger(t, fallback) {
@@ -380,6 +378,8 @@ function setupRecordingTrigger() {
       }
       const win = windowManager.mainWindow;
       if (win && !win.isDestroyed()) {
+        // showInactive 的原生 show 事件不是会话门禁；每次热键入口都确保取消键有效。
+        beginRecorderSession();
         win.webContents.send('hotkey-triggered', { trigger });
         logger.info('录音触发 → 已发送 hotkey-triggered', trigger);
       }
@@ -761,31 +761,28 @@ function isSameModifierTap(a, b) {
   return !!a && !!b && a.key === b.key && Number(a.taps) === Number(b.taps);
 }
 
-// 取消录音：仅在录音期间注册，避免平时吞掉按键。
-// 取消键现支持 Esc / F1 / F2 / F4 / F8 的单/双击；因 globalShortcut 无法识别"双击"，
-// 这些键已加入 TriggerManager.VALID_KEYS，统一走 uiohook 第三触发器（cancelTriggerManager）。
-// 注意：底层 uiohook 为"只监听不拦截"，因此 Esc/F 键会被观察到用于触发取消，
-// 但不会被消费——它们仍会照常送达当前聚焦的应用（可接受）。
-// 下方 globalShortcut 分支对当前选项已基本不会命中，保留为无害回退。
-let cancelKeyRegistered = null; // 仅记录已注册的 globalShortcut 加速键（回退用）
+// 小猫可见期间即可取消，含麦克风启动/引擎错误/润色阶段；隐藏后释放按键。
+// 单击 Esc/F 键走 globalShortcut，不依赖辅助功能；仅双击使用 tap listener。
+let cancelKeyRegistered = null;
 function fireCancel() {
-  if (Date.now() - recordStartedAt < 800) {
-    logger.info('忽略过早的取消(录音不足800ms)，防止胶囊误消失');
-    return;
-  }
   const win = windowManager.mainWindow;
-  if (win && !win.isDestroyed()) win.webContents.send('cancel-recording');
-  windowManager.hideMainWindow();
-  // Esc 取消即会话结束：幂等收口（与 hide-recorder 两路只生效一次）。
-  endSession();
+  try {
+    if (win && !win.isDestroyed()) win.webContents.send('cancel-recording');
+  } catch (error) {
+    logger.warn('取消通知未送达渲染层，仍隐藏录音窗口', { error: error?.message });
+  }
+  try {
+    windowManager.hideMainWindow();
+  } finally {
+    // 关闭不依赖渲染层应答；异常时仍释放会话状态和取消键。
+    endSession();
+  }
 }
 function registerCancelKey() {
   try {
     const key = databaseManager.getSetting('cancel_key', 'Escape') || 'Escape';
-
-    if (TriggerManager.VALID_KEYS.has(key)) {
-      // 裸修饰键形态：用第三触发器监听单/双击
-      const taps = Number(databaseManager.getSetting('cancel_taps', 1)) === 2 ? 2 : 1;
+    const taps = Number(databaseManager.getSetting('cancel_taps', 1)) === 2 ? 2 : 1;
+    if (taps === 2 && TriggerManager.VALID_KEYS.has(key)) {
       const target = { key, taps };
       const trig = getRecordingTriggerModifier();
       if (isSameModifierTap(trig, target)) {
@@ -797,10 +794,11 @@ function registerCancelKey() {
     }
 
     // 加速键形态（Esc/F 键）：走 Electron globalShortcut
-    if (cancelKeyRegistered === key) return;
+    if (cancelKeyRegistered === key && globalShortcut.isRegistered(key)) return;
     if (cancelKeyRegistered) globalShortcut.unregister(cancelKeyRegistered);
     const ok = globalShortcut.register(key, fireCancel);
     cancelKeyRegistered = ok ? key : null;
+    if (!ok) logger.warn('取消快捷键注册失败', { key });
   } catch (error) {
     logger.error('注册取消键失败:', error);
   }
@@ -821,36 +819,78 @@ function unregisterCancelKey() {
 // 避免 hide-recorder 与 fireCancel 两路重复执行 unregisterCancelKey / setupTranslateTrigger。
 // 含义：处理阶段(转写/润色)期间不会被调用，从而保持转英文停用 + 取消键注册，
 // 杜绝处理阶段误触转英文/取消导致胶囊被抢占或隐藏。
+function broadcastRecorderSessionState() {
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (!win.isDestroyed()) {
+      win.webContents.send('recorder-state-changed', { isRecording, isBusy });
+    }
+  }
+}
+
+function beginRecorderSession() {
+  // 即使会话已开始，也要校验系统实际注册状态，恢复丢失的取消键。
+  registerCancelKey();
+  if (isBusy) return;
+  isBusy = true;
+  if (appFullyInitialized) {
+    try { translateTriggerManager.stop(); } catch (_) { /* 忽略 */ }
+  }
+  broadcastRecorderSessionState();
+}
+
+async function createRecorderWindow() {
+  const existing = windowManager.mainWindow;
+  const recorderWindow = await windowManager.createMainWindow();
+  if (recorderWindow === existing) return recorderWindow;
+  recorderWindow.on('show', beginRecorderSession);
+  recorderWindow.on('hide', endSession);
+  recorderWindow.on('closed', endSession);
+  if (recorderWindow.isVisible()) beginRecorderSession();
+  return recorderWindow;
+}
+
 function endSession() {
   if (!isBusy) return; // 幂等：已结束则直接返回
+  isRecording = false;
   isBusy = false;
   unregisterCancelKey();
   // 会话结束后重新挂回转英文触发器。
   try {
     setupTranslateTrigger();
   } catch (_) { /* 忽略 */ }
+  broadcastRecorderSessionState();
 }
 
 // 渲染层在录音开始/结束时通知主进程，用于按需注册/注销 Esc 取消键
 ipcMain.on('recorder-state', (event, recording) => {
+  const recorderContents = windowManager.mainWindow?.webContents;
+  if (recorderContents && event.sender.id !== recorderContents.id) {
+    logger.warn('忽略非录音主窗口发送的 recorder-state，防止控制面板覆盖会话状态');
+    return;
+  }
   // 记录录音状态：转英文键在录音中让位（见 handleTranslateHotkey）。
   isRecording = !!recording;
   if (recording) {
     // 会话开始：覆盖 recording + 后续处理/润色阶段，直到胶囊隐藏才结束。
     // 每次新录音都重置 isBusy=true，确保 isBusy 不会因上次异常而卡死。
-    isBusy = true;
-    recordStartedAt = Date.now();
-    registerCancelKey();
-    // 录音期间转英文键必须让位：停掉转英文触发器，避免裸修饰键被双重监听。
-    // 仅在应用完成初始化（触发器已挂载）后才停用，避免早期/边缘的 recorder-state(true) 误调用。
-    if (appFullyInitialized) {
-      try { translateTriggerManager.stop(); } catch (_) {}
-    }
+    beginRecorderSession();
   } else {
     // 录音停止≠会话结束：此时进入处理(转写/润色)阶段，胶囊仍在渲染层显示。
     // 只把 isRecording 置 false；不在此 unregisterCancelKey、不在此重挂转英文。
     // 会话级清理统一交由 endSession()（在 hide-recorder / fireCancel 处调用）。
   }
+  broadcastRecorderSessionState();
+});
+
+ipcMain.handle('get-recorder-session-state', () => ({ isRecording, isBusy }));
+
+ipcMain.handle('set-quota-bubble-visible', (event, visible) => {
+  const recorderContents = windowManager.mainWindow?.webContents;
+  if (!recorderContents || event.sender.id !== recorderContents.id) {
+    return { success: false };
+  }
+  windowManager.setQuotaBubbleVisible(visible === true);
+  return { success: true };
 });
 
 // 初始化数据库：损坏/锁定等同步异常会在任何窗口出现前崩主进程，
@@ -1094,7 +1134,7 @@ async function startApp() {
   // 创建主窗口
   try {
     logger.info('创建主窗口...');
-    await windowManager.createMainWindow();
+    await createRecorderWindow();
     logger.info('主窗口创建成功');
   } catch (error) {
     logger.error("创建主窗口时出错:", error);
@@ -1218,7 +1258,7 @@ app.on("window-all-closed", () => {
 
 app.on("activate", () => {
   if (BrowserWindow.getAllWindows().length === 0) {
-    windowManager.createMainWindow();
+    createRecorderWindow().catch((error) => logger.error('恢复录音窗口失败', error));
   }
 });
 

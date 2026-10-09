@@ -28,10 +28,15 @@ class EmbeddedPythonTester {
       // 3. 检查关键依赖
       await this.testDependencies();
       
-      // 4. 测试FunASR导入
-      await this.testFunASRImport();
+      // 4. macOS/Linux 全量环境测试 FunASR；Windows 纯 ONNX 契约不安装它。
+      if (!this.isWindows) {
+        await this.testFunASRImport();
+      }
+
+      // 5. 测试项目自带 SenseVoice ONNX 运行时导入
+      await this.testSenseVoiceRuntimeImport();
       
-      // 5. 测试环境隔离
+      // 6. 测试环境隔离
       await this.testEnvironmentIsolation();
       
       console.log('\n✅ 所有测试通过！嵌入式Python环境工作正常。');
@@ -78,14 +83,7 @@ class EmbeddedPythonTester {
   async testDependencies() {
     console.log('3️⃣ 检查关键依赖...');
     
-    const dependencies = [
-      'sys',
-      'os', 
-      'json',
-      'numpy',
-      'torch',
-      'librosa'
-    ];
+    const dependencies = this.dependencyNames();
     
     for (const dep of dependencies) {
       try {
@@ -95,6 +93,26 @@ class EmbeddedPythonTester {
         throw new Error(`依赖 ${dep} 导入失败: ${error.message}`);
       }
     }
+  }
+
+  dependencyNames() {
+    const base = [
+      'sys',
+      'os',
+      'json',
+      'numpy',
+    ];
+    if (this.isWindows) {
+      return [...base, 'onnxruntime', 'soundfile'];
+    }
+    return [
+      ...base,
+      'torch',
+      'librosa',
+      'funasr',
+      'onnxruntime',
+      'soundfile',
+    ];
   }
 
   async testFunASRImport() {
@@ -111,8 +129,25 @@ class EmbeddedPythonTester {
     }
   }
 
+  async testSenseVoiceRuntimeImport() {
+    console.log('5️⃣ 测试SenseVoice ONNX运行时导入...');
+    const projectRoot = path.join(__dirname, '..');
+    const code = [
+      'import sys',
+      `sys.path.insert(0, ${JSON.stringify(projectRoot)})`,
+      'from sensevoice_onnx_engine import SenseVoiceOnnxEngine',
+      'print("SenseVoiceOnnxEngine OK")',
+    ].join('; ');
+    try {
+      const result = await this.runPythonCommand(['-c', code]);
+      console.log(`   ✅ SenseVoice ONNX运行时导入成功: ${result.trim()}`);
+    } catch (error) {
+      throw new Error(`SenseVoice ONNX运行时导入失败: ${error.message}`);
+    }
+  }
+
   async testEnvironmentIsolation() {
-    console.log('5️⃣ 测试环境隔离...');
+    console.log('6️⃣ 测试环境隔离...');
     
     // 测试Python路径隔离
     const pythonPath = await this.runPythonCommand([

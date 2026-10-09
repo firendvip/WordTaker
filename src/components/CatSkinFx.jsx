@@ -1,4 +1,6 @@
 import { useEffect, useRef } from "react";
+import { catHorizontalPosition, resolveCatMotion } from "../utils/recorderAnimation";
+import QuotaExhaustedBubble from "./QuotaExhaustedBubble";
 
 const K = "#1b1b1f";
 const VOICE_THR = 0.35;
@@ -59,20 +61,36 @@ const BUBBLE_SHOW_DELAY = 5000; // 仅当 AI 润色处理时长超过此值（ms
 const BUBBLE_UP_Y = -26; // 气泡相对锚点的垂直偏移（px，置于头顶上方）
 const BUBBLE_CHAR_DENOM = 120; // 进度估算分母（无法预知总长，温和逼近）
 
-export default function CatSkinFx({ micState, audioLevel = 0, isBusy = false, hasError = false, showPolishBubble = false, polishCharCount = 0 }) {
+export default function CatSkinFx({
+  micState,
+  audioLevel = 0,
+  isBusy = false,
+  awake = false,
+  hasError = false,
+  reducedMotion = false,
+  showPolishBubble = false,
+  polishCharCount = 0,
+  showQuotaExhaustedBubble = false,
+  onQuotaBubbleShown,
+  onQuotaBubbleDismiss,
+}) {
   const rootRef = useRef(null);
   const recRef = useRef(false);
   const lvlRef = useRef(0);
   const busyRef = useRef(false);
+  const awakeRef = useRef(false);
   const errRef = useRef(false);
   const bubbleRef = useRef(false);   // showPolishBubble（rAF 内读取）
   const charRef = useRef(0);         // polishCharCount（rAF 内读取）
+  const reducedMotionRef = useRef(false);
   useEffect(() => { recRef.current = micState === "recording"; }, [micState]);
   useEffect(() => { lvlRef.current = audioLevel || 0; }, [audioLevel]);
   useEffect(() => { busyRef.current = !!isBusy; }, [isBusy]);
+  useEffect(() => { awakeRef.current = !!awake; }, [awake]);
   useEffect(() => { errRef.current = !!hasError; }, [hasError]);
   useEffect(() => { bubbleRef.current = !!showPolishBubble; }, [showPolishBubble]);
   useEffect(() => { charRef.current = polishCharCount || 0; }, [polishCharCount]);
+  useEffect(() => { reducedMotionRef.current = !!reducedMotion; }, [reducedMotion]);
 
   useEffect(() => {
     const root = rootRef.current;
@@ -169,14 +187,19 @@ export default function CatSkinFx({ micState, audioLevel = 0, isBusy = false, ha
     let raf, cancelled = false;
     function frame(now) {
       if (cancelled) return;
-      const rec = recRef.current, busy = busyRef.current, lvl = lvlRef.current, err = errRef.current;
+      const rec = recRef.current, busy = busyRef.current, awakeNow = awakeRef.current, lvl = lvlRef.current, err = errRef.current;
       if (busy === false && prevBusy === true) successUntil = now + 1200;
       prevBusy = busy;
       if (err === true && prevErr === false) errorUntil = now + 1500;
       prevErr = err;
       if (lvl > VOICE_THR) lastVoice = now;
       const voice = now - lastVoice < HOLD;
-      const active = rec || busy;
+      const active = awakeNow || rec || busy;
+      const motion = resolveCatMotion({
+        isRecording: rec,
+        isBusy: busy,
+        reducedMotion: reducedMotionRef.current,
+      });
       if (loudState) { if (lvl < LOUD_THR - HYST) loudState = false; }
       else if (lvl > LOUD_THR + HYST) loudState = true;
 
@@ -185,7 +208,7 @@ export default function CatSkinFx({ micState, audioLevel = 0, isBusy = false, ha
       if (now < successUntil) fxType = "sparkle";
       else if (now < errorUntil) fxType = "sweat";
       else if (busy) fxType = "bulb";
-      else if (rec && voice) fxType = "notes";
+      else if (rec && voice && !reducedMotionRef.current) fxType = "notes";
 
       // dwell gating: priority events + hide are immediate
       const priority = fxType === "sparkle" || fxType === "sweat" || fxType === null;
@@ -230,7 +253,21 @@ export default function CatSkinFx({ micState, audioLevel = 0, isBusy = false, ha
         bubble.style.display = "none";
       }
 
-      const want = (busy || (active && voice)) ? "walk" : "rest";
+      if (motion === "static") {
+        if (active) {
+          setView("run");
+          x = C;
+          renderRun(1, 1);
+          positionFx(1);
+        } else {
+          setView("none");
+          setFx(null);
+        }
+        raf = requestAnimationFrame(frame);
+        return;
+      }
+
+      const want = motion === "walk" || motion === "process" ? "walk" : "rest";
 
       if (mode === "idle") {
         setView("none"); setFx(null); x = C;
@@ -247,7 +284,7 @@ export default function CatSkinFx({ micState, audioLevel = 0, isBusy = false, ha
         else { mode = want === "rest" ? "settle" : "walk"; t0 = now; xRet = x; }
       } else if (mode === "walk") {
         if (!active || want === "rest") { mode = "settle"; t0 = now; xRet = x; }
-        else { wp += (busy || loudState) ? PROC_W : WALK_W; x = C + AMP * Math.sin(wp); const dir = Math.cos(wp) >= 0 ? 1 : -1; renderRun(1, dir); positionFx(dir); }
+        else { wp += (busy || loudState) ? PROC_W : WALK_W; x = catHorizontalPosition({ center: C, amplitude: AMP, phase: wp }); const dir = Math.cos(wp) >= 0 ? 1 : -1; renderRun(1, dir); positionFx(dir); }
       } else if (mode === "settle") {
         if (active && want !== "rest") { mode = "walk"; wp = 0; setView("run"); }
         else {
@@ -268,5 +305,14 @@ export default function CatSkinFx({ micState, audioLevel = 0, isBusy = false, ha
     return () => { cancelled = true; cancelAnimationFrame(raf); clearNotes(); root.innerHTML = ""; };
   }, []);
 
-  return <div ref={rootRef} className="cat-skin" aria-hidden="true" />;
+  return (
+    <>
+      <div ref={rootRef} className="cat-skin" aria-hidden="true" />
+      <QuotaExhaustedBubble
+        visible={showQuotaExhaustedBubble}
+        onShown={onQuotaBubbleShown}
+        onDismiss={onQuotaBubbleDismiss}
+      />
+    </>
+  );
 }

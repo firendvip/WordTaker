@@ -3,7 +3,7 @@ import { createPortal } from "react-dom";
 import QRCode from "qrcode";
 import { Loader2, CheckCircle2, QrCode } from "lucide-react";
 
-// 应用内支付宝扫码弹窗（业界常规收银台样式）。
+// 应用内微信 Native / 支付宝扫码弹窗。微信 codeUrl 只画二维码, 不打开浏览器。
 // 优先手机端付款流程：后端返回 wapPayUrl（手机收银台链接）时，本地生成二维码展示，
 // 用户手机支付宝「扫一扫」后直接在手机上打开付款页完成付款。
 // 兜底：无 wapPayUrl（老后端）时回退 1.13.1 的 iframe 嵌入电脑收银台（payUrl 带 qr_pay_mode=4）。
@@ -18,6 +18,9 @@ import { Loader2, CheckCircle2, QrCode } from "lucide-react";
 //   onFrameError: iframe 加载失败（回退浏览器打开，仅 iframe 兜底路径用到）
 // }
 export function PayQrModal({
+  channel = "alipay",
+  codeUrl,
+  expiresAt,
   desc,
   amountYuan,
   payUrl,
@@ -31,25 +34,41 @@ export function PayQrModal({
 }) {
   const [frameLoaded, setFrameLoaded] = useState(false);
   const [qrDataUrl, setQrDataUrl] = useState("");
+  const [qrError, setQrError] = useState(false);
+  const [expired, setExpired] = useState(false);
+  const isWechat = channel === "wechat";
+  const channelLabel = isWechat ? "微信" : "支付宝";
+  const qrUrl = isWechat ? codeUrl : wapPayUrl;
+
+  useEffect(() => {
+    setFrameLoaded(false);
+    const deadline = Date.parse(expiresAt || "");
+    const remaining = deadline - Date.now();
+    setExpired(Number.isFinite(deadline) && remaining <= 0);
+    if (!Number.isFinite(deadline) || remaining <= 0) return undefined;
+    const timer = setTimeout(() => setExpired(true), Math.min(remaining, 2147483647));
+    return () => clearTimeout(timer);
+  }, [expiresAt, qrUrl, payUrl]);
 
   // wapPayUrl → 本地生成二维码（不依赖任何远程页面）
   useEffect(() => {
     let cancelled = false;
     setQrDataUrl("");
-    if (!wapPayUrl) return undefined;
-    QRCode.toDataURL(wapPayUrl, { width: 220, margin: 1 })
+    setQrError(false);
+    if (!qrUrl) return undefined;
+    QRCode.toDataURL(qrUrl, { width: 220, margin: 1 })
       .then((url) => {
         if (!cancelled) setQrDataUrl(url);
       })
       .catch(() => {
-        /* 生成失败时下方仍显示加载态，可走「在浏览器中打开」兜底 */
+        if (!cancelled) setQrError(true);
       });
     return () => {
       cancelled = true;
     };
-  }, [wapPayUrl]);
+  }, [qrUrl]);
 
-  const useLocalQr = !!wapPayUrl;
+  const useLocalQr = isWechat || !!wapPayUrl;
   const qrReady = useLocalQr ? !!qrDataUrl : frameLoaded;
 
   return createPortal(
@@ -65,14 +84,14 @@ export function PayQrModal({
         <div className="flex items-center justify-center gap-1.5">
           <QrCode className="w-4 h-4 text-blue-500" />
           <span className="text-[15px] font-semibold text-gray-900 dark:text-gray-100">
-            支付宝扫码支付
+            {channelLabel}扫码支付
           </span>
         </div>
         <p className="mt-1 text-[12px] text-gray-500 dark:text-neutral-400">{desc}</p>
 
         {/* 二维码居中：优先本地生成的 wap 收银台二维码；无 wapPayUrl 回退 iframe 嵌入页 */}
         <div className="mt-4 mx-auto w-[220px] h-[220px] relative rounded-xl border border-gray-100 dark:border-neutral-700 bg-white overflow-hidden">
-          {!qrReady && !paid && (
+          {!qrReady && !paid && !qrError && !expired && (
             <div className="absolute inset-0 flex items-center justify-center">
               <Loader2 className="w-6 h-6 animate-spin text-neutral-400" />
             </div>
@@ -84,11 +103,15 @@ export function PayQrModal({
                 支付成功，已到账
               </span>
             </div>
+          ) : expired || qrError ? (
+            <div role="alert" className="absolute inset-0 flex items-center justify-center p-4 text-[13px] text-gray-600">
+              {expired ? "二维码已过期，请关闭后重新下单" : "二维码生成失败，请关闭后重试"}
+            </div>
           ) : useLocalQr ? (
             qrDataUrl && (
               <img
                 src={qrDataUrl}
-                alt="支付宝付款二维码"
+                alt={`${channelLabel}付款二维码`}
                 width="220"
                 height="220"
                 className="block"
@@ -118,7 +141,7 @@ export function PayQrModal({
         </div>
         {!paid && (
           <p className="mt-0.5 text-[12px] text-gray-500 dark:text-neutral-400">
-            请使用手机支付宝扫一扫完成付款
+            请使用手机{channelLabel}扫一扫完成付款
           </p>
         )}
 
@@ -143,13 +166,13 @@ export function PayQrModal({
               我已完成支付 · 刷新额度
             </button>
             <div className="mt-2.5 flex items-center justify-center gap-4 text-[12px]">
-              <button
+              {!isWechat && <button
                 type="button"
                 onClick={onOpenBrowser}
                 className="text-blue-600 dark:text-blue-400 hover:underline"
               >
                 无法扫码？在浏览器中打开
-              </button>
+              </button>}
               <button
                 type="button"
                 onClick={onCancel}

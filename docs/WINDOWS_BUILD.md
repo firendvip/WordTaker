@@ -2,6 +2,8 @@
 
 > 打包 Windows 版本前必读。本文档由 1.16.2 → 1.25.1 多轮 Windows 真机踩坑 + 发版核验实操沉淀而成。
 
+> 2026-10-09 候选验证：工作流权限为 `contents: read`，Release/安装包上传均禁用；只用候选分支 workflow_dispatch 验证，不执行下方历史正式发版的 main/tag/下载站步骤。正式签名和最终候选验收未满足前，不公开安装包。
+
 ## 一、铁律
 
 1. **绝不在 Mac 本机构建 Windows 包**（无 Wine 产不出、内嵌 Python 平台不符必出坏包）。唯一通道：GitHub Actions `.github/workflows/build-windows.yml`（windows-latest 真机，matrix x64 + arm64）。
@@ -31,7 +33,7 @@ shasum -a 256 <exe>  # 与 SHA256SUMS 比对
 ```
 - [ ] **无 torch**：`find _p/app -iname "*torch*" | wc -l` == 0（两架构均纯 ONNX）
 - [ ] **onnxruntime 在**：`app.asar.unpacked/python/Lib/site-packages/onnxruntime`
-- [ ] **模型进包**：`app.asar.unpacked/models/sensevoice/{model_quant.onnx(≈241M), tokens.json}`（CI 有断言步骤兜底）
+- [ ] **模型进包**：`app.asar.unpacked/models/sensevoice/{model_quant.onnx, tokens.json, config.yaml, am.mvn}`；两架构与 macOS 统一 `iic/SenseVoiceSmall-onnx@v2.0.5`，构建前和入包后均按 `scripts/sensevoice-model.js` 固定清单核对四文件大小/SHA256，缺失或同尺寸篡改均失败。不再动态导出宿主模型。
 - [ ] **sendkeys.exe 在**：`resources/bin/sendkeys.exe`（≈100KB，CI 用 MSVC 编译 `build/win/sendkeys.c`）
 - [ ] **图标**：`resources/assets/icon.ico` 8 尺寸条目（16/20/24/32/48/64/128/256）
 - [ ] asar 内 package.json version 与 tag 一致

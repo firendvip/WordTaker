@@ -1,5 +1,7 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
 import { useModelStatus } from './useModelStatus';
+import { shouldSkipPolish } from '../utils/skipPolish';
+import { audioLevelFromSamples } from '../utils/audioLevel';
 
 // 频谱声波：把音频频谱拆成 BAND_COUNT 个独立频段，驱动胶囊里每根柱子各自起伏。
 export const BAND_COUNT = 13;
@@ -15,7 +17,7 @@ const BAND_RENDER_INTERVAL_MS = 1000 / BAND_RENDER_FPS;
 
 const createZeroBands = () => new Array(BAND_COUNT).fill(0);
 
-// 唤醒后最小驻留时长守卫：录音器刚显示的极短时间内(与 main.js fireCancel 的 800ms 守卫对齐)，
+// 唤醒后最小驻留时长守卫：录音器刚显示的极短时间内，
 // 不因 audioBlob.size===0 立即隐藏胶囊——Windows 唤醒时麦克风首帧偶发未就绪，会被误判为空录音，
 // 导致"没说话胶囊就自己消失"。此窗口内的空录音只丢弃数据、保留胶囊，不触发 hideRecorder。
 const MIN_RECORDER_RESIDENCE_MS = 800;
@@ -60,6 +62,8 @@ export const useRecording = ({ onTranscriptionCompleteRef, onAIOptimizationCompl
   const cancelledRef = useRef(false);
   // 代次：每段音频处理自增；异步 LLM 完成时若代次已变，说明有更新的录音，作废本次粘贴
   const generationRef = useRef(0);
+  // 同步守卫覆盖 getUserMedia 等待期；取消后的迟到流必须关闭，不能重新开始录音。
+  const captureAttemptRef = useRef(null);
 
   // 使用模型状态Hook
   const modelStatus = useModelStatus();
@@ -86,6 +90,9 @@ export const useRecording = ({ onTranscriptionCompleteRef, onAIOptimizationCompl
 
   // 开始录音
   const startRecording = useCallback(async () => {
+    if (captureAttemptRef.current?.pending || mediaRecorderRef.current?.state === 'recording') return;
+    const attempt = { pending: true, cancelled: false };
+    captureAttemptRef.current = attempt;
     try {
       setError(null);
       cancelledRef.current = false;
@@ -124,12 +131,14 @@ export const useRecording = ({ onTranscriptionCompleteRef, onAIOptimizationCompl
       } catch (e) {
         rlog('warn', '读取 audio_input_device_id 失败，使用系统默认麦克风:', e?.message || e);
       }
+      if (attempt.cancelled) return;
 
       const audioConstraints = { ...baseAudioConstraints };
       if (preferredDeviceId && preferredDeviceId !== 'default') {
         // 校验所选设备是否仍在线（蓝牙耳机/外接麦可能已断开）；不在则回退系统默认并回写设置
         try {
           const devices = await navigator.mediaDevices.enumerateDevices();
+          if (attempt.cancelled) return;
           const stillPresent = devices.some((d) => d.kind === 'audioinput' && d.deviceId === preferredDeviceId);
           if (stillPresent) {
             audioConstraints.deviceId = { exact: preferredDeviceId };
@@ -142,17 +151,24 @@ export const useRecording = ({ onTranscriptionCompleteRef, onAIOptimizationCompl
         }
       }
 
+      if (attempt.cancelled) return;
+
       let stream;
       try {
         stream = await navigator.mediaDevices.getUserMedia({ audio: audioConstraints });
       } catch (gumErr) {
         // 指定设备约束失败（设备刚被拔走等）：自动降级为系统默认约束重试一次
-        if (audioConstraints.deviceId && (gumErr.name === 'OverconstrainedError' || gumErr.name === 'NotFoundError')) {
+        if (!attempt.cancelled && audioConstraints.deviceId && (gumErr.name === 'OverconstrainedError' || gumErr.name === 'NotFoundError')) {
           rlog('warn', `指定麦克风获取失败(${gumErr.name})，降级系统默认重试:`, gumErr?.message || gumErr);
           stream = await navigator.mediaDevices.getUserMedia({ audio: baseAudioConstraints });
         } else {
           throw gumErr;
         }
+      }
+
+      if (attempt.cancelled) {
+        stream.getTracks().forEach((track) => track.stop());
+        return;
       }
 
       // 麦克风轨道诊断日志：远程排障"权限已授予却录到静音"（选错设备/轨道被系统静音）
@@ -190,15 +206,20 @@ export const useRecording = ({ onTranscriptionCompleteRef, onAIOptimizationCompl
         source.connect(analyser);
         audioCtxRef.current = audioCtx;
         analyserRef.current = analyser;
+        if (audioCtx.state === 'suspended') {
+          audioCtx.resume().catch((err) => rlog('warn', '恢复录音电平分析失败', err?.message));
+        }
 
         // 频域缓冲：取较低 ~70% 的频段（语音能量集中区），等分成 BAND_COUNT 段
         const freqBuf = new Uint8Array(analyser.frequencyBinCount);
+        const timeBuf = new Float32Array(analyser.fftSize);
         const usableBins = Math.max(BAND_COUNT, Math.floor(freqBuf.length * SPECTRUM_USABLE_RATIO));
         const binsPerBand = Math.max(1, Math.floor(usableBins / BAND_COUNT));
 
         const smoothBands = createZeroBands();
         let lastBands = createZeroBands();
         let lastLevel = -1;
+        let smoothLevel = 0;
         let lastEmit = 0;
 
         // 单个频段电平：对其覆盖的频点取均值 → 归一化 0..1 → 增益+钳制 → 噪声门
@@ -222,20 +243,19 @@ export const useRecording = ({ onTranscriptionCompleteRef, onAIOptimizationCompl
 
         const tick = () => {
           analyser.getByteFrequencyData(freqBuf);
+          analyser.getFloatTimeDomainData(timeBuf);
+          smoothLevel = smoothLevel * BAND_SMOOTH_OLD + audioLevelFromSamples(timeBuf) * BAND_SMOOTH_NEW;
+          const level = Math.round(smoothLevel * 100) / 100;
           const rounded = new Array(BAND_COUNT);
           for (let b = 0; b < BAND_COUNT; b++) {
             const cur = computeBandLevel(b);
             smoothBands[b] = smoothBands[b] * BAND_SMOOTH_OLD + cur * BAND_SMOOTH_NEW;
             rounded[b] = Math.round(smoothBands[b] * 100) / 100;
           }
-          // 平滑后整体音量电平（0..1）：取各频段最大值，驱动音符的"说话/静音"与数量
-          let maxBand = 0;
-          for (let b = 0; b < BAND_COUNT; b++) {
-            if (rounded[b] > maxBand) maxBand = rounded[b];
-          }
+          // 音符由实际波形音量驱动，不再被宽频段平均值稀释；频谱只负责声波柱形。
           const now = performance.now();
           if (now - lastEmit >= BAND_RENDER_INTERVAL_MS) {
-            const levelChanged = maxBand !== lastLevel;
+            const levelChanged = level !== lastLevel;
             const bandsChanged = hasMeaningfulChange(rounded);
             if (levelChanged || bandsChanged) {
               lastEmit = now;
@@ -244,8 +264,8 @@ export const useRecording = ({ onTranscriptionCompleteRef, onAIOptimizationCompl
                 setAudioBands(rounded);
               }
               if (levelChanged) {
-                lastLevel = maxBand;
-                setAudioLevel(maxBand);
+                lastLevel = level;
+                setAudioLevel(level);
               }
             }
           }
@@ -271,6 +291,8 @@ export const useRecording = ({ onTranscriptionCompleteRef, onAIOptimizationCompl
       };
 
       mediaRecorder.onstop = async () => {
+        // 旧会话迟到的 onstop 不能覆盖新录音的电平、状态或触发识别。
+        if (attempt.cancelled || captureAttemptRef.current !== attempt) return;
         // 端到端埋点 t0：录音真正结束的时刻（所有停止起因的唯一收口）。纯记录，不改任何行为。
         recEndTsRef.current = Date.now();
         setIsRecording(false);
@@ -384,8 +406,17 @@ export const useRecording = ({ onTranscriptionCompleteRef, onAIOptimizationCompl
       }, MEM_CHECK_INTERVAL_MS);
 
     } catch (err) {
+      if (attempt.cancelled) return;
+      stopAudioAnalysis();
+      if (streamRef.current) {
+        streamRef.current.getTracks().forEach((track) => track.stop());
+        streamRef.current = null;
+      }
+      window.electronAPI?.log?.('error', '录音启动失败', { name: err.name, message: err.message });
       setError(`无法开始录音: ${err.message}`);
       setIsRecording(false);
+    } finally {
+      attempt.pending = false;
     }
   }, [modelStatus.isReady, modelStatus.isLoading, modelStatus.error]);
 
@@ -490,10 +521,12 @@ export const useRecording = ({ onTranscriptionCompleteRef, onAIOptimizationCompl
                 (window.electronAPI.getAllSettings ? await window.electronAPI.getAllSettings() : null) || {};
               const getS = (k, d) => (_settings[k] !== undefined ? _settings[k] : d);
 
-              // 文案模式：识别后必走 LLM，贴"模型结果"；旧版优化模式作为兼容回退
-              let copywriting = getS('copywriting_mode_enabled', true);
-              let useAI = getS('enable_ai_optimization', true);
-              // 强制全部走 AI 润色：不再对短句静默跳过润色（每条转写都必须经过润色/替换）。
+              const copywriting = getS('copywriting_mode_enabled', true);
+              const useAI = getS('enable_ai_optimization', true);
+              const bypassShortText = shouldSkipPolish(raw_text);
+              if (bypassShortText) {
+                log('info', `短文本（${[...raw_text.trim()].length}字）跳过模型与提示词，直接使用转录原文`);
+              }
 
               let finalData = { ...transcriptionData };
               let emit;
@@ -522,7 +555,7 @@ export const useRecording = ({ onTranscriptionCompleteRef, onAIOptimizationCompl
                   });
               }
 
-              if (copywriting) {
+              if (!bypassShortText && copywriting) {
                 // —— 流式上屏由设置开关控制（默认关闭）：
                 //    仅当 llm_streaming_enabled 为 true 时才走流式(processTextStream，边生成边贴)；
                 //    关闭时走下方非流式主路径(processText)，拿到整段结果后一次性粘贴。——
@@ -674,7 +707,7 @@ export const useRecording = ({ onTranscriptionCompleteRef, onAIOptimizationCompl
                   };
                 }
                 } // end if(!streamed)
-              } else if (useAI) {
+              } else if (!bypassShortText && useAI) {
                 // —— 兼容：旧版可选润色 ——
                 let result = null;
                 try {
@@ -707,7 +740,7 @@ export const useRecording = ({ onTranscriptionCompleteRef, onAIOptimizationCompl
 
               // 先出字（最高优先级）：尽快把结果贴到光标处，绝不被数据库写入挡住。
               // 若期间已有更新的录音，作废本次粘贴（入库仍保留），避免贴出过期内容。
-              if (myGen !== generationRef.current) {
+              if (cancelledRef.current || myGen !== generationRef.current) {
                 log('info', '已被更新的录音取代，跳过本次粘贴');
               } else if (onAIOptimizationCompleteRef?.current) {
                 const doneP = onAIOptimizationCompleteRef?.current(emit);
@@ -897,6 +930,9 @@ export const useRecording = ({ onTranscriptionCompleteRef, onAIOptimizationCompl
   // 取消录音（Esc）：丢弃本次音频，不识别不粘贴
   const cancelRecording = useCallback(() => {
     cancelledRef.current = true;
+    generationRef.current += 1;
+    if (captureAttemptRef.current) captureAttemptRef.current.cancelled = true;
+    captureAttemptRef.current = null;
     if (mediaRecorderRef.current) {
       try {
         mediaRecorderRef.current.stop();
@@ -915,6 +951,7 @@ export const useRecording = ({ onTranscriptionCompleteRef, onAIOptimizationCompl
 
     setIsRecording(false);
     setIsProcessing(false);
+    setIsOptimizing(false);
     setError(null);
     audioChunksRef.current = [];
   }, []);

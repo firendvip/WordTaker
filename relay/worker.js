@@ -20,6 +20,12 @@
  *  - 可选 KV 绑定: RATE_KV (启用按 IP 限流)
  */
 
+const {
+  ACTIVE_MODES,
+  normalizeMode,
+  pickSystemPrompt,
+} = require("./tencent-scf-web/promptPolicy");
+
 const DEFAULT_BASE_URL = "https://api.deepseek.com";
 const ALLOWED_ORIGINS = [
   "http://localhost:5173",
@@ -42,9 +48,7 @@ const HEARTBEAT_TIMEOUT_MS = 30000;
 // 同目录」的 gitignored 文件 prompts.local.json 读取（随代码部署，不进公开仓库与安装包），
 // 其内容是 JSON：
 //   {"copywriting":"...","gaoeq":"...","normal":"...","translate-en":"..."}
-// 解析失败一律降级为空映射，pickSystemPrompt 再回退到一段非机密的通用指令。
-const GENERIC_FALLBACK_PROMPT =
-  "请把下面标记内的中文文本润色得通顺、准确，直接输出结果，不要解释。";
+// 解析失败一律降级为空映射，再由共享 promptPolicy 按角色选择安全兜底。
 
 // Workers 运行时无 fs，无法在运行时读取文件；改为构建期静态 require 同目录 JSON。
 // 文件缺失（require 抛错）则非阻塞地落到环境变量兜底，最终再回退到通用指令。
@@ -79,16 +83,9 @@ function loadPrompts(env) {
   }
 }
 
-// 按请求的 mode 选择 system 提示；缺失时回退到 copywriting，仍缺失则回退到通用非机密指令。
-function pickSystemPrompt(prompts, mode) {
-  const p = prompts || {};
-  return p[mode] || p.copywriting || GENERIC_FALLBACK_PROMPT;
-}
-
 // 当前对外提供的全部「活跃」模式，与 pickSystemPrompt 的分支一一对应。
 // 心跳保活会对这里的每个模式各发一次极小同前缀请求，预热 DeepSeek 的
 // 提示词缓存（prompt cache）；将来新增模式只需在此追加即可自动被保活。
-const ACTIVE_MODES = ["copywriting", "normal", "gaoeq", "translate-en"];
 
 // 防御式提取 usage（缓存命中/未命中/总 token）。无 usage 时返回 null。
 function pickUsage(usageSource) {
@@ -309,7 +306,7 @@ export default {
     if (!text.trim()) {
       return json({ success: false, error: "Empty text" }, 400, cors);
     }
-    const mode = typeof payload?.mode === "string" ? payload.mode : "copywriting";
+    const mode = normalizeMode(payload?.mode);
     const wordMap = sanitizeWordMap(payload?.word_map);
     // 已停用输入长度上限：任意长度文本都允许润色（去除长文本被 413 拦截后回退直贴原文的 BUG）。
 

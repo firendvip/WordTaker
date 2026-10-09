@@ -1,21 +1,18 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import { toast } from "sonner";
-import { Loader2, ShoppingCart, CreditCard, QrCode } from "lucide-react";
+import { Loader2, ShoppingCart, QrCode } from "lucide-react";
 import { centsToYuan, formatChars } from "./format";
 import { PayQrModal } from "./PayQrModal";
 
-// 微信支付开关：微信仍为 mock，渠道调整暂只展示支付宝（代码保留，置 true 即恢复）。
-const WECHAT_PAY_ENABLED = false;
-
-// 支付渠道：支付宝为真实支付（应用内扫码弹窗，qr_pay_mode=4 嵌入二维码）；微信暂为 mock
+// 微信 Native 与支付宝均使用真实订单; 不提供客户端模拟付款入口。
 const CHANNELS = [
   { id: "wechat", label: "微信" },
   { id: "alipay", label: "支付宝" },
-].filter((c) => WECHAT_PAY_ENABLED || c.id !== "wechat");
+];
 
-// 自动轮询到账：每 5s 一次，最多 2 分钟
+// 自动查本次订单：每 5s 一次，最多 15 分钟; 超时仍可手动查单。
 const POLL_INTERVAL_MS = 5000;
-const POLL_MAX_TICKS = 24;
+const POLL_MAX_TICKS = 180;
 
 // 套餐权益一行文案（后端现只售字数包：charAmount + validityDays）
 function planBenefit(p) {
@@ -50,23 +47,8 @@ function payDesc(p) {
   return `充值包 · ${p.name}${inner ? `（${inner}）` : ""}`;
 }
 
-// 额度快照对比：字数增加 或 订阅状态/到期时间变化 视为到账
-function quotaArrived(before, after) {
-  if (!after) return false;
-  const b = before || {};
-  const bRemain = Number(b.cloudRemaining ?? -1);
-  const aRemain = Number(after.cloudRemaining ?? -1);
-  if (aRemain > bRemain) return true;
-  const bSub = b.subscription || {};
-  const aSub = after.subscription || {};
-  if (!!aSub.active !== !!bSub.active) return true;
-  if ((aSub.endAt || "") !== (bSub.endAt || "")) return true;
-  return false;
-}
-
 // 套餐购买卡：列出套餐（免费档不售），选渠道购买。
-// 支付宝：createOrder→系统浏览器打开收银台→等待支付（手动确认 + 自动轮询到账）。
-// 微信（暂 mock）：createOrder→mockPay 一键走通。
+// createOrder → 应用内扫码 → 服务端确认本次订单 paid → 刷新额度。
 // props: { api, isLoggedIn, onLoginRequest, onPurchased }
 export function PlansCard({ api, isLoggedIn, onLoginRequest, onPurchased }) {
   const [plans, setPlans] = useState([]);
@@ -78,7 +60,10 @@ export function PlansCard({ api, isLoggedIn, onLoginRequest, onPurchased }) {
   const [paying, setPaying] = useState(null); // { plan, payUrl } 应用内扫码弹窗
   const [paidDone, setPaidDone] = useState(false); // 弹窗内成功态
   const [checking, setChecking] = useState(false);
-  const snapshotRef = useRef(null); // 下单前的额度快照
+  const mountedRef = useRef(false);
+  const checkoutGenerationRef = useRef(0);
+  const activeOrderRef = useRef(null);
+  const pollBusyRef = useRef(null);
   const pollTimerRef = useRef(null);
   const pollTicksRef = useRef(0);
   const closeTimerRef = useRef(null);
@@ -90,13 +75,31 @@ export function PlansCard({ api, isLoggedIn, onLoginRequest, onPurchased }) {
     }
   }, []);
 
-  useEffect(
-    () => () => {
-      stopPolling();
-      if (closeTimerRef.current) clearTimeout(closeTimerRef.current);
-    },
-    [stopPolling]
-  );
+  const isCurrentCheckout = useCallback((generation) =>
+    mountedRef.current && checkoutGenerationRef.current === generation, []);
+
+  const invalidateCheckout = useCallback(() => {
+    checkoutGenerationRef.current += 1;
+    activeOrderRef.current = null;
+    pollBusyRef.current = null;
+    stopPolling();
+    if (closeTimerRef.current) clearTimeout(closeTimerRef.current);
+    closeTimerRef.current = null;
+  }, [stopPolling]);
+
+  // 卸载、登录态或桥接变化都结束本次结账；迟到响应不得复活旧订单。
+  useEffect(() => {
+    mountedRef.current = true;
+    setBuyingCode("");
+    setWaiting(null);
+    setPaying(null);
+    setPaidDone(false);
+    setChecking(false);
+    return () => {
+      mountedRef.current = false;
+      invalidateCheckout();
+    };
+  }, [api, isLoggedIn, invalidateCheckout]);
 
   const loadPlans = useCallback(async () => {
     if (!api?.listPlans) {
@@ -127,41 +130,54 @@ export function PlansCard({ api, isLoggedIn, onLoginRequest, onPurchased }) {
     loadPlans();
   }, [loadPlans]);
 
-  const fetchQuotaSnapshot = useCallback(async () => {
-    if (!api?.getCloudQuota) return null;
-    try {
-      const r = await api.getCloudQuota();
-      if (r && r.success) {
-        return {
-          cloudRemaining: r.cloudRemaining ?? null,
-          subscription: r.subscription ?? null,
-        };
-      }
-    } catch (e) {
-      /* 快照失败不阻断购买 */
-    }
-    return null;
-  }, [api]);
-
   // 支付成功收尾：停轮询、弹窗内展示成功后自动关闭、提示并刷新父级额度
   const finishPaid = useCallback(
     (planName) => {
+      const generation = checkoutGenerationRef.current;
+      activeOrderRef.current = null;
       stopPolling();
       setWaiting(null);
       setPaidDone(true);
       toast.success(`支付成功：${planName}，云端字数已到账`);
       onPurchased && onPurchased();
+      if (!isCurrentCheckout(generation)) return;
       if (closeTimerRef.current) clearTimeout(closeTimerRef.current);
       closeTimerRef.current = setTimeout(() => {
+        if (!isCurrentCheckout(generation)) return;
         setPaying(null);
         setPaidDone(false);
       }, 1800);
     },
-    [stopPolling, onPurchased]
+    [stopPolling, onPurchased, isCurrentCheckout]
   );
 
+  const checkOrder = useCallback(async () => {
+    const active = activeOrderRef.current;
+    if (!active || pollBusyRef.current === active) return false;
+    pollBusyRef.current = active;
+    try {
+      const result = await api.getPaymentOrder(active.orderId);
+      if (activeOrderRef.current !== active) return false;
+      const order = result?.order;
+      if (!result?.success || String(order?.orderId) !== active.orderId || order?.channel !== active.channel) return false;
+      if (order.payStatus === "paid") {
+        finishPaid(active.planName);
+        return true;
+      }
+      if (["failed", "refunded"].includes(order.payStatus)) {
+        stopPolling();
+        toast.info("此订单已结束，请关闭窗口后重新下单");
+      }
+      return false;
+    } catch {
+      return false;
+    } finally {
+      if (pollBusyRef.current === active) pollBusyRef.current = null;
+    }
+  }, [api, finishPaid, stopPolling]);
+
   const startPolling = useCallback(
-    (planName) => {
+    () => {
       stopPolling();
       pollTicksRef.current = 0;
       pollTimerRef.current = setInterval(async () => {
@@ -170,55 +186,53 @@ export function PlansCard({ api, isLoggedIn, onLoginRequest, onPurchased }) {
           stopPolling();
           return;
         }
-        const now = await fetchQuotaSnapshot();
-        if (now && quotaArrived(snapshotRef.current, now)) {
-          finishPaid(planName);
-        }
+        await checkOrder();
       }, POLL_INTERVAL_MS);
     },
-    [stopPolling, fetchQuotaSnapshot, finishPaid]
+    [stopPolling, checkOrder]
   );
 
-  // 「我已完成支付」：手动刷新额度并判定到账（弹窗内与浏览器等待态共用）
+  // 只接受服务端本订单已入账的状态, 不根据客户端按钮或余额变化判断付款。
   const handleConfirmPaid = useCallback(async () => {
     const planName = waiting?.planName || paying?.plan?.name;
     if (checking || !planName) return;
+    const generation = checkoutGenerationRef.current;
     setChecking(true);
     try {
-      const now = await fetchQuotaSnapshot();
-      if (now && quotaArrived(snapshotRef.current, now)) {
-        finishPaid(planName);
-      } else {
-        onPurchased && onPurchased();
+      if (!(await checkOrder()) && isCurrentCheckout(generation) && activeOrderRef.current) {
         toast.info("暂未检测到到账，付款成功后请稍等片刻再点一次");
       }
     } finally {
-      setChecking(false);
+      if (isCurrentCheckout(generation)) setChecking(false);
     }
-  }, [checking, waiting, paying, fetchQuotaSnapshot, finishPaid, onPurchased]);
+  }, [checking, waiting, paying, checkOrder, isCurrentCheckout]);
 
   const handleCancelWaiting = useCallback(() => {
-    stopPolling();
+    invalidateCheckout();
+    setBuyingCode("");
+    setChecking(false);
     setWaiting(null);
     setPaying(null);
     setPaidDone(false);
-  }, [stopPolling]);
+  }, [invalidateCheckout]);
 
   // 「无法扫码？在浏览器中打开」：保留弹窗与轮询，用系统浏览器打开电脑收银台（payUrl 兜底）
   const handleOpenInBrowser = useCallback(async () => {
     const url = paying?.payUrl || paying?.wapPayUrl;
     if (!url || !api?.openExternal) return;
+    const generation = checkoutGenerationRef.current;
     try {
       await api.openExternal(url);
     } catch (e) {
-      toast.error("打开浏览器失败，请重试");
+      if (isCurrentCheckout(generation)) toast.error("打开浏览器失败，请重试");
     }
-  }, [paying, api]);
+  }, [paying, api, isCurrentCheckout]);
 
   // iframe 加载失败（如被 X-Frame-Options 意外拦截）：自动回退浏览器收银台 + 1.13.0 等待支付态
   const handleFrameError = useCallback(async () => {
     const plan = paying?.plan;
     const payUrl = paying?.payUrl;
+    const generation = checkoutGenerationRef.current;
     setPaying(null);
     setPaidDone(false);
     if (!plan || !payUrl) return;
@@ -229,56 +243,60 @@ export function PlansCard({ api, isLoggedIn, onLoginRequest, onPurchased }) {
         /* 打开失败下面仍进入等待态，可手动刷新 */
       }
     }
-    setWaiting({ planName: plan.name });
-  }, [paying, api]);
+    if (isCurrentCheckout(generation)) setWaiting({ planName: plan.name });
+  }, [paying, api, isCurrentCheckout]);
 
   const handleBuy = async (plan) => {
-    if (buyingCode || waiting || paying) return;
+    if (!mountedRef.current || buyingCode || waiting || paying) return;
     if (!isLoggedIn) {
       toast.error("请先登录后再购买");
       onLoginRequest && onLoginRequest();
       return;
     }
+    invalidateCheckout();
+    const generation = checkoutGenerationRef.current;
     setBuyingCode(plan.code);
     try {
+      if (!api?.createOrder || !api?.getPaymentOrder) {
+        toast.error("当前版本不支持订单查验，请更新应用");
+        return;
+      }
       const orderRes = await api.createOrder(plan.code, channel);
+      if (!isCurrentCheckout(generation)) return;
       if (!orderRes || !orderRes.success) {
         toast.error((orderRes && orderRes.error) || "下单失败");
         return;
       }
       const order = orderRes.order || {};
+      const orderId = String(order.orderId || order.id || "");
+      if (!/^[1-9]\d{0,18}$/.test(orderId) || order.payload?.mock === true) {
+        toast.error("支付服务暂不可用，请稍后重试");
+        return;
+      }
+      if (order.channel !== channel || order.planCode !== plan.code || Number(order.priceCents) !== Number(plan.priceCents)) {
+        toast.error("套餐或支付信息已变化，请刷新后重新购买");
+        return;
+      }
       const payUrl =
         order.payUrl || (order.payload && order.payload.payUrl) || null;
       const wapPayUrl =
         order.wapPayUrl || (order.payload && order.payload.wapPayUrl) || null;
+      const codeUrl = order.payload?.codeUrl || null;
+      const expiresAt = order.payload?.expiresAt || null;
 
-      if (payUrl || wapPayUrl) {
-        // 支付宝真实支付：先记额度快照，再打开应用内扫码弹窗
-        // 优先 wapPayUrl 本地生成二维码（手机扫码后直接在手机上付款）；无则回退 iframe 电脑收银台
-        snapshotRef.current = await fetchQuotaSnapshot();
+      if ((channel === "wechat" && typeof codeUrl === "string" && codeUrl.startsWith("weixin://")) || (channel === "alipay" && (payUrl || wapPayUrl))) {
+        activeOrderRef.current = { orderId, channel, planName: plan.name };
         setPaidDone(false);
-        setPaying({ plan, payUrl, wapPayUrl });
-        startPolling(plan.name);
+        setPaying({ plan, channel, payUrl, wapPayUrl, codeUrl, expiresAt });
+        startPolling();
         return;
       }
 
-      // mock 渠道（微信暂为模拟支付）：保持原一键直付流程
-      const orderId = order.orderId || order.id || null;
-      if (!orderId) {
-        toast.error("下单异常：缺少订单号");
-        return;
-      }
-      const payRes = await api.mockPay(orderId);
-      if (payRes && payRes.success) {
-        toast.success(`购买成功：${plan.name}（模拟支付）`);
-        onPurchased && onPurchased();
-      } else {
-        toast.error((payRes && payRes.error) || "支付失败");
-      }
+      toast.error("下单异常：未获得付款二维码");
     } catch (e) {
-      toast.error("购买失败，请检查网络后重试");
+      if (isCurrentCheckout(generation)) toast.error("购买失败，请检查网络后重试");
     } finally {
-      setBuyingCode("");
+      if (isCurrentCheckout(generation)) setBuyingCode("");
     }
   };
 
@@ -390,12 +408,10 @@ export function PlansCard({ api, isLoggedIn, onLoginRequest, onPurchased }) {
                 >
                   {busy ? (
                     <Loader2 className="w-4 h-4 animate-spin" />
-                  ) : isAlipay ? (
-                    <QrCode className="w-4 h-4" />
                   ) : (
-                    <CreditCard className="w-4 h-4" />
+                    <QrCode className="w-4 h-4" />
                   )}
-                  {isAlipay ? "支付宝支付" : "购买"}
+                  {isAlipay ? "支付宝支付" : "微信支付"}
                 </button>
               </div>
             );
@@ -403,15 +419,11 @@ export function PlansCard({ api, isLoggedIn, onLoginRequest, onPurchased }) {
         </div>
       )}
 
-      {channel !== "alipay" && (
-        <p className="mt-3 text-[12px] text-amber-600 dark:text-amber-400 flex items-center gap-1">
-          <CreditCard className="w-3.5 h-3.5" />
-          微信当前为体验版模拟支付，点击购买即时到账，不产生真实扣款。
-        </p>
-      )}
-
       {paying && (
         <PayQrModal
+          channel={paying.channel}
+          codeUrl={paying.codeUrl}
+          expiresAt={paying.expiresAt}
           desc={payDesc(paying.plan)}
           amountYuan={centsToYuan(paying.plan.priceCents)}
           payUrl={paying.payUrl}

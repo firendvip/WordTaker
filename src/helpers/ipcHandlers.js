@@ -1,5 +1,6 @@
 const { ipcMain } = require("electron");
 const AiService = require("./aiService");
+const { shouldSkipPolish } = require("../utils/shortTextPolicy.cjs");
 
 // 已停用 IPC 硬超时兜底：长语音转写润色可能耗时较久，硬超时会把长文本的润色请求
 // 提前中断并回退直贴原文（已确诊 BUG）。按用户要求去除该时间兜底，直接 await
@@ -158,6 +159,9 @@ class IPCHandlers {
       if (typeof text !== 'string' || !text.trim()) {
         return { success: false, error: '无有效文本' };
       }
+      if (mode !== 'translate-en' && shouldSkipPolish(text)) {
+        return { success: true, text, engine: 'passthrough' };
+      }
       // 润色模式（copywriting）按当前「角色」解析：normal→normal / gaoeq→gaoeq / vibecoding→copywriting。
       // 其它模式（如 optimize）保持原样透传。
       const effectiveMode = mode === 'copywriting' ? await this.aiService.getPolishMode() : mode;
@@ -257,6 +261,16 @@ class IPCHandlers {
     // 流式润色 + 增量上屏：边收边贴到光标处。返回 { success, text, pastedAny }
     ipcMain.handle("process-text-stream", async (event, text) => {
       if (typeof text !== "string" || !text.trim()) return { success: false, error: "无有效文本", pastedAny: false };
+      if (shouldSkipPolish(text)) {
+        return {
+          success: false,
+          text,
+          engine: "passthrough",
+          reason: "short_text_bypass",
+          code: "short-text-bypass",
+          pastedAny: false,
+        };
+      }
       // 不再做长度上限拦截：任意长度文本都允许走流式润色。
       // 流式上屏受设置开关控制（防御性）：llm_streaming_enabled 为 false 时返回明确的
       // streaming-unavailable。正常情况下渲染层关闭开关时也不会调用本 handler。
@@ -1093,7 +1107,7 @@ class IPCHandlers {
     // ——— CP3 会员/计费：套餐列表 / 下单 / dev 直付 / 兑换码 ———
     this.setupBillingHandlers();
 
-    // ——— CP2 登录闭环：手机验证码 / 邮箱验证码 / 微信(mock) ———
+    // ——— 登录闭环：仅手机验证码 ———
     this.setupAuthHandlers();
 
     // 调试和日志（level 白名单，防止 this.logger[level] 注入）
@@ -1446,7 +1460,10 @@ class IPCHandlers {
       if (typeof planCode !== "string" || !planCode.trim()) {
         return { success: false, error: "无效的套餐", code: "INVALID_PLAN" };
       }
-      const ch = channel === "alipay" ? "alipay" : "wechat";
+      if (!["alipay", "wechat"].includes(channel)) {
+        return { success: false, error: "无效的支付渠道", code: "INVALID_CHANNEL" };
+      }
+      const ch = channel;
       if (!requireLogin()) {
         return { success: false, error: "请先登录后再购买", code: "UNAUTHORIZED" };
       }
@@ -1456,6 +1473,22 @@ class IPCHandlers {
       } catch (error) {
         this.logger.warn("创建订单失败:", error?.message || error);
         return failFromError(error, "创建订单失败");
+      }
+    });
+
+    // 查本人订单（需登录）。身份仍只由主进程令牌决定。
+    ipcMain.handle("get-payment-order", async (event, orderId) => {
+      if (typeof orderId !== "string" || !/^[1-9]\d{0,18}$/.test(orderId)) {
+        return { success: false, error: "无效的订单", code: "INVALID_ORDER" };
+      }
+      if (!requireLogin()) {
+        return { success: false, error: "请先登录", code: "UNAUTHORIZED" };
+      }
+      try {
+        return { success: true, order: await backendClient.getPaymentOrder(orderId) };
+      } catch (error) {
+        this.logger.warn("查询支付订单失败", { kind: error?.kind, code: error?.code });
+        return failFromError(error, "查询支付订单失败");
       }
     });
 
@@ -1504,11 +1537,9 @@ class IPCHandlers {
     const backendClient = require("./backendClient");
     const tokenStore = require("./tokenStore");
 
-    // 手机号 / 邮箱轻校验（IPC 是信任边界，先在主进程侧拦明显非法值）。
+    // IPC 是信任边界，手机号和六位短信验证码必须再次校验。
     const isValidPhone = (p) => typeof p === "string" && /^1[3-9]\d{9}$/.test(p.trim());
-    const isValidEmail = (e) =>
-      typeof e === "string" && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e.trim());
-    const isValidCode = (c) => typeof c === "string" && /^\d{4,8}$/.test(c.trim());
+    const isValidCode = (c) => typeof c === "string" && /^\d{6}$/.test(c.trim());
 
     // 把后端结构化错误映射为渲染层友好的 { success:false, error, kind, code }。
     const failFromError = (error, fallbackMsg) => ({
@@ -1521,7 +1552,17 @@ class IPCHandlers {
     // 登录成功统一收尾：写 tokenStore（token + 账号摘要），返回登录态。
     const persistLogin = (data) => {
       const account = (data && data.account) || null;
-      tokenStore.set({ accessToken: data.accessToken, account });
+      const persisted = tokenStore.set({
+        accessToken: data.accessToken,
+        refreshToken: data.refreshToken,
+        account,
+      });
+      if (!persisted) {
+        const error = new Error("无法安全保存登录状态，请重试");
+        error.kind = "auth";
+        error.code = "AUTH_PERSISTENCE_FAILED";
+        throw error;
+      }
       return {
         success: true,
         loggedIn: true,
@@ -1539,10 +1580,13 @@ class IPCHandlers {
         return { success: false, error: "手机号格式不正确", code: "INVALID_PHONE" };
       }
       try {
-        await backendClient.authSmsSend(phone.trim());
+        const json = await backendClient.authSmsSend(phone.trim());
+        if (json?.success !== true || json?.data?.sent !== true) {
+          return { success: false, error: "短信未发送成功，请稍后重试" };
+        }
         return { success: true };
       } catch (error) {
-        this.logger.warn("发送短信验证码失败:", error?.message || error);
+        this.logger.warn("发送短信验证码失败", { kind: error?.kind, status: error?.status });
         return failFromError(error, "发送验证码失败");
       }
     });
@@ -1556,286 +1600,47 @@ class IPCHandlers {
         return { success: false, error: "验证码格式不正确", code: "INVALID_CODE" };
       }
       try {
+        const generation = tokenStore.getGeneration();
         const json = await backendClient.authSmsLogin(
           phone.trim(),
           code.trim(),
           typeof inviteCode === "string" ? inviteCode.trim() : undefined
         );
+        if (tokenStore.getGeneration() !== generation) {
+          return { success: false, error: "登录状态已变更", code: "SESSION_CHANGED" };
+        }
         const data = (json && json.data) || {};
-        if (!data.accessToken) return { success: false, error: "登录失败：无 token" };
+        if (
+          json?.success !== true ||
+          typeof data.accessToken !== "string" ||
+          !data.accessToken.trim() ||
+          typeof data.refreshToken !== "string" ||
+          !data.refreshToken.trim()
+        ) {
+          return { success: false, error: "登录失败，请重新获取验证码后重试" };
+        }
         return persistLogin(data);
       } catch (error) {
-        this.logger.warn("手机验证码登录失败:", error?.message || error);
+        this.logger.warn("手机验证码登录失败", { kind: error?.kind, status: error?.status });
         return failFromError(error, "登录失败");
-      }
-    });
-
-    // 发码：邮箱
-    ipcMain.handle("auth-email-send", async (event, email) => {
-      if (!isValidEmail(email)) {
-        return { success: false, error: "邮箱格式不正确", code: "INVALID_EMAIL" };
-      }
-      try {
-        await backendClient.authEmailSend(email.trim());
-        return { success: true };
-      } catch (error) {
-        this.logger.warn("发送邮箱验证码失败:", error?.message || error);
-        return failFromError(error, "发送验证码失败");
-      }
-    });
-
-    // 登录：邮箱 + 验证码
-    ipcMain.handle("auth-email-login", async (event, email, code, inviteCode) => {
-      if (!isValidEmail(email)) {
-        return { success: false, error: "邮箱格式不正确", code: "INVALID_EMAIL" };
-      }
-      if (!isValidCode(code)) {
-        return { success: false, error: "验证码格式不正确", code: "INVALID_CODE" };
-      }
-      try {
-        const json = await backendClient.authEmailLogin(
-          email.trim(),
-          code.trim(),
-          typeof inviteCode === "string" ? inviteCode.trim() : undefined
-        );
-        const data = (json && json.data) || {};
-        if (!data.accessToken) return { success: false, error: "登录失败：无 token" };
-        return persistLogin(data);
-      } catch (error) {
-        this.logger.warn("邮箱验证码登录失败:", error?.message || error);
-        return failFromError(error, "登录失败");
-      }
-    });
-
-    // 登录：微信（应用内弹窗承载官方 qrconnect 页 + 拦截回调 code）
-    // 编排：取授权 URL(含 redirect_uri+state) → 开内嵌窗打开官方页
-    //   → 拦截回调（阻止真正载入，避免 code 被消耗）→ 校验 state → 换取 JWT。
-    ipcMain.handle("auth-wechat-login", async (event, inviteCode) => {
-      const invite = typeof inviteCode === "string" ? inviteCode.trim() : undefined;
-      const WECHAT_TIMEOUT_MS = 180000;
-      const { BrowserWindow } = require("electron");
-
-      let step;
-      try {
-        step = await backendClient.getWechatAuthUrl();
-      } catch (error) {
-        this.logger.warn("获取微信授权链接失败:", error?.message || error);
-        return failFromError(error, "微信登录失败");
-      }
-      const authUrl = step && step.url;
-      const expectedState = step && step.state;
-      if (!authUrl) return { success: false, error: "微信登录失败：无授权链接" };
-
-      // 以授权 URL 里真实的 redirect_uri 为回调拦截前缀（兼容 dev/prod）。
-      let redirectPrefix;
-      try {
-        const ru = new URL(authUrl).searchParams.get("redirect_uri");
-        redirectPrefix = ru ? decodeURIComponent(ru) : null;
-      } catch (_) {
-        redirectPrefix = null;
-      }
-      if (!redirectPrefix) return { success: false, error: "微信登录失败：无回调地址" };
-
-      const parent = this.windowManager && this.windowManager.mainWindow;
-      const win = new BrowserWindow({
-        width: 400,
-        height: 600,
-        parent: parent && !parent.isDestroyed() ? parent : undefined,
-        modal: false,
-        title: "微信登录",
-        center: true,
-        resizable: false,
-        minimizable: false,
-        maximizable: false,
-        fullscreenable: false,
-        autoHideMenuBar: true,
-        backgroundColor: "#ffffff",
-        show: false,
-        webPreferences: {
-          nodeIntegration: false,
-          contextIsolation: true,
-          sandbox: true,
-        },
-      });
-      // 就绪后再显示，避免加载时白屏闪烁。
-      win.webContents.once("ready-to-show", () => {
-        if (!win.isDestroyed()) win.show();
-      });
-
-      // 用 Promise 收敛所有出口（拦截成功 / 用户关窗 / 超时 / 异常），
-      // 并在 finally 统一清理监听器与窗口，防泄漏。
-      const result = await new Promise((resolve) => {
-        let settled = false;
-        let timer = null;
-
-        const cleanup = () => {
-          if (timer) {
-            clearTimeout(timer);
-            timer = null;
-          }
-          try {
-            win.webContents.removeListener("will-redirect", onNavigate);
-            win.webContents.removeListener("will-navigate", onNavigate);
-            win.webContents.removeListener("did-fail-load", onFailLoad);
-            win.webContents.removeListener("did-finish-load", onFinishLoad);
-            win.removeListener("closed", onClosed);
-          } catch (_) {}
-          if (!win.isDestroyed()) win.close();
-        };
-
-        const finish = (value) => {
-          if (settled) return;
-          settled = true;
-          cleanup();
-          resolve(value);
-        };
-
-        const onNavigate = (evt, targetUrl) => {
-          if (typeof targetUrl !== "string" || !targetUrl.startsWith(redirectPrefix)) return;
-          // 阻止真正载入后端 GET，避免一次性 code 被消耗。
-          evt.preventDefault();
-          let code, state;
-          try {
-            const q = new URL(targetUrl).searchParams;
-            code = q.get("code");
-            state = q.get("state");
-          } catch (_) {}
-          if (expectedState && state !== expectedState) {
-            finish({ success: false, error: "微信登录失败：状态校验不通过" });
-            return;
-          }
-          if (!code) {
-            finish({ success: false, error: "微信登录失败：未获取到授权码" });
-            return;
-          }
-          finish({ __code: code });
-        };
-
-        const onClosed = () => {
-          if (settled) return;
-          settled = true;
-          resolve({ success: false, error: "已取消微信登录" });
-        };
-
-        // 内联友好页（居中、简洁），仅用于展示，点关闭=取消登录。
-        const friendlyPage = (title, message) => {
-          const esc = (s) =>
-            String(s == null ? "" : s)
-              .replace(/&/g, "&amp;")
-              .replace(/</g, "&lt;")
-              .replace(/>/g, "&gt;")
-              .replace(/"/g, "&quot;");
-          const html =
-            '<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">' +
-            '<meta name="viewport" content="width=device-width,initial-scale=1">' +
-            "<style>html,body{height:100%;margin:0}" +
-            "body{display:flex;align-items:center;justify-content:center;" +
-            "font-family:-apple-system,BlinkMacSystemFont,'PingFang SC','Helvetica Neue',sans-serif;" +
-            "background:#fff;color:#333}" +
-            ".box{max-width:300px;text-align:center;padding:24px}" +
-            ".t{font-size:16px;font-weight:600;margin-bottom:10px}" +
-            ".m{font-size:13px;line-height:1.6;color:#666;margin-bottom:22px}" +
-            ".btn{appearance:none;border:none;border-radius:8px;background:#07c160;" +
-            "color:#fff;font-size:14px;padding:9px 26px;cursor:pointer}" +
-            ".btn:hover{background:#06ad56}</style></head><body>" +
-            '<div class="box"><div class="t">' +
-            esc(title) +
-            '</div><div class="m">' +
-            esc(message) +
-            '</div><button class="btn" onclick="window.close()">关闭</button></div>' +
-            "</body></html>";
-          return "data:text/html;charset=utf-8," + encodeURIComponent(html);
-        };
-
-        // 网络失败友好页（忽略主动取消 -3）。不影响正常拦截流程。
-        const onFailLoad = (evt, errorCode, _errorDesc, _validatedURL, isMainFrame) => {
-          try {
-            if (settled) return;
-            if (!isMainFrame) return;
-            if (errorCode === -3) return; // ERR_ABORTED：多为拦截时的主动取消
-            if (win.isDestroyed()) return;
-            win.loadURL(
-              friendlyPage("无法连接微信服务器", "请检查网络后重试")
-            ).catch(() => {});
-          } catch (_) {}
-        };
-
-        // 微信报错友好化（保守白名单，防误伤正常扫码页）。
-        const WECHAT_ERROR_PHRASES = [
-          "Scope 参数错误",
-          "没有 Scope 权限",
-          "redirect_uri 参数错误",
-          "appid 参数错误",
-          "该链接无法访问",
-          "无法访问",
-        ];
-        const onFinishLoad = () => {
-          try {
-            if (settled) return;
-            if (win.isDestroyed()) return;
-            let cur = "";
-            try {
-              cur = win.webContents.getURL() || "";
-            } catch (_) {}
-            // 已跳到 redirect_uri（回调）时不处理，交给拦截逻辑。
-            if (redirectPrefix && cur.startsWith(redirectPrefix)) return;
-            win.webContents
-              .executeJavaScript("document.body.innerText")
-              .then((text) => {
-                try {
-                  if (settled) return;
-                  if (win.isDestroyed()) return;
-                  const body = typeof text === "string" ? text : "";
-                  if (!body) return;
-                  const hit = WECHAT_ERROR_PHRASES.find((p) => body.includes(p));
-                  if (!hit) return;
-                  const snippet = body.trim().slice(0, 60);
-                  win.loadURL(
-                    friendlyPage("微信登录暂不可用", snippet || hit)
-                  ).catch(() => {});
-                } catch (_) {}
-              })
-              .catch(() => {});
-          } catch (_) {}
-        };
-
-        timer = setTimeout(() => finish({ success: false, error: "微信登录超时" }), WECHAT_TIMEOUT_MS);
-
-        win.webContents.on("will-redirect", onNavigate);
-        win.webContents.on("will-navigate", onNavigate);
-        win.webContents.on("did-fail-load", onFailLoad);
-        win.webContents.on("did-finish-load", onFinishLoad);
-        win.on("closed", onClosed);
-        win.loadURL(authUrl).catch((err) => {
-          finish({ success: false, error: err?.message || "微信登录失败：页面加载失败" });
-        });
-      });
-
-      // 未拿到 code 的各类出口，直接返回其失败结构。
-      if (!result || !result.__code) return result;
-
-      try {
-        const json = await backendClient.authWechatLogin(result.__code, invite);
-        const data = (json && json.data) || {};
-        if (!data.accessToken) return { success: false, error: "微信登录失败：无 token" };
-        return persistLogin(data);
-      } catch (error) {
-        this.logger.warn("微信登录失败:", error?.message || error);
-        return failFromError(error, "微信登录失败");
       }
     });
 
     // 拉取当前账号（校验 token 有效 + 刷新账号摘要）
     ipcMain.handle("auth-me", async () => {
       try {
+        const generation = tokenStore.getGeneration();
         const json = await backendClient.authMe();
+        // IPC await 之后再守一次边界，防迟到的 A 摘要写入 B 的凭据。
+        if (tokenStore.getGeneration() !== generation) {
+          return { success: false, error: "登录状态已变更", code: "SESSION_CHANGED" };
+        }
         const d = (json && json.data) || {};
         // auth/me 的 data 形如 { account, cloudRemaining, subscription }；
         // 兼容后端直接返回账号对象的情况（无 data.account 时回退 data 本身）。
         const account = d.account || (json && json.data) || null;
-        // 刷新本地账号摘要（token 不变）
-        const t = tokenStore.get();
-        if (t && account) tokenStore.set({ accessToken: t.accessToken, account });
+        // 只更新账号摘要，不改动或丢弃 access / refresh。
+        if (account) tokenStore.updateAccount(account);
         return {
           success: true,
           account,
@@ -1843,9 +1648,10 @@ class IPCHandlers {
           subscription: d.subscription ?? null,
         };
       } catch (error) {
-        // 401 视为登录态失效：清除本地 token
-        if (error && error.status === 401) {
-          tokenStore.clear();
+        // backendClient 已先尝试自动刷新；只有 refresh 被服务端明确拒绝时
+        // tokenStore 才已清空。普通网络错误、超时、5xx 与存量无 refresh 的
+        // 旧会话都保留本地摘要，不能误表现为主动退出。
+        if (error?.status === 401 && !tokenStore.get()) {
           return { success: false, error: "登录已失效", code: "UNAUTHORIZED", loggedIn: false };
         }
         return failFromError(error, "获取账号失败");
@@ -1855,7 +1661,13 @@ class IPCHandlers {
     // 退出登录：清除本地 token
     ipcMain.handle("auth-logout", async () => {
       try {
-        tokenStore.clear();
+        if (!tokenStore.clear()) {
+          return {
+            success: false,
+            error: "退出登录未能保存，请重试",
+            code: "AUTH_LOGOUT_PERSISTENCE_FAILED",
+          };
+        }
         return { success: true };
       } catch (error) {
         return { success: false, error: error?.message || "退出登录失败" };
@@ -1868,7 +1680,8 @@ class IPCHandlers {
         const t = tokenStore.get();
         return { success: true, loggedIn: !!t, account: (t && t.account) || null };
       } catch (error) {
-        return { success: false, loggedIn: false, account: null };
+        // 暂时读不到钥匙串时不宣称已退出，恢复后可再次读取。
+        return failFromError(error, "暂时无法读取登录状态，请稍后重试");
       }
     });
   }

@@ -82,6 +82,20 @@ contextBridge.exposeInMainWorld("electronAPI", {
   hideRecorder: () => ipcRenderer.invoke("hide-recorder"),
   // 通知主进程录音开始/结束（用于按需注册 Esc 取消键）
   setRecorderState: (recording) => ipcRenderer.send("recorder-state", recording),
+  getRecorderSessionState: () => ipcRenderer.invoke("get-recorder-session-state"),
+  onRecorderStateChanged: (callback) => {
+    const listener = (_event, state) => callback(state);
+    ipcRenderer.on("recorder-state-changed", listener);
+    return () => ipcRenderer.removeListener("recorder-state-changed", listener);
+  },
+  onRecorderWindowVisibilityChanged: (callback) => {
+    const listener = (_event, visible) => callback(visible);
+    ipcRenderer.on("recorder-window-visibility-changed", listener);
+    return () =>
+      ipcRenderer.removeListener("recorder-window-visibility-changed", listener);
+  },
+  setQuotaBubbleVisible: (visible) =>
+    ipcRenderer.invoke("set-quota-bubble-visible", Boolean(visible)),
   // 监听取消录音事件（Esc 触发）
   onCancelRecording: (callback) => {
     ipcRenderer.on("cancel-recording", callback);
@@ -173,16 +187,14 @@ contextBridge.exposeInMainWorld("electronAPI", {
   // CP3 会员/计费：套餐 / 下单 / dev 直付 / 兑换码（改额度操作需登录，头由主进程注入）
   listPlans: () => ipcRenderer.invoke("list-plans"),
   createOrder: (planCode, channel) => ipcRenderer.invoke("create-order", planCode, channel),
+  getPaymentOrder: (orderId) => ipcRenderer.invoke("get-payment-order", orderId),
   mockPay: (orderId) => ipcRenderer.invoke("mock-pay", orderId),
   // 用系统默认浏览器打开链接（主进程校验 http/https + 域名白名单：支付宝收银台/look3.cn）
   openExternal: (url) => ipcRenderer.invoke("open-external", url),
   redeemCode: (code) => ipcRenderer.invoke("redeem-code", code),
-  // CP2 登录：手机验证码 / 邮箱验证码 / 微信(mock) + 账号态
+  // 登录仅支持手机验证码；账号态及令牌只由主进程维护。
   authSmsSend: (phone) => ipcRenderer.invoke("auth-sms-send", phone),
   authSmsLogin: (phone, code, inviteCode) => ipcRenderer.invoke("auth-sms-login", phone, code, inviteCode),
-  authEmailSend: (email) => ipcRenderer.invoke("auth-email-send", email),
-  authEmailLogin: (email, code, inviteCode) => ipcRenderer.invoke("auth-email-login", email, code, inviteCode),
-  authWechatLogin: (inviteCode) => ipcRenderer.invoke("auth-wechat-login", inviteCode),
   authMe: () => ipcRenderer.invoke("auth-me"),
   getAuthState: () => ipcRenderer.invoke("get-auth-state"),
   authLogout: () => ipcRenderer.invoke("auth-logout"),

@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import { toast } from "sonner";
-import { Loader2, LogOut, Mail, Smartphone, MessageCircle } from "lucide-react";
+import { Loader2, Smartphone } from "lucide-react";
 import { useCloudQuota } from "./useCloudQuota";
 import { QuotaCard } from "./QuotaCard";
 import { InviteCard } from "./InviteCard";
@@ -8,19 +8,8 @@ import { RedeemCard } from "./RedeemCard";
 import { PlansCard } from "./PlansCard";
 import { MembershipHero } from "./MembershipHero";
 
-// 短信登录开关：渠道调整暂下线手机验证码入口（代码保留，置 true 即恢复）。
-const SMS_LOGIN_ENABLED = false;
-
-// 登录方式：手机验证码 / 邮箱验证码
-const METHODS = [
-  { id: "phone", label: "手机验证码", icon: Smartphone },
-  { id: "email", label: "邮箱验证码", icon: Mail },
-].filter((m) => SMS_LOGIN_ENABLED || m.id !== "phone");
-
 const CODE_RESEND_SECONDS = 60;
-
-// 微信登录开关：微信开放平台「网站应用」appid 已配好 snsapi_login（real qrconnect），启用。
-const WECHAT_LOGIN_ENABLED = true;
+const PHONE_PATTERN = /^1[3-9]\d{9}$/;
 
 // 账户/会员面板：登录闭环 + 云端额度 + 邀请码 + 兑换码 + 套餐购买（dev mock 支付）。
 // 额度卡匿名可见；改额度操作（兑换/购买）需登录，未登录时引导先登录。
@@ -28,10 +17,10 @@ export function AccountPanel({ rowLabelClass }) {
   const api = typeof window !== "undefined" ? window.electronAPI : null;
 
   const [initializing, setInitializing] = useState(true);
+  const [readingAuth, setReadingAuth] = useState(false);
+  const [authReadError, setAuthReadError] = useState(false);
   const [account, setAccount] = useState(null); // 已登录账号摘要
-  const [method, setMethod] = useState(METHODS[0].id);
   const [phone, setPhone] = useState("");
-  const [email, setEmail] = useState("");
   const [code, setCode] = useState("");
   const [inviteCode, setInviteCode] = useState("");
   const [sending, setSending] = useState(false);
@@ -39,8 +28,17 @@ export function AccountPanel({ rowLabelClass }) {
   const [countdown, setCountdown] = useState(0);
   const [showLoginModal, setShowLoginModal] = useState(false);
   const timerRef = useRef(null);
+  const mountedRef = useRef(false);
+  const authGenerationRef = useRef(0);
+  const authReadRef = useRef(null);
+  const authActionPendingRef = useRef(false);
+
+  const isCurrentAuth = useCallback((generation) =>
+    mountedRef.current && authGenerationRef.current === generation, []);
 
   const isLoggedIn = !!account;
+  const validPhone = PHONE_PATTERN.test(phone.trim());
+  const smsAvailable = typeof api?.authSmsSend === "function" && typeof api?.authSmsLogin === "function";
 
   // 云端额度：进面板即拉一次（未登录拉匿名设备赠送额度）；兑换/购买/登录后 refresh；
   // 退出登录先 clear 清零，随后 hook 依 isLoggedIn 变化自动重拉（拿到匿名设备额度，可能为 0）。
@@ -49,9 +47,11 @@ export function AccountPanel({ rowLabelClass }) {
 
   // 已登录时向后端拉最新账号摘要（含 inviteCode / 订阅），失败静默不影响本地态。
   const refreshAccount = useCallback(async () => {
-    if (!api?.authMe) return;
+    if (!mountedRef.current || !api?.authMe) return;
+    const generation = authGenerationRef.current;
     try {
       const r = await api.authMe();
+      if (!isCurrentAuth(generation)) return;
       if (r && r.success && r.account) {
         setAccount((prev) => ({ ...(prev || {}), ...r.account }));
       } else if (r && r.loggedIn === false) {
@@ -60,28 +60,47 @@ export function AccountPanel({ rowLabelClass }) {
     } catch (e) {
       /* 网络失败保留本地摘要 */
     }
-  }, [api]);
+  }, [api, isCurrentAuth]);
 
-  // 启动时读取本地登录态（不打网络），登录时再联网刷新账号摘要
-  useEffect(() => {
-    let alive = true;
-    (async () => {
-      try {
-        const st = api?.getAuthState ? await api.getAuthState() : null;
-        if (alive && st && st.loggedIn) {
-          setAccount(st.account || {});
-          refreshAccount();
-        }
-      } catch (e) {
-        /* 读取失败视为未登录 */
-      } finally {
-        if (alive) setInitializing(false);
+  // 读取失败是未知态，手动重试或窗口恢复焦点后再查；同一读取不重复派发。
+  const readAuthState = useCallback(async () => {
+    if (!mountedRef.current || authReadRef.current !== null || authActionPendingRef.current) return;
+    const generation = ++authGenerationRef.current;
+    authReadRef.current = generation;
+    setReadingAuth(true);
+    try {
+      const st = api?.getAuthState ? await api.getAuthState() : null;
+      if (!isCurrentAuth(generation)) return;
+      if (st?.success === false || typeof st?.loggedIn !== "boolean") {
+        setAuthReadError(true);
+        return;
       }
-    })();
+      setAuthReadError(false);
+      setAccount(st.loggedIn ? st.account || {} : null);
+      if (st.loggedIn) refreshAccount();
+    } catch {
+      if (isCurrentAuth(generation)) setAuthReadError(true);
+    } finally {
+      if (authReadRef.current === generation) authReadRef.current = null;
+      if (isCurrentAuth(generation)) {
+        setReadingAuth(false);
+        setInitializing(false);
+      }
+    }
+  }, [api, isCurrentAuth, refreshAccount]);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    readAuthState();
+    const onFocus = () => readAuthState();
+    window.addEventListener("focus", onFocus);
     return () => {
-      alive = false;
+      mountedRef.current = false;
+      authGenerationRef.current += 1;
+      authReadRef.current = null;
+      window.removeEventListener("focus", onFocus);
     };
-  }, [api, refreshAccount]);
+  }, [readAuthState]);
 
   // 倒计时清理
   useEffect(() => {
@@ -114,17 +133,16 @@ export function AccountPanel({ rowLabelClass }) {
     }, 1000);
   }, []);
 
-  const account_identifier = method === "phone" ? phone : email;
-
   // 发送验证码
   const handleSend = async () => {
-    if (sending || countdown > 0) return;
+    if (sending || submitting || countdown > 0 || !smsAvailable) return;
+    if (!validPhone) {
+      toast.error("请输入正确的 11 位手机号");
+      return;
+    }
     setSending(true);
     try {
-      const r =
-        method === "phone"
-          ? await api.authSmsSend(phone.trim())
-          : await api.authEmailSend(email.trim());
+      const r = await api.authSmsSend(phone.trim());
       if (r && r.success) {
         toast.success("验证码已发送");
         startCountdown();
@@ -138,21 +156,28 @@ export function AccountPanel({ rowLabelClass }) {
     }
   };
 
-  // 提交登录（手机 / 邮箱）
+  // 提交手机验证码；首次验证通过由后端自动创建账号。
   const handleLogin = async () => {
-    if (submitting) return;
-    if (!code.trim()) {
-      toast.error("请输入验证码");
+    if (authActionPendingRef.current || submitting || sending || !smsAvailable) return;
+    if (!validPhone) {
+      toast.error("请输入正确的 11 位手机号");
       return;
     }
+    if (!/^\d{6}$/.test(code.trim())) {
+      toast.error("请输入 6 位数字验证码");
+      return;
+    }
+    authActionPendingRef.current = true;
+    const generation = ++authGenerationRef.current;
+    authReadRef.current = null;
+    setReadingAuth(false);
     setSubmitting(true);
     try {
       const invite = inviteCode.trim() || undefined;
-      const r =
-        method === "phone"
-          ? await api.authSmsLogin(phone.trim(), code.trim(), invite)
-          : await api.authEmailLogin(email.trim(), code.trim(), invite);
+      const r = await api.authSmsLogin(phone.trim(), code.trim(), invite);
+      if (!isCurrentAuth(generation)) return;
       if (r && r.success) {
+        setAuthReadError(false);
         setAccount(r.account || {});
         setCode("");
         setInviteCode("");
@@ -164,40 +189,33 @@ export function AccountPanel({ rowLabelClass }) {
         toast.error((r && r.error) || "登录失败");
       }
     } catch (e) {
-      toast.error("登录失败，请重试");
+      if (isCurrentAuth(generation)) toast.error("登录失败，请重试");
     } finally {
-      setSubmitting(false);
-    }
-  };
-
-  // 微信登录（mock）
-  const handleWechat = async () => {
-    if (submitting) return;
-    setSubmitting(true);
-    try {
-      const invite = inviteCode.trim() || undefined;
-      const r = await api.authWechatLogin(invite);
-      if (r && r.success) {
-        setAccount(r.account || {});
-        toast.success(r.isNew ? "微信注册并登录成功" : "微信登录成功");
-        refreshAccount();
-        refreshQuota();
-      } else {
-        toast.error((r && r.error) || "微信登录失败");
-      }
-    } catch (e) {
-      toast.error("微信登录失败，请重试");
-    } finally {
-      setSubmitting(false);
+      authActionPendingRef.current = false;
+      if (isCurrentAuth(generation)) setSubmitting(false);
     }
   };
 
   const handleLogout = async () => {
+    if (authActionPendingRef.current) return;
+    authActionPendingRef.current = true;
+    const generation = ++authGenerationRef.current;
+    authReadRef.current = null;
+    setReadingAuth(false);
     try {
-      await api.authLogout();
+      const result = await api.authLogout();
+      if (!isCurrentAuth(generation)) return;
+      if (!result?.success) {
+        toast.error(result?.error || "退出登录失败，请重试");
+        return;
+      }
     } catch (e) {
-      /* 即便失败也清本地态 */
+      if (isCurrentAuth(generation)) toast.error("退出登录失败，请重试");
+      return;
+    } finally {
+      authActionPendingRef.current = false;
     }
+    setAuthReadError(false);
     setAccount(null);
     // 立即清零本地额度态：不能让原账号的云端字数在退出后继续显示
     clearQuota();
@@ -210,6 +228,26 @@ export function AccountPanel({ rowLabelClass }) {
         <div className="p-10 flex items-center justify-center">
           <Loader2 className="w-5 h-5 animate-spin text-neutral-400" />
         </div>
+      </div>
+    );
+  }
+
+  if (authReadError) {
+    return (
+      <div className="bg-white dark:bg-neutral-900 rounded-2xl shadow-sm border border-gray-100 dark:border-neutral-800 p-6">
+        <p role="alert" className="text-sm text-gray-600 dark:text-neutral-300 mb-3">
+          暂时无法读取登录状态，请稍后重试。
+        </p>
+        <button
+          type="button"
+          onClick={readAuthState}
+          disabled={readingAuth}
+          aria-busy={readingAuth}
+          className="inline-flex items-center gap-2 px-3 py-2 rounded-lg text-sm text-blue-600 dark:text-blue-400 border border-blue-200 dark:border-blue-800 disabled:opacity-60 disabled:cursor-not-allowed"
+        >
+          {readingAuth && <Loader2 aria-hidden="true" className="w-4 h-4 animate-spin" />}
+          重试读取登录状态
+        </button>
       </div>
     );
   }
@@ -281,10 +319,7 @@ export function AccountPanel({ rowLabelClass }) {
   }
 
   // 未登录：会员区块（含匿名额度）+ 登录表单
-  const sendDisabled =
-    sending ||
-    countdown > 0 ||
-    (method === "phone" ? !phone.trim() : !email.trim());
+  const sendDisabled = sending || submitting || countdown > 0 || !validPhone || !smsAvailable;
 
   return (
     <div className="space-y-3">
@@ -310,72 +345,47 @@ export function AccountPanel({ rowLabelClass }) {
             </button>
             <div className="px-6">
               <div className="py-5">
-          <h3 className={`${rowLabelClass} chinese-title mb-1`}>登录账号：</h3>
+          <h3 className={`${rowLabelClass} chinese-title mb-1 inline-flex items-center gap-2`}>
+            <Smartphone className="w-4 h-4" />手机验证码登录
+          </h3>
           <p className="text-[12px] text-gray-500 dark:text-neutral-400 mb-4">
-            登录后可跨设备同步、购买套餐、使用邀请与兑换码。
+            验证通过即登录，未注册的手机号将自动创建账号。
           </p>
-
-          {/* 方式切换 */}
-          <div className="inline-flex p-1 rounded-xl bg-gray-100 dark:bg-neutral-800 mb-4">
-            {METHODS.map((m) => {
-              const Icon = m.icon;
-              const active = method === m.id;
-              return (
-                <button
-                  key={m.id}
-                  type="button"
-                  onClick={() => {
-                    setMethod(m.id);
-                    setCode("");
-                  }}
-                  className={`inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-[13px] font-medium transition-colors ${
-                    active
-                      ? "bg-white dark:bg-neutral-900 text-blue-600 dark:text-blue-400 shadow-sm"
-                      : "text-gray-500 dark:text-neutral-400 hover:text-gray-700 dark:hover:text-neutral-200"
-                  }`}
-                >
-                  <Icon className="w-3.5 h-3.5" />
-                  {m.label}
-                </button>
-              );
-            })}
-          </div>
+          {!smsAvailable && <p role="alert" className="text-sm text-red-600 mb-3">当前环境暂不支持手机验证码登录，请重新打开应用。</p>}
 
           {/* 账号输入 */}
           <div className="space-y-3">
             <div>
-              <label className="block text-[12px] font-medium text-gray-600 dark:text-neutral-300 mb-1">
-                {method === "phone" ? "手机号" : "邮箱"}
+              <label htmlFor="login-phone" className="block text-[12px] font-medium text-gray-600 dark:text-neutral-300 mb-1">
+                手机号（中国大陆 +86）
               </label>
-              {method === "phone" ? (
                 <input
+                  id="login-phone"
                   type="tel"
                   inputMode="numeric"
+                  autoComplete="tel-national"
+                  maxLength={11}
+                  disabled={sending || submitting}
                   value={phone}
-                  onChange={(e) => setPhone(e.target.value)}
+                  onChange={(e) => { setPhone(e.target.value); setCode(""); }}
                   placeholder="请输入手机号"
                   className="w-full px-3 py-2 text-sm border border-gray-300 dark:border-neutral-700 rounded-lg focus:ring-1 focus:ring-blue-400 focus:border-transparent bg-white dark:bg-neutral-800 text-gray-900 dark:text-gray-100"
                 />
-              ) : (
-                <input
-                  type="email"
-                  value={email}
-                  onChange={(e) => setEmail(e.target.value)}
-                  placeholder="you@example.com"
-                  className="w-full px-3 py-2 text-sm border border-gray-300 dark:border-neutral-700 rounded-lg focus:ring-1 focus:ring-blue-400 focus:border-transparent bg-white dark:bg-neutral-800 text-gray-900 dark:text-gray-100"
-                />
-              )}
             </div>
 
             {/* 验证码 + 发送 */}
             <div>
-              <label className="block text-[12px] font-medium text-gray-600 dark:text-neutral-300 mb-1">
+              <label htmlFor="login-code" className="block text-[12px] font-medium text-gray-600 dark:text-neutral-300 mb-1">
                 验证码
               </label>
               <div className="flex gap-2">
                 <input
+                  id="login-code"
                   type="text"
                   inputMode="numeric"
+                  autoComplete="one-time-code"
+                  maxLength={6}
+                  disabled={submitting}
                   value={code}
                   onChange={(e) => setCode(e.target.value)}
                   placeholder="6 位验证码"
@@ -415,7 +425,7 @@ export function AccountPanel({ rowLabelClass }) {
             <button
               type="button"
               onClick={handleLogin}
-              disabled={submitting}
+              disabled={submitting || sending || !smsAvailable}
               className="w-full inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg text-[14px] font-semibold text-white bg-blue-600 hover:bg-blue-700 disabled:opacity-60 disabled:cursor-not-allowed transition-colors"
             >
               {submitting && <Loader2 className="w-4 h-4 animate-spin" />}
@@ -423,26 +433,6 @@ export function AccountPanel({ rowLabelClass }) {
             </button>
           </div>
 
-          {/* 分隔 + 微信登录（网站应用审核通过前隐藏，见 WECHAT_LOGIN_ENABLED） */}
-          {WECHAT_LOGIN_ENABLED && (
-            <>
-              <div className="flex items-center gap-3 my-4">
-                <span className="flex-1 h-px bg-gray-100 dark:bg-neutral-800" />
-                <span className="text-[12px] text-gray-400 dark:text-neutral-500">或</span>
-                <span className="flex-1 h-px bg-gray-100 dark:bg-neutral-800" />
-              </div>
-
-              <button
-                type="button"
-                onClick={handleWechat}
-                disabled={submitting}
-                className="w-full inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg text-[14px] font-medium text-[#07C160] border border-[#07C160]/40 bg-[#07C160]/5 hover:bg-[#07C160]/10 disabled:opacity-60 disabled:cursor-not-allowed transition-colors"
-              >
-                <MessageCircle className="w-4 h-4" />
-                微信登录
-              </button>
-            </>
-          )}
               </div>
             </div>
           </div>

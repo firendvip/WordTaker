@@ -6,6 +6,10 @@
 // 已去除「请求时间超时主动 abort」兜底（按用户要求）：长语音转写润色可能耗时较久，
 // 时间超时 abort 会把长文本润色请求中途中断并回退直贴原文（已确诊 BUG）。
 // 现在不再因时间到而中断请求；仍保留对瞬时错误(429/5xx)与网络异常的重试。
+const {
+  shouldSkipPolish,
+} = require('../utils/shortTextPolicy.cjs');
+
 async function fetchNoTimeout(url, options = {}) {
   return await fetch(url, options);
 }
@@ -336,6 +340,11 @@ class AiService {
   }
 
   async processTextStreamRouted(text, mode, relayUrl, onDelta) {
+    if (mode !== 'translate-en' && shouldSkipPolish(text)) {
+      this.logger.info('短文本跳过模型处理:', { inputLength: [...text.trim()].length });
+      if (typeof onDelta === 'function') onDelta(text);
+      return this._passthroughResult(text);
+    }
     const engine = await this.getPolishEngine();
     if (engine === 'cloud') {
       // 未登录也可用云端：backendClient 匿名带 X-Device-Id（设备赠送额度），不做登录前置拦截。
@@ -404,6 +413,10 @@ class AiService {
   //   local-*   → 本地 LLM（llmManager）
   // 所选引擎失败一律返回 { success:false, error }，绝不回退到其它引擎或云端。
   async processTextWithAI(text, mode = 'optimize') {
+    if (mode !== 'translate-en' && shouldSkipPolish(text)) {
+      this.logger.info('短文本跳过模型处理:', { inputLength: [...text.trim()].length });
+      return this._passthroughResult(text);
+    }
     const engine = await this.getPolishEngine();
     if (engine === 'cloud') {
       // 未登录也可用云端：backendClient 匿名带 X-Device-Id（设备赠送额度），不做登录前置拦截。
@@ -464,16 +477,15 @@ class AiService {
       const kind = err && err.kind;
       const code = err && err.code;
 
-      // 401 NOT_LOGGED_IN（token 过期/失效）：清 token + 降级本地/直贴 + 通知重新登录。
+      // backendClient 已先自动刷新；到这里仍是 401 才降级。
+      // 不在业务层清 token：刷新凭证的明确拒绝由 backendClient 统一处理；
+      // 存量无 refresh 会话及暂时验证失败必须保留本地登录摘要。
       if (code === 'NOT_LOGGED_IN' || (kind === 'http' && err.status === 401)) {
-        try {
-          require('./tokenStore').clear();
-        } catch (e) { /* 清除失败不阻断降级 */ }
         const localReady = this._isLocalReady();
-        this.logger.warn('云端润色 401，登录已过期，清 token 并降级:', {
+        this.logger.warn('云端润色鉴权失败，已降级:', {
           action: localReady ? 'local' : 'passthrough',
         });
-        // 过期通知直接发（一次性事件：清 token 后后续走未登录节流路径），并同步节流时间戳防紧跟着重复弹
+        // 直接通知并同步节流时间戳，防止紧跟着重复弹。
         this._lastLoginNotifyAt = Date.now();
         this._notify('弦外小猫', localReady
           ? '登录已过期，请重新登录。本句已自动改用本地模型。'

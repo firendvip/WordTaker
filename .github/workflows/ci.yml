@@ -13,16 +13,19 @@ jobs:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
         with:
-          version: 9
+          version: 11.5.3
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: '22'
           cache: pnpm
       # --ignore-scripts 跳过 electron-builder/原生重建（单测仅依赖纯模块）
-      - run: pnpm install --no-frozen-lockfile --ignore-scripts
+      - run: pnpm install --frozen-lockfile --ignore-scripts
+      - run: pnpm audit:security
       - run: pnpm run lint
         continue-on-error: true
       - run: pnpm test
+      - run: node --test tests/windowsSqliteBinaries.test.cjs
+      - run: pnpm test:rollback:coverage
 
   python:
     runs-on: ubuntu-latest
