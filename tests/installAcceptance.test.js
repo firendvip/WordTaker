@@ -32,6 +32,11 @@ describe('isolated Windows installation acceptance', () => {
     expect(html).toContain(`id="${acceptance.SETTINGS_ROOT_SELECTOR.slice(1)}"`);
     expect(acceptance.registeredInstallDir('"D:\\runner\\temp\\installed\\Uninstall 弦外小猫.exe" /currentuser')).toBe('D:\\runner\\temp\\installed');
     expect(() => acceptance.registeredInstallDir('D:\\wrong.exe')).toThrow();
+    const productName = new RegExp(acceptance.PRODUCT_DISPLAY_PATTERN);
+    expect(productName.test('弦外小猫 1.29.5')).toBe(true);
+    expect(productName.test('弦外小猫')).toBe(true);
+    expect(productName.test('弦外小猫-其他项目')).toBe(false);
+    expect(productName.test('其他项目 1.29.5')).toBe(false);
   });
   it('does not accept process presence or an empty/errored renderer as UI health', () => {
     const healthy = { version: '1.29.5', isolated: true, hasRoot: true, bodyText: '弦外小猫', loggedIn: false };

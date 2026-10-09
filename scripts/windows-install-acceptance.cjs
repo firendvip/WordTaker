@@ -8,6 +8,7 @@ const crypto = require('node:crypto');
 const net = require('node:net');
 const { spawn, spawnSync, execFileSync } = require('node:child_process');
 const SETTINGS_ROOT_SELECTOR = '#settings-root';
+const PRODUCT_DISPLAY_PATTERN = '^弦外小猫(?: \\d+\\.\\d+\\.\\d+(?:[-+][\\w.-]+)?)?$';
 
 function assertRunner(platform, arch, env) {
   assert.equal(platform, 'win32', 'Installer acceptance is Windows-only');
@@ -137,7 +138,7 @@ async function run() {
   for (const directory of [profile, temp, userData, env.APPDATA, env.LOCALAPPDATA]) fs.mkdirSync(directory, { recursive: true });
   const exe = path.join(installDir, 'KittyEcho.exe');
   const firewall = `wordtaker-acceptance-${crypto.randomUUID()}`;
-  const registration = () => JSON.parse(ps("$items = @(Get-ItemProperty 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*','HKLM:\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*' -ErrorAction SilentlyContinue | Where-Object { $_.DisplayName -eq '弦外小猫' } | Select-Object PSPath,InstallLocation,UninstallString); ConvertTo-Json -InputObject $items -Compress"));
+  const registration = () => JSON.parse(ps(`$items = @(Get-ItemProperty 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*','HKLM:\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*' -ErrorAction SilentlyContinue | Where-Object { $_.DisplayName -match ${quoted(PRODUCT_DISPLAY_PATTERN)} } | Select-Object PSPath,InstallLocation,UninstallString); ConvertTo-Json -InputObject $items -Compress`));
   assert.equal(registration().length, 0, 'Refusing to overwrite an existing product installation');
   assert.equal(ps("@(Get-Process KittyEcho -ErrorAction SilentlyContinue).Count"), '0', 'Unexpected pre-existing product process');
   let child;
@@ -231,5 +232,5 @@ async function run() {
   }
 }
 
-module.exports = { assertRunner, assertScopedPath, installerArgs, registeredInstallDir, assertUiHealth, SETTINGS_ROOT_SELECTOR };
+module.exports = { assertRunner, assertScopedPath, installerArgs, registeredInstallDir, assertUiHealth, SETTINGS_ROOT_SELECTOR, PRODUCT_DISPLAY_PATTERN };
 if (require.main === module) run().catch(error => { process.stderr.write(`${error.stack || error}\n`); process.exitCode = 1; });
