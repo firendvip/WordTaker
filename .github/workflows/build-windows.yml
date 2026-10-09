@@ -78,7 +78,12 @@ jobs:
       #   - arm64：@electron/rebuild --arch arm64 交叉编译 better-sqlite3；
       #     uiohook-napi 有 win32-arm64 预编译，node-gyp-build 运行期自动选用，无需源码重建。
       - name: Rebuild native modules for Electron
-        run: npx --yes @electron/rebuild@4.2.0 -f -w better-sqlite3 -w uiohook-napi --arch ${{ matrix.arch }}
+        shell: pwsh
+        run: |
+          $rebuildCli = node scripts/find-electron-rebuild.cjs
+          if ($LASTEXITCODE -ne 0) { throw "Cannot resolve the locked Electron rebuild CLI" }
+          & node $rebuildCli -f -w better-sqlite3,uiohook-napi --module-dir . --arch ${{ matrix.arch }}
+          if ($LASTEXITCODE -ne 0) { throw "Electron native rebuild failed" }
 
       # 下载并准备目标架构的嵌入式 CPython 并装好依赖（两架构统一纯 ONNX 依赖集：
       # numpy + onnxruntime + soundfile，NO torch/funasr）。
