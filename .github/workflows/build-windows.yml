@@ -10,13 +10,35 @@ name: Build Windows
 #            修复 Windows-on-ARM 上 torch 缺 win-arm64 轮子导致的 0xc0000017 启动崩溃。
 on:
   workflow_dispatch:
+    inputs:
+      export_legacy_unsigned_x64:
+        description: '仅在主干核定后取包；公开仓库工件非私密，默认不上传'
+        type: boolean
+        default: false
+      expected_source_sha:
+        description: '主干核定的完整 40 位候选 SHA'
+        type: string
+        default: ''
+      approved_version:
+        description: '本次仅允许 1.29.5'
+        type: string
+        default: ''
+      unsigned_acknowledgment:
+        description: '明确旧无证书路线：I_ACCEPT_UNSIGNED_1.29.5'
+        type: string
+        default: ''
+      ordinary_ci_run_id:
+        description: '同一 SHA 已成功的普通 CI run ID'
+        type: string
+        default: ''
   push:
     tags:
       - "v*"
 
-# 未签名候选仅验证，不允许发布 Release 或上传安装包。
+# 默认候选只验证；仅显式核定的 1.29.5/x64 旧无证书路线允许取包，不自动发 Release。
 permissions:
   contents: read
+  actions: read
 
 jobs:
   build-win:
@@ -32,6 +54,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       # 仓库只有 pnpm-lock.yaml（无 package-lock.json），故用 pnpm 而非 npm ci。
       - name: Setup pnpm
@@ -43,6 +67,16 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: '22'
+
+      - name: Check explicit legacy unsigned x64 request
+        id: legacy-request
+        run: node scripts/legacy-release-guard.cjs --request
+        env:
+          LEGACY_EXPORT: ${{ matrix.arch == 'x64' && inputs.export_legacy_unsigned_x64 }}
+          EXPECTED_SOURCE_SHA: ${{ inputs.expected_source_sha }}
+          APPROVED_VERSION: ${{ inputs.approved_version }}
+          UNSIGNED_ACKNOWLEDGMENT: ${{ inputs.unsigned_acknowledgment }}
+          BUILD_ARCH: ${{ matrix.arch }}
 
       - name: Get pnpm store directory
         id: pnpm-cache
@@ -401,15 +435,30 @@ jobs:
             publish/*.exe
             publish/SHA256SUMS-${{ matrix.arch }}.txt
 
+      # 不绕过任何既有构建/PE/模型/真实安装门；再核定同 SHA 普通 CI 与精确 NSIS 字节。
+      - name: Validate exact legacy unsigned x64 export
+        id: legacy-validation
+        if: ${{ success() && matrix.arch == 'x64' && steps.legacy-request.outputs.allowed == 'true' }}
+        run: node scripts/legacy-release-guard.cjs --validate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          LEGACY_EXPORT: ${{ inputs.export_legacy_unsigned_x64 }}
+          EXPECTED_SOURCE_SHA: ${{ inputs.expected_source_sha }}
+          APPROVED_VERSION: ${{ inputs.approved_version }}
+          UNSIGNED_ACKNOWLEDGMENT: ${{ inputs.unsigned_acknowledgment }}
+          ORDINARY_CI_RUN_ID: ${{ inputs.ordinary_ci_run_id }}
+          BUILD_ARCH: ${{ matrix.arch }}
+
       # 备份性短保留工件（仅 workflow_dispatch 等无 tag 场景方便取包）。
-      # 本仓库公开；原生模块验证分支不上传未签名安装包，只保留检查日志。
+      # 本仓库公开；默认不上传。只有经主干核定的精确 x64 无证书路线可短期取包。
       - name: Upload Windows artifacts (short retention)
-        if: ${{ false }} # 候选验证不上传未签名安装包，不能靠分支名代替签名门。
+        if: ${{ success() && matrix.arch == 'x64' && steps.legacy-validation.outputs.allowed == 'true' }}
         uses: actions/upload-artifact@v4
         with:
           name: wordtaker-windows-${{ matrix.arch }}
           if-no-files-found: error
           retention-days: 1
           path: |
-            publish/*.exe
-            publish/SHA256SUMS-${{ matrix.arch }}.txt
+            legacy-export/KittyEcho-1.29.5-x64-setup.exe
+            legacy-export/SHA256SUMS-x64.txt
+            legacy-export/RELEASE_RECEIPT.json

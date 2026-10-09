@@ -50,7 +50,8 @@ describe('isolated Windows installation acceptance', () => {
     expect(ci).toContain('node scripts/windows-install-acceptance.cjs');
     expect(ci).toContain('contents: read');
     expect(ci).toMatch(/name: Publish to GitHub Release\s+if: \$\{\{ false \}\}/);
-    expect(ci).toMatch(/name: Upload Windows artifacts \(short retention\)\s+if: \$\{\{ false \}\}/);
+    expect(ci).toMatch(/name: Upload Windows artifacts \(short retention\)\s+if:.*success\(\) && matrix.arch == 'x64' && steps\.legacy-validation\.outputs\.allowed == 'true'/);
+    expect(ci).toContain('node scripts/legacy-release-guard.cjs --validate');
   });
   it('does not describe an executable firewall rule as child-process OS network isolation', () => {
     const source = fs.readFileSync(new URL('../scripts/windows-install-acceptance.cjs', import.meta.url), 'utf8');

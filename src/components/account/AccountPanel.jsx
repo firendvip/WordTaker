@@ -20,6 +20,7 @@ export function AccountPanel({ rowLabelClass }) {
   const [readingAuth, setReadingAuth] = useState(false);
   const [authReadError, setAuthReadError] = useState(false);
   const [account, setAccount] = useState(null); // 已登录账号摘要
+  const [reauthRequired, setReauthRequired] = useState(false);
   const [phone, setPhone] = useState("");
   const [code, setCode] = useState("");
   const [inviteCode, setInviteCode] = useState("");
@@ -36,7 +37,7 @@ export function AccountPanel({ rowLabelClass }) {
   const isCurrentAuth = useCallback((generation) =>
     mountedRef.current && authGenerationRef.current === generation, []);
 
-  const isLoggedIn = !!account;
+  const isLoggedIn = !!account && !reauthRequired;
   const validPhone = PHONE_PATTERN.test(phone.trim());
   const smsAvailable = typeof api?.authSmsSend === "function" && typeof api?.authSmsLogin === "function";
 
@@ -45,7 +46,7 @@ export function AccountPanel({ rowLabelClass }) {
   const { quota, loading: quotaLoading, error: quotaError, refresh: refreshQuota, clear: clearQuota } =
     useCloudQuota(api, isLoggedIn);
 
-  // 已登录时向后端拉最新账号摘要（含 inviteCode / 订阅），失败静默不影响本地态。
+  // 暂时失败保留摘要；身份接口明确拒绝旧会话时提供重新验证入口。
   const refreshAccount = useCallback(async () => {
     if (!mountedRef.current || !api?.authMe) return;
     const generation = authGenerationRef.current;
@@ -53,14 +54,19 @@ export function AccountPanel({ rowLabelClass }) {
       const r = await api.authMe();
       if (!isCurrentAuth(generation)) return;
       if (r && r.success && r.account) {
+        setReauthRequired(false);
         setAccount((prev) => ({ ...(prev || {}), ...r.account }));
+      } else if (r?.code === "REAUTH_REQUIRED" && r.reauthRequired === true) {
+        setReauthRequired(true);
+        clearQuota();
       } else if (r && r.loggedIn === false) {
+        setReauthRequired(false);
         setAccount(null);
       }
     } catch (e) {
       /* 网络失败保留本地摘要 */
     }
-  }, [api, isCurrentAuth]);
+  }, [api, isCurrentAuth, clearQuota]);
 
   // 读取失败是未知态，手动重试或窗口恢复焦点后再查；同一读取不重复派发。
   const readAuthState = useCallback(async () => {
@@ -77,6 +83,7 @@ export function AccountPanel({ rowLabelClass }) {
       }
       setAuthReadError(false);
       setAccount(st.loggedIn ? st.account || {} : null);
+      if (!st.loggedIn) setReauthRequired(false);
       if (st.loggedIn) refreshAccount();
     } catch {
       if (isCurrentAuth(generation)) setAuthReadError(true);
@@ -178,6 +185,7 @@ export function AccountPanel({ rowLabelClass }) {
       if (!isCurrentAuth(generation)) return;
       if (r && r.success) {
         setAuthReadError(false);
+        setReauthRequired(false);
         setAccount(r.account || {});
         setCode("");
         setInviteCode("");
@@ -216,6 +224,7 @@ export function AccountPanel({ rowLabelClass }) {
       authActionPendingRef.current = false;
     }
     setAuthReadError(false);
+    setReauthRequired(false);
     setAccount(null);
     // 立即清零本地额度态：不能让原账号的云端字数在退出后继续显示
     clearQuota();
@@ -323,6 +332,16 @@ export function AccountPanel({ rowLabelClass }) {
 
   return (
     <div className="space-y-3">
+      {reauthRequired && (
+        <div className="rounded-2xl border border-amber-200 dark:border-amber-800 p-4">
+          <p role="alert" className="text-sm text-gray-600 dark:text-neutral-300 mb-3">
+            旧登录已失效，请重新进行手机验证码验证。
+          </p>
+          <button type="button" onClick={openLoginModal} className="text-sm text-blue-600 dark:text-blue-400">
+            重新手机验证
+          </button>
+        </div>
+      )}
       {membershipSection}
 
       {showLoginModal && (

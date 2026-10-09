@@ -1628,8 +1628,8 @@ class IPCHandlers {
 
     // 拉取当前账号（校验 token 有效 + 刷新账号摘要）
     ipcMain.handle("auth-me", async () => {
+      const generation = tokenStore.getGeneration();
       try {
-        const generation = tokenStore.getGeneration();
         const json = await backendClient.authMe();
         // IPC await 之后再守一次边界，防迟到的 A 摘要写入 B 的凭据。
         if (tokenStore.getGeneration() !== generation) {
@@ -1648,9 +1648,15 @@ class IPCHandlers {
           subscription: d.subscription ?? null,
         };
       } catch (error) {
+        if (error?.code === "REAUTH_REQUIRED" && error?.reauthRequired === true) {
+          if (error.sessionGeneration !== generation || tokenStore.getGeneration() !== generation) {
+            return { success: false, error: "登录状态已变更", code: "SESSION_CHANGED" };
+          }
+          return { ...failFromError(error, "请重新进行手机验证码验证"), reauthRequired: true };
+        }
         // backendClient 已先尝试自动刷新；只有 refresh 被服务端明确拒绝时
         // tokenStore 才已清空。普通网络错误、超时、5xx 与存量无 refresh 的
-        // 旧会话都保留本地摘要，不能误表现为主动退出。
+        // 旧会话都保留凭据；已确认失效的旧会话另行提示重新验证，不主动删除。
         if (error?.status === 401 && !tokenStore.get()) {
           return { success: false, error: "登录已失效", code: "UNAUTHORIZED", loggedIn: false };
         }

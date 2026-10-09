@@ -15,6 +15,10 @@ electron-builder 26 使用 `mac.notarize: true`。正式公证使用 Apple ID �
 
 本地禁用签名/公证生成的目录仅用于兼容性检查，不是可公开发布的安装包；发布仍须分别验证签名、公证与 stapling。
 
+2026-10-09 最新用户明确允许 1.29.5 沿用无正式证书发行路线：可为 Apple Silicon 必需的可执行结构使用 ad-hoc 签名，但它不是 Developer ID，不证明可信发布者，也不是公证/stapling。不得自行购买证书、降依赖、关闭 Gatekeeper、删 quarantine/TCC 或提供绕过警告脚本；正常系统“仍要打开/允许”由用户自己决定。必须对最终 arm64 DMG 中实际 app 的签名结构、嵌套原生/Python、最低 macOS14、来源字节及安装/启动健康核对；目录包的隔离 UI green 不替代下载来源 Gatekeeper/正常入口测试。没有 macOS14实机时如实保留未验项。当前旧 QA 不改；最终 DMG 及完整路径/大小/hash/来源SHA/实际签名和提示交接经主干核定后，才执行已授权公开发行，不自动上传。
+
+旧 access-only 登录升级：缺少 refresh 本身不会退出；仅 `/auth/me` 明确返回 401 时显示“重新手机验证”，保留旧凭据直到新验证码登录安全写入 access/refresh。网络、超时、5xx、暂时存储失败保留原状态，不用本地 JWT 解码判断过期；迟到响应不能覆盖新登录或退出。
+
 ## 可复现模型来源
 
 `scripts/sensevoice-model.js` 固定使用 ModelScope 官方模型：

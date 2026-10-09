@@ -194,8 +194,20 @@ async function request(pathname, options = {}) {
       try {
         retryAccessToken = await refreshSession(generation);
       } catch (refreshError) {
-        // 存量旧客户端会话没有 refresh：保留仍可恢复的本地登录摘要，不误清。
-        if (refreshError?.code === "NO_REFRESH_TOKEN") throw error;
+        if (refreshError?.code === "NO_REFRESH_TOKEN") {
+          if (tokenStore.getGeneration() !== generation) throw sessionChangedError();
+          // 仅身份校验明确 401 才要求旧会话重新验证；保留凭据，不把业务 401 当退出。
+          if (
+            pathname === "/auth/me" && (options.method || "GET") === "GET" &&
+            tokenStore.getAccessToken() === accessToken && !tokenStore.getRefreshToken()
+          ) {
+            throw makeError("auth", "旧登录已失效，请重新进行手机验证码验证", {
+              status: 401, code: "REAUTH_REQUIRED", reauthRequired: true,
+              sessionGeneration: generation,
+            });
+          }
+          throw error;
+        }
         throw refreshError;
       }
     }

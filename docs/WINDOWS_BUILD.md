@@ -4,6 +4,10 @@
 
 > 2026-10-09 候选验证：工作流权限为 `contents: read`，Release/安装包上传均禁用；只用候选分支 workflow_dispatch 验证，不执行下方历史正式发版的 main/tag/下载站步骤。正式签名和最终候选验收未满足前，不公开安装包。
 
+> 2026-10-09 最新用户决定：没有 Apple/Windows 证书，1.29.5 允许沿用旧版无正式证书发行路线；不降低依赖/模型/PE/安装验收门，不关闭 SmartScreen，不称可信签名。上述“必须等待证书”仅为旧候选阶段记录。当前仍不得自动 Release：主干先核定最终 diff/产物交接，再批准具体取包/发布。`export_legacy_unsigned_x64` 默认 false；只有手动 dispatch、精确候选 SHA、版本 1.29.5、明确无签名 acknowledgment、同 SHA 普通 JS/Python CI 全绿和本轮真实 x64 安装/运行/退出/卸载全部成功时，才上传精确 NSIS + checksum + 回执（1 天）。公开仓库 Actions 工件不应视为私密；未核定前不启用。tag push/其他版本/arm64/失败不会上传，Release step 仍禁用，权限只有 contents/actions read。后续正式 Release 必须再次核对该回执与实际取回字节，不把普通 CI green 当签名证明。
+
+> 旧 access-only 会话只在 `/auth/me` 明确 401 后提示重新手机验证；缺 refresh、业务 401、断网、超时、5xx 与暂时存储失败不主动删除旧凭据。验证码验证成功且 access/refresh 安全写入后结束提示，迟到响应不覆盖新会话或退出。
+
 ## 一、铁律
 
 1. **绝不在 Mac 本机构建 Windows 包**（无 Wine 产不出、内嵌 Python 平台不符必出坏包）。唯一通道：GitHub Actions `.github/workflows/build-windows.yml`（windows-latest 真机，matrix x64 + arm64）。

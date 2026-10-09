@@ -102,7 +102,9 @@ test('ignores directories whose names resemble native files', (t) => {
 test('cannot upload installers or publish Releases from the unqualified candidate workflow', () => {
   const workflow = fs.readFileSync(path.join(__dirname, '../.github/workflows/build-windows.yml'), 'utf8');
   const uploadStep = workflow.slice(workflow.indexOf('- name: Upload Windows artifacts'));
-  assert.match(uploadStep, /if: \$\{\{ false \}\}/);
+  assert.match(uploadStep, /success\(\) && matrix.arch == 'x64' && steps.legacy-validation.outputs.allowed == 'true'/);
+  assert.match(uploadStep, /legacy-export\/KittyEcho-1\.29\.5-x64-setup\.exe/);
+  assert.doesNotMatch(uploadStep, /publish\/\*\.exe/);
   const releaseStep = workflow.split('- name: Publish to GitHub Release')[1].split('- name: Upload Windows artifacts')[0];
   assert.match(releaseStep, /if: \$\{\{ false \}\}/);
   assert.match(workflow, /permissions:\s+contents: read/);

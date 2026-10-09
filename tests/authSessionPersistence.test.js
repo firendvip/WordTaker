@@ -644,7 +644,7 @@ describe("automatic access-token refresh", () => {
     tokens.set({ accessToken: "access-old", refreshToken: null });
     const fetchMock = vi.fn().mockResolvedValue(response(401, { code: "NOT_LOGGED_IN" }));
     const client = loadBackendClient(fetchMock, tokens);
-    await expect(client.authMe()).rejects.toMatchObject({ status: 401, code: "NOT_LOGGED_IN" });
+    await expect(client.authMe()).rejects.toMatchObject({ status: 401, code: "REAUTH_REQUIRED", reauthRequired: true });
     expect(fetchMock).toHaveBeenCalledOnce();
     expect(tokens.snapshot().accessToken).toBe("access-old");
   });
