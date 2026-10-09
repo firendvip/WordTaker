@@ -829,6 +829,8 @@ body {
 .cs-fxbubble-bar{position:relative;width:100%;height:3px;border-radius:999px;background:rgba(255,255,255,.16);overflow:hidden}
 .cs-fxbubble-fill{position:absolute;left:0;top:0;bottom:0;width:0;border-radius:999px;background:#fff;transition:width 160ms cubic-bezier(.16,1,.3,1)}
 .cs-fxbubble-text{font-size:12px;line-height:1;color:#fff;white-space:nowrap}
+.cat-model-entry{left:50%;bottom:44px;transform:translateX(-50%);flex-direction:row;gap:5px;max-height:none;height:28px;color:#fff;font-size:12px;white-space:nowrap;pointer-events:auto;cursor:pointer;-webkit-app-region:no-drag}
+.cat-model-entry:disabled{cursor:default}
 /* 不确定态（关闭流式=整体粘贴，无字数）：进度条走温和的来回不确定动画 */
 .cs-fxbubble-indet .cs-fxbubble-fill{width:40%!important;transition:none;animation:cs-fxbubble-indet 1.3s ease-in-out infinite}
 @keyframes cs-fxbubble-indet{0%{transform:translateX(-60%)}50%{transform:translateX(140%)}100%{transform:translateX(-60%)}}

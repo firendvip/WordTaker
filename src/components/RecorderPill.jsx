@@ -202,9 +202,25 @@ export function RecorderPill({
     if (!disabled) onToggle && onToggle();
   };
 
-  // 小黑猫皮肤：仅渲染透明小黑猫（无胶囊/徽章/星标/按钮）
+  const retryDownload = stage === "error" && !modelStatus?.modelsDownloaded && modelStatus?.missingModels?.length > 0;
+  const catModelEntry = (needDownload || downloading || retryDownload) ? (
+    <button
+      type="button"
+      className="cs-fxbubble cat-model-entry non-draggable"
+      aria-label={downloading ? "正在下载模型" : retryDownload ? "重试下载模型" : "下载模型"}
+      title={statusText}
+      disabled={downloading}
+      onClick={onDownloadModels}
+    >
+      {downloading ? <Loader2 size={12} className="animate-spin" /> : <Download size={12} />}
+      <span>{downloading ? `下载模型 ${modelStatus.downloadProgress || 0}%` : retryDownload ? "重试下载模型" : "下载语音模型"}</span>
+    </button>
+  ) : null;
+
+  // 小黑猫皮肤：常态不显示胶囊；首次缺模型时保留可点击的下载入口。
   if (pillSkin === "catfx") {
     return (
+      <>
       <CatSkinFx
         micState={micState}
         audioLevel={audioLevel}
@@ -217,10 +233,13 @@ export function RecorderPill({
         onQuotaBubbleShown={onQuotaBubbleShown}
         onQuotaBubbleDismiss={onQuotaBubbleDismiss}
       />
+      {catModelEntry}
+      </>
     );
   }
   if (pillSkin === "cat") {
     return (
+      <>
       <CatSkin
         micState={micState}
         isBusy={isBusy}
@@ -230,6 +249,8 @@ export function RecorderPill({
         onQuotaBubbleShown={onQuotaBubbleShown}
         onQuotaBubbleDismiss={onQuotaBubbleDismiss}
       />
+      {catModelEntry}
+      </>
     );
   }
 

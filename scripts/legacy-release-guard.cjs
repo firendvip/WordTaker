@@ -16,6 +16,10 @@ const ALLOWED_CHANGES = new Set([
   'src/helpers/backendClient.js', 'src/helpers/ipcHandlers.js',
   'src/components/account/AccountPanel.jsx', 'tests/authSessionPersistence.test.js',
   'tests/legacyReauthLifecycle.test.jsx',
+  // Reviewed first-use readiness fix; engine dependencies, package metadata and other runtime stay frozen.
+  'src/helpers/funasrManager.js', 'src/hooks/useModelStatus.js',
+  'src/components/RecorderPill.jsx', 'src/index.css',
+  'tests/funasrInstallationSingleflight.test.js', 'tests/modelFirstUse.test.jsx',
 ]);
 
 function validateRequest(request) {

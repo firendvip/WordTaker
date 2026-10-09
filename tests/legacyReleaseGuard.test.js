@@ -131,6 +131,15 @@ describe('legacy export CLI boundaries', () => {
     expect(test.append).toHaveBeenCalledWith('test-owned-output', 'allowed=true\n');
     expect(test.copy).not.toHaveBeenCalled();
   });
+  it('allows only the specifically reviewed first-use readiness repair files', () => {
+    const changes = ['src/helpers/funasrManager.js', 'src/hooks/useModelStatus.js',
+      'src/components/RecorderPill.jsx', 'src/index.css',
+      'tests/funasrInstallationSingleflight.test.js', 'tests/modelFirstUse.test.jsx'];
+    const test = cli('--request', changes);
+    guard.run(test.command);
+    expect(test.append).toHaveBeenCalledWith('test-owned-output', 'allowed=true\n');
+    expect(test.copy).not.toHaveBeenCalled();
+  });
   it('blocks runtime drift and dirty checkouts, not just filenames or caller-supplied SHA', () => {
     const test = cli('--request', ['src/App.jsx']);
     expect(() => guard.run(test.command)).toThrow(/Frozen runtime/);

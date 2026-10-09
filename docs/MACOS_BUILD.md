@@ -1,6 +1,6 @@
 # macOS 构建与 SenseVoice 模型
 
-macOS 安装包必须内置 SenseVoice Small INT8 ONNX 模型，应用启动和首次听写都不会下载模型。
+macOS 安装包必须内置 SenseVoice Small INT8 ONNX 模型。Mac 当前仍使用全量 FunASR 启动路径：首次使用需通过界面准备既有 ASR/VAD/PUNC 模型（约 1.1 GB），下载完成后重启语音服务；内置 SenseVoice 不代表首次安装即可离线听写。模型齐备后本地识别无需重复下载。
 
 ## 构建环境与安全检查
 

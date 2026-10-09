@@ -74,7 +74,6 @@ export const useModelStatus = () => {
 
       // 检查模型文件
       const modelFiles = await checkModelFiles();
-      const serverStatus = await checkServerStatus();
       
       if (!modelFiles.success) {
         setModelStatus(prev => ({
@@ -101,7 +100,12 @@ export const useModelStatus = () => {
           progress: 0,
           stage: 'need_download'
         }));
-      } else if (serverStatus.success && serverStatus.models_initialized) {
+        return;
+      }
+
+      // 只有模型齐全才等待引擎状态，首次下载入口不依赖耗时的 Python 检查。
+      const serverStatus = await checkServerStatus();
+      if (serverStatus.success && serverStatus.models_initialized) {
         // 模型已下载且服务器就绪
         setModelStatus(prev => ({
           ...prev,
@@ -299,9 +303,9 @@ export const useModelStatus = () => {
   }, []);
 
   // 维护“持续非就绪”窗口的起始时间戳
-  // - 就绪或下载中：清零（下载可合理地耗时较久，不应计入超时）
+  // - 就绪、待下载或下载中：清零（等待用户下载不属于引擎启动超时）
   // - 其余非就绪状态：若尚未开始计时则记录起点
-  if (modelStatus.isReady || modelStatus.isDownloading) {
+  if (modelStatus.isReady || modelStatus.isDownloading || modelStatus.stage === 'need_download') {
     nonReadyStartRef.current = null;
   } else if (nonReadyStartRef.current === null) {
     nonReadyStartRef.current = Date.now();

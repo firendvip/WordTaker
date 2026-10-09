@@ -24,6 +24,7 @@ class FunASRManager {
     this.logger = logger || console; // 使用传入的logger或默认console
     this.pythonCmd = null; // 缓存 Python 可执行文件路径
     this.funasrInstalled = null; // 缓存安装状态
+    this.funasrInstallationPromise = null; // 合并尚未完成的安装检查
     this.isInitialized = false; // 跟踪启动初始化是否完成
     this.pythonInstaller = new PythonInstaller();
     this.modelsInitialized = false; // 跟踪模型是否已初始化
@@ -1306,6 +1307,19 @@ class FunASRManager {
       return this.funasrInstalled;
     }
 
+    if (this.funasrInstallationPromise) {
+      return this.funasrInstallationPromise;
+    }
+
+    this.funasrInstallationPromise = this._checkFunASRInstallation();
+    try {
+      return await this.funasrInstallationPromise;
+    } finally {
+      this.funasrInstallationPromise = null;
+    }
+  }
+
+  async _checkFunASRInstallation() {
     try {
       const pythonCmd = await this.findPythonExecutable();
 
