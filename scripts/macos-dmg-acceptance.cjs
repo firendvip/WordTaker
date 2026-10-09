@@ -5,6 +5,7 @@ const fs = require('node:fs'), path = require('node:path'), os = require('node:o
 const { spawn, spawnSync, execFileSync } = require('node:child_process');
 const { PRODUCT, assertHost, assertDownloadedDmg, assertFreshHost, assertScopedPath, assertUiHealth, assertWorkerHealth, pollIpcProbe } = require('./macos-dmg-guard.cjs');
 const { assertNetworkLease } = require('./macos-host-isolation.cjs');
+const { assertFirstUseReadiness, assertPreparedReadiness } = require('./macos-readiness-policy.cjs');
 const command = (exe, args, options = {}) => execFileSync(exe, args, { encoding: 'utf8', timeout: 30000, ...options }).trim();
 const hash = file => crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -56,6 +57,9 @@ async function cdp(url) {
 }
 async function run() {
   const root = assertScopedPath(fs.realpathSync(assertScopedPath(process.argv[2], fs.realpathSync(process.env.RUNNER_TEMP))), fs.realpathSync(process.env.RUNNER_TEMP));
+  const scenario = process.env.WORDTAKER_MODEL_SCENARIO || 'unprepared';
+  assert.ok(['unprepared', 'prepared'].includes(scenario));
+  const prepared = scenario === 'prepared';
   const transport = JSON.parse(fs.readFileSync(path.join(root, 'TRANSPORT_RESULT.json')));
   assert.equal(transport.success, true);
   assertHost({ platform: process.platform, arch: process.arch, version: command('/usr/bin/sw_vers', ['-productVersion']), totalMemory: os.totalmem(), freeDisk: Number(fs.statfsSync(root).bavail) * Number(fs.statfsSync(root).bsize), repositoryPublic: true, env: process.env });
@@ -70,14 +74,25 @@ async function run() {
   assertDownloadedDmg(fs.statSync(dmg).size, hash(dmg));
   const legacy = path.join(os.homedir(), 'Library/Application Support/WordTaker');
   const existing = ['/Applications', path.join(os.homedir(), 'Applications')].flatMap(dir => ['弦外小猫.app', 'KittyEcho.app', 'WordTaker.app'].map(name => path.join(dir, name))).filter(file => fs.existsSync(file));
-  assertFreshHost({ installations: existing, pids: productPids(), legacyDataExists: fs.existsSync(legacy) });
+  if (prepared) {
+    const priorRoot = assertScopedPath(fs.realpathSync(process.env.WORDTAKER_SCENARIO_A_ROOT), fs.realpathSync(process.env.RUNNER_TEMP));
+    const prior = JSON.parse(fs.readFileSync(path.join(priorRoot, 'MAC_RUNTIME_ACCEPTANCE.json')));
+    assert.equal(prior.success, true); assert.equal(prior.firstUseReadinessPassed, true); assert.equal(prior.cleanExit, true);
+    assert.deepEqual(existing, []); assert.deepEqual(productPids(), []);
+    assert.equal(fs.existsSync(legacy), true, 'Only the prior test-owned profile may be reused');
+    const preparation = JSON.parse(fs.readFileSync(path.join(root, 'MODEL_PREPARATION.json')));
+    assert.equal(preparation.success, true); assert.equal(preparation.verifiedFiles, 14);
+    assert.equal(preparation.verifiedBytes, 1186817247);
+  } else {
+    assertFreshHost({ installations: existing, pids: productPids(), legacyDataExists: fs.existsSync(legacy) });
+  }
   const mount = assertScopedPath(path.join(root, 'mounted'), root), install = assertScopedPath(path.join(root, 'installed'), root);
   assert.ok(!fs.existsSync(mount) && !fs.existsSync(install));
   const report = { success: false, harnessSha: process.env.GITHUB_SHA, candidateSourceSha: PRODUCT.candidateSha, originalMacBuildSha: PRODUCT.originalMacBuildSha,
     version: PRODUCT.version, actualHost: transport.host, draftId: transport.draftId, assetId: transport.assetId,
-    scope: 'Fresh-install UI/lifecycle plus independent unprepared-model diagnostic',
+    scope: prepared ? 'Prepared-cache worker and two sequential real engine inferences' : 'Fresh-install missing-model UI, bounded import processes and normal lifecycle', scenario,
     installation: false, productionEntry: false, realSettingsUi: false, database: false, pythonWorkerReady: false, cleanExit: false, installationDirectoryRemoved: false,
-    fullModelReadyAcceptance: false, modelPreparationPerformed: false, safetySettingsSeeded: true,
+    fullModelReadyAcceptance: false, modelPreparationPerformed: prepared, safetySettingsSeeded: true,
     realMicrophoneTested: false, accessibilityGranted: false, keychainCredentialPersistenceTested: false, actualMacOS14Point0DeviceTested: false,
     permissionsAutomaticallyGranted: false, tccOrKeychainReset: false, gatekeeperDisabled: false, quarantineRemoved: false,
     networkRestrictions: { scope: 'Disposable hosted VM', method: lease.method, externalDenialVerifiedBeforeEntry: lease.blockedProbesVerified, independentWatchdog: lease.watchdogReady },
@@ -126,7 +141,7 @@ async function run() {
     fs.mkdirSync(legacy, { recursive: true });
     const database = path.join(legacy, 'transcriptions.db');
     const sql = 'CREATE TABLE settings (key TEXT PRIMARY KEY,value TEXT,updated_at DATETIME DEFAULT CURRENT_TIMESTAMP);' + Object.entries(report.safeExistingSettings).map(([key, setting]) => `INSERT INTO settings(key,value) VALUES('${key}','${JSON.stringify(setting).replaceAll("'", "''")}');`).join('');
-    command('/usr/bin/sqlite3', [database, sql]);
+    if (!prepared) command('/usr/bin/sqlite3', [database, sql]);
     const env = { ...process.env, NODE_ENV: 'production' };
     for (const key of Object.keys(env)) if (/(?:TOKEN|SECRET|PASSWORD|CREDENTIAL|AUTHORIZATION)/i.test(key) || ['NODE_OPTIONS', 'ELECTRON_RUN_AS_NODE'].includes(key)) delete env[key];
     // The separate VM controller proves external denial; keep Chromium's own sandbox unchanged.
@@ -148,8 +163,17 @@ async function run() {
       if (child.exitCode !== null || child.signalCode !== null) throw new Error(`Actual product entry exited early (${child.exitCode}/${child.signalCode}); no OS bypass attempted`);
       try { return await (await fetch(`http://127.0.0.1:${port}/json/list`, { signal: AbortSignal.timeout(1000) })).json(); } catch { return []; }
     };
+    if (prepared) {
+      const page = await waitFor(async () => (await pages()).find(item => item.url.includes('index.html') && !item.url.includes('panel=control')), 'prepared recorder renderer', 90000);
+      const opener = await cdp(page.webSocketDebuggerUrl);
+      try { await opener.evaluate('window.electronAPI.openSettingsWindow()'); } finally { opener.close(); }
+    }
     const settings = await waitFor(async () => (await pages()).find(page => page.type === 'page' && page.url.includes('settings.html')), 'real first-run settings', 90000);
     report.productionEntry = true;
+    const actualUserData = fs.readFileSync(path.join(root, 'startup.log'), 'utf8').match(/ELECTRON_USER_DATA:\s*'([^']+)'/);
+    assert.ok(actualUserData, 'Missing actual app.getPath(userData) startup evidence');
+    assert.equal(actualUserData[1], userData);
+    report.actualUserDataPath = actualUserData[1];
     observeProcesses();
     metricsTimer = setInterval(() => { try { observeProcesses(); } catch { report.processObservationError = true; } }, 5000);
     connection = await cdp(settings.webSocketDebuggerUrl);
@@ -178,6 +202,7 @@ async function run() {
     const recorder = (await pages()).find(page => page.url.includes('index.html') && !page.url.includes('panel=control'));
     assert.ok(recorder, 'Missing real recorder renderer');
     recorderConnection = await cdp(recorder.webSocketDebuggerUrl);
+    if (!prepared) await recorderConnection.evaluate('window.electronAPI.showWindow()');
     report.initialRecorderDom = await recorderConnection.evaluate(domExpression('#root'));
     report.initialRecorderScreenshotSha256 = await capture(recorderConnection, 'recorder-before-model.png'); saveReport();
     report.stage = 'independent-model-diagnostic';
@@ -186,13 +211,39 @@ async function run() {
     if (report.workerProbe.status === 'fulfilled' && report.workerProbe.value.server_ready === true && report.workerProbe.value.models_initialized === true) {
       assertWorkerHealth(report.workerProbe.value); report.pythonWorkerReady = true;
     }
+    if (!prepared) {
+      // A normal user wait remains a download prompt beyond the old 60-second timeout.
+      await delay(65000);
+    } else {
+      assert.equal(report.pythonWorkerReady, true);
+      const audio = Buffer.alloc(64044);
+      audio.write('RIFF', 0); audio.writeUInt32LE(64036, 4); audio.write('WAVEfmt ', 8);
+      audio.writeUInt32LE(16, 16); audio.writeUInt16LE(1, 20); audio.writeUInt16LE(1, 22);
+      audio.writeUInt32LE(16000, 24); audio.writeUInt32LE(32000, 28); audio.writeUInt16LE(2, 32); audio.writeUInt16LE(16, 34);
+      audio.write('data', 36); audio.writeUInt32LE(64000, 40);
+      for (let i = 0; i < 32000; i++) audio.writeInt16LE(Math.round(1000 * Math.sin(2 * Math.PI * 440 * i / 16000)), 44 + i * 2);
+      report.engineInferences = [];
+      for (const engine of ['sensevoice', 'paraformer']) {
+        const probe = await pollIpcProbe(connection.evaluate, `engine-${engine}`, 'transcribeAudio', [Array.from(audio), { engine }], { timeout: 120000, interval: 500 });
+        assert.equal(probe.status, 'fulfilled');
+        report.engineInferences.push(probe.value); saveReport();
+      }
+      assertPreparedReadiness({ worker: report.workerProbe.value, engines: report.engineInferences, modelsVerified: true });
+    }
     report.afterModelRecorderDom = await recorderConnection.evaluate(domExpression('#root'));
     report.afterModelRecorderScreenshotSha256 = await capture(recorderConnection, 'recorder-after-model.png');
     report.afterModelSettingsDom = await connection.evaluate(domExpression('#settings-root'));
     report.afterModelSettingsScreenshotSha256 = await capture(connection, 'settings-after-model.png');
     report.downloadUiObserved = { explicitNeedDownload: /需要下载|请先下载/.test(report.afterModelRecorderDom.bodyText + report.afterModelSettingsDom.bodyText), modelTooltipMentionsDownload: /需要下载|请先下载/.test([...report.afterModelRecorderDom.titles, ...report.afterModelSettingsDom.titles].join(' ')), enabledDownloadControls: [...report.afterModelRecorderDom.buttons, ...report.afterModelSettingsDom.buttons].filter(button => button.visible && !button.disabled && /下载/.test([button.text, button.aria, button.title].join(' '))) };
     observeProcesses(); saveReport();
-    fs.writeFileSync(path.join(root, 'MAC_MODEL_DIAGNOSTIC.json'), JSON.stringify({ initialCache: report.initialModelCache, models: report.modelFilesProbe, worker: report.workerProbe, downloadUi: report.downloadUiObserved, processObservations: report.processObservations, modelPreparationPerformed: false, preparedModelAcceptanceAttempted: false }, null, 2) + '\n');
+    assert.ok(report.processObservations.every(sample => sample.pendingImportProcessCount <= 1), 'Installation probes accumulated');
+    if (!prepared) {
+      assertFirstUseReadiness({ models: report.modelFilesProbe, controls: report.afterModelRecorderDom.buttons, samples: report.processObservations,
+        cacheAbsent: !report.initialModelCache.legacyDamo && !report.initialModelCache.userDataDamo });
+      assert.ok(!fs.existsSync(path.join(userData, 'models/damo')), 'Scenario A unexpectedly acquired models');
+      report.firstUseReadinessPassed = true;
+    }
+    fs.writeFileSync(path.join(root, 'MAC_MODEL_DIAGNOSTIC.json'), JSON.stringify({ scenario, initialCache: report.initialModelCache, models: report.modelFilesProbe, worker: report.workerProbe, downloadUi: report.downloadUiObserved, engineInferences: report.engineInferences || [], processObservations: report.processObservations, modelPreparationPerformed: prepared, preparedModelAcceptanceAttempted: prepared }, null, 2) + '\n');
     descendants = tree(child.pid);
     report.processTreeBeforeExit = descendants;
     report.stage = 'normal-browser-lifecycle-quit';
@@ -215,7 +266,7 @@ async function run() {
     assert.ok(!fs.existsSync(install));
     report.installationDirectoryRemoved = true;
     report.stage = 'complete';
-    report.fullModelReadyAcceptance = report.pythonWorkerReady && report.realSettingsUi && report.cleanExit && report.database;
+    report.fullModelReadyAcceptance = prepared && report.pythonWorkerReady && report.realSettingsUi && report.cleanExit && report.database;
     report.success = true;
   } catch (error) { report.error = String(error.message); process.exitCode = 1; }
   finally {

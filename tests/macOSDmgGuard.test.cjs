@@ -10,9 +10,16 @@ for (const [key, value] of [['platform', 'linux'], ['arch', 'x64'], ['version', 
 for (const [key, value] of [['GITHUB_ACTIONS', 'false'], ['RUNNER_ENVIRONMENT', 'self-hosted'], ['RUNNER_OS', 'Linux'], ['RUNNER_ARCH', 'X64'], ['GITHUB_REPOSITORY', 'someone/else'], ['RUNNER_TEMP', '/'], ['ImageOS', 'macos14-large'], ['ImageVersion', '']]) {
   test(`refuses local paid unknown or wrong runner ${key}`, () => assert.throws(() => assertHost({ ...host(), env: { ...host().env, [key]: value } })));
 }
-const draft = () => ({ id: 123, tag_name: 'v1.29.5', target_commitish: PRODUCT.candidateSha, draft: true, published_at: null });
+const draft = () => ({ id: 123, tag_name: 'v1.29.5', target_commitish: PRODUCT.draftSourceSha, draft: true, published_at: null });
 const asset = () => ({ id: 456, name: PRODUCT.dmgName, size: PRODUCT.dmgSize, digest: `sha256:${PRODUCT.dmgSha256}`, state: 'uploaded' });
 test('accepts only the exact frozen DMG from an unpublished e401 draft', () => assert.doesNotThrow(() => assertDraftAsset(draft(), asset())));
+test('new candidate bytes are explicit without pretending the old draft target was changed', () => {
+  assert.notEqual(PRODUCT.candidateSha, PRODUCT.draftSourceSha);
+  assert.equal(PRODUCT.originalMacBuildSha, PRODUCT.candidateSha);
+  assert.equal(PRODUCT.qaBaselineSha, PRODUCT.draftSourceSha);
+  assert.match(PRODUCT.dmgName, /readiness-1d0b0ac1/);
+  assert.throws(() => assertDraftAsset({ ...draft(), target_commitish: PRODUCT.candidateSha }, asset()));
+});
 for (const [key, value] of [['target_commitish', 'main'], ['tag_name', 'v1.29.5-test'], ['draft', false], ['published_at', '2026-10-10'], ['id', 0]]) {
   test(`refuses changed draft source or publication ${key}`, () => assert.throws(() => assertDraftAsset({ ...draft(), [key]: value }, asset())));
 }

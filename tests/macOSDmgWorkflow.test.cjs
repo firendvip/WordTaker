@@ -6,7 +6,7 @@ test('repository metadata uses the real API root without the observed 404 traili
   const { repositoryApiUrl } = require('../scripts/macos-dmg-transport.cjs');
   assert.equal(repositoryApiUrl(''), 'https://api.github.com/repos/firendvip/WordTaker');
   assert.equal(repositoryApiUrl('releases/408254714'), 'https://api.github.com/repos/firendvip/WordTaker/releases/408254714');
-  assert.equal(repositoryApiUrl('releases/assets/625938591'), 'https://api.github.com/repos/firendvip/WordTaker/releases/assets/625938591');
+  assert.equal(repositoryApiUrl('releases/assets/626459371'), 'https://api.github.com/repos/firendvip/WordTaker/releases/assets/626459371');
 });
 test('only a manual or exact test-branch push invokes the standard read-only macos14 job', () => {
   const text = source();
@@ -19,7 +19,7 @@ test('only a manual or exact test-branch push invokes the standard read-only mac
   assert.match(text, /paths:\s+- '\.github\/workflows\/accept-macos14-dmg\.yml'/);
   assert.doesNotMatch(text, /branches: \[(?:main|\*|master)\]|paths:.*\*/);
   assert.match(text, /DRAFT_RELEASE_ID: \$\{\{ inputs\.draft_release_id \|\| '408254714' \}\}/);
-  assert.match(text, /DMG_ASSET_ID: \$\{\{ inputs\.dmg_asset_id \|\| '625938591' \}\}/);
+  assert.match(text, /DMG_ASSET_ID: \$\{\{ inputs\.dmg_asset_id \|\| '626459371' \}\}/);
 });
 test('transports frozen assets before real acceptance without building or installing dependencies', () => {
   const text = source();
@@ -72,4 +72,19 @@ test('actual UI screenshot and database checks precede a separately bounded sing
   assert.doesNotMatch(text, /const ready=await api\.checkFunASRStatus\(\)/);
   assert.match(text, /MAC_MODEL_DIAGNOSTIC\.json/);
   assert.match(text, /pendingImportProcessCount/);
+});
+test('A must finish before bounded preparation and separately isolated B, with no weights uploaded', () => {
+  const text = source();
+  assert.ok(text.indexOf('A - Accept') < text.indexOf('macos-model-preseed.cjs "$SCENARIO_A_ROOT"'));
+  assert.ok(text.indexOf('macos-model-preseed.cjs "$SCENARIO_A_ROOT"') < text.indexOf('B - Accept'));
+  assert.match(text, /WORDTAKER_MODEL_SCENARIO: unprepared/); assert.match(text, /WORDTAKER_MODEL_SCENARIO: prepared/);
+  assert.match(text, /WORDTAKER_SCENARIO_A_ROOT: \$\{\{ steps\.transport\.outputs\.root \}\}/);
+  assert.match(text, /timeout-minutes: 35/); assert.match(text, /MODEL_PREPARATION\.json/);
+  assert.doesNotMatch(text, /path:.*(?:models\/|electron-data\/|model\.pt|\.cache)|HOST_NETWORK_LEASE_PRIVATE/m);
+  assert.match(text, /always\(\) && steps\.models\.outputs\.root != ''/);
+  const acceptance = fs.readFileSync(new URL('../scripts/macos-dmg-acceptance.cjs', `file://${__filename}`), 'utf8');
+  assert.match(acceptance, /controls: report\.afterModelRecorderDom\.buttons/);
+  assert.match(acceptance, /await delay\(65000\)/);
+  assert.match(acceptance, /for \(const engine of \['sensevoice', 'paraformer'\]\)/);
+  assert.match(acceptance, /assertPreparedReadiness/); assert.doesNotMatch(acceptance, /WORDTAKER_ONNX_ONLY\s*[:=]/);
 });

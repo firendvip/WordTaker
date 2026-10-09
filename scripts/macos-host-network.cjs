@@ -2,7 +2,7 @@
 const fs = require('node:fs'), path = require('node:path'), os = require('node:os'), net = require('node:net'), tls = require('node:tls');
 const { Resolver } = require('node:dns').promises;
 const { spawnSync, execFileSync, spawn } = require('node:child_process');
-const { assertHost, assertScopedPath } = require('./macos-dmg-guard.cjs');
+const { PRODUCT, assertHost, assertScopedPath } = require('./macos-dmg-guard.cjs');
 const { assertTransportContext } = require('./macos-signed-dmg.cjs');
 const { chooseIsolation, parseInterfaces, withHostIsolation, prepareOwnedAnchor, retainLease, restoreWithCleanup } = require('./macos-host-isolation.cjs');
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -10,7 +10,7 @@ function command(exe, args, options = {}) { const value = spawnSync(exe, args, {
 function checked(exe, args, options) { const value = command(exe, args, options); if (value.status !== 0) throw new Error('NETWORK_SYSTEM_OPERATION_FAILED'); return value.stdout.trim(); }
 const pf = args => command('/usr/bin/sudo', ['-n', '/sbin/pfctl', ...args]);
 function guardedRoot(input) {
-  assertTransportContext(process.env, '408254714', '625938591');
+  assertTransportContext(process.env, '408254714', String(PRODUCT.assetId));
   if (process.platform !== 'darwin' || process.arch !== 'arm64') throw new Error('NETWORK_HOST_REJECTED');
   const parent = fs.realpathSync(process.env.RUNNER_TEMP);
   return assertScopedPath(fs.realpathSync(assertScopedPath(input, parent)), parent);
@@ -42,7 +42,7 @@ function tcpProbe(host, family) {
   });
 }
 async function preflight() {
-  assertTransportContext(process.env, '408254714', '625938591');
+  assertTransportContext(process.env, '408254714', String(PRODUCT.assetId));
   if (process.platform !== 'darwin' || process.arch !== 'arm64') throw new Error('NETWORK_HOST_REJECTED');
   const parent = fs.realpathSync(process.env.RUNNER_TEMP), root = assertScopedPath(fs.mkdtempSync(path.join(parent, 'wordtaker-network-')), parent);
   fs.appendFileSync(process.env.GITHUB_OUTPUT, `root=${root}\n`);

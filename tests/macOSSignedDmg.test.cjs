@@ -2,6 +2,7 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const crypto = require('node:crypto');
 const { validateSignedUrl, assertTransportContext, downloadSignedAsset, safeTransportError, withTemporarySecret } = require('../scripts/macos-signed-dmg.cjs');
+const { PRODUCT } = require('../scripts/macos-dmg-guard.cjs');
 const now = Date.parse('2026-10-10T02:00:00Z');
 const url = (query = {}) => {
   const value = new URL('https://release-assets.githubusercontent.com/1234/asset');
@@ -32,12 +33,13 @@ test('JWT expiry, if present, also caps the original provider URL lifetime', () 
 for (const jwt of ['malformed', 'header.bad.signature', `header.${Buffer.from('{}').toString('base64url')}.signature`, `header.${Buffer.from(JSON.stringify({ exp: (now - 1000) / 1000 })).toString('base64url')}.signature`]) {
   test('rejects unknown or expired JWT expiry without raw payload disclosure', () => assert.throws(() => validateSignedUrl(url({ jwt }), now)));
 }
-test('transport is restricted to the exact non-fork QA ref and IDs', () => assert.doesNotThrow(() => assertTransportContext(env(), '408254714', '625938591')));
+test('transport is restricted to the exact non-fork QA ref and IDs', () => assert.doesNotThrow(() => assertTransportContext(env(), '408254714', String(PRODUCT.assetId))));
 for (const [key, value] of [['GITHUB_REPOSITORY', 'fork/WordTaker'], ['GITHUB_REF', 'refs/pull/1/merge'], ['GITHUB_REF', 'refs/heads/main'], ['GITHUB_EVENT_NAME', 'pull_request'], ['GITHUB_EVENT_NAME', 'pull_request_target'], ['GITHUB_ACTIONS', 'false']]) {
-  test(`rejects unsafe context ${key}/${value}`, () => assert.throws(() => assertTransportContext({ ...env(), [key]: value }, '408254714', '625938591')));
+  test(`rejects unsafe context ${key}/${value}`, () => assert.throws(() => assertTransportContext({ ...env(), [key]: value }, '408254714', String(PRODUCT.assetId))));
 }
 test('refuses different draft or asset IDs', () => {
-  assert.throws(() => assertTransportContext(env(), '408254715', '625938591'));
+  assert.throws(() => assertTransportContext(env(), '408254715', String(PRODUCT.assetId)));
+  assert.throws(() => assertTransportContext(env(), '408254714', '625938591'));
   assert.throws(() => assertTransportContext(env(), '408254714', '625938592'));
 });
 test('unknown nested fetch errors never expose URL/cause/message', () => {

@@ -26,7 +26,7 @@ async function run() {
     report.host = { version: host.version, kernel: os.release(), arch: host.arch, totalMemory: host.totalMemory, freeMemory: os.freemem(), freeDisk: host.freeDisk, imageOS: process.env.ImageOS, imageVersion: process.env.ImageVersion, runnerEnvironment: process.env.RUNNER_ENVIRONMENT, uname: execFileSync('/usr/bin/uname', ['-a'], { encoding: 'utf8' }).trim() };
     assertHost(host);
     report.draftId = 408254714;
-    report.assetId = 625938591;
+    report.assetId = PRODUCT.assetId;
     report.stage = 'validate-short-lived-private-url';
     report.signedUrlLifetime = validateSignedUrl(secret);
     report.stage = 'download-signed-single-file';

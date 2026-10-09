@@ -27,7 +27,7 @@ function validateSignedUrl(secret, now = Date.now()) {
   return { expiresAt: new Date(expiresAt).toISOString(), remainingSeconds: Math.floor((expiresAt - now) / 1000) };
 }
 function assertTransportContext(env, draft, asset) {
-  if (env.GITHUB_ACTIONS !== 'true' || env.GITHUB_REPOSITORY !== 'firendvip/WordTaker' || env.GITHUB_REF !== 'refs/heads/codex/macos14-acceptance' || !['push', 'workflow_dispatch'].includes(env.GITHUB_EVENT_NAME) || draft !== '408254714' || asset !== '625938591') fail('SIGNED_TRANSPORT_CONTEXT_REJECTED');
+  if (env.GITHUB_ACTIONS !== 'true' || env.GITHUB_REPOSITORY !== 'firendvip/WordTaker' || env.GITHUB_REF !== 'refs/heads/codex/macos14-acceptance' || !['push', 'workflow_dispatch'].includes(env.GITHUB_EVENT_NAME) || draft !== '408254714' || asset !== String(PRODUCT.assetId)) fail('SIGNED_TRANSPORT_CONTEXT_REJECTED');
 }
 async function downloadSignedAsset(secret, writeChunk, { now = Date.now(), expected = PRODUCT, fetchImpl = fetch } = {}) {
   validateSignedUrl(secret, now);

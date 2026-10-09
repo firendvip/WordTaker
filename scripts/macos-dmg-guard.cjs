@@ -2,11 +2,15 @@
 const assert = require('node:assert/strict');
 const path = require('node:path');
 const PRODUCT = Object.freeze({
-  candidateSha: 'e40149aea4c1dbfa701fb434433e4f8210a82072',
-  originalMacBuildSha: '62fc18164e8059784c32cdf9a83c1d2ee86f8f3d',
-  version: '1.29.5', dmgName: 'KittyEcho-1.29.5-arm64.dmg', dmgSize: 635262839,
-  dmgSha256: 'c0b9ec17c6c40304255b5ef2d4cb5c127f13b58481a90cd5b770e15898978d2a',
-  asarSha256: '922b7d10ba777583b9d6890b36768f5ca5d2d461f75b40bf902ad929014196b5',
+  candidateSha: '1d0b0ac17fffb5da9d0a7550f22aa4ab6956aaae',
+  originalMacBuildSha: '1d0b0ac17fffb5da9d0a7550f22aa4ab6956aaae',
+  // The existing unpublished draft is deliberately not retargeted or overwritten.
+  draftSourceSha: 'e40149aea4c1dbfa701fb434433e4f8210a82072',
+  qaBaselineSha: 'e40149aea4c1dbfa701fb434433e4f8210a82072',
+  assetId: 626459371,
+  version: '1.29.5', dmgName: 'KittyEcho-1.29.5-arm64-readiness-1d0b0ac1.dmg', dmgSize: 635263815,
+  dmgSha256: '993781374ccc99415f26d8676e6ca5e8b38359ed6580271ac682d6c16871c062',
+  asarSha256: 'a8d3aebd12714a629eba9153054a9aa98d03f277de4a84439c64073d89298e07',
 });
 function assertHost(host) {
   assert.equal(host.platform, 'darwin');
@@ -23,7 +27,7 @@ function assertHost(host) {
 function assertDraftAsset(release, asset) {
   assert.ok(Number.isSafeInteger(release.id) && release.id > 0);
   assert.equal(release.tag_name, 'v1.29.5');
-  assert.equal(release.target_commitish, PRODUCT.candidateSha);
+  assert.equal(release.target_commitish, PRODUCT.draftSourceSha);
   assert.equal(release.draft, true);
   assert.equal(release.published_at, null);
   assert.ok(Number.isSafeInteger(asset.id) && asset.id > 0);
@@ -61,7 +65,7 @@ function assertWorkerHealth(value) {
 }
 function ipcProbeExpression(name, method, args = []) {
   assert.match(name, /^[a-z][a-z0-9-]{0,30}$/);
-  assert.ok(['getAppVersion', 'getAuthState', 'getSetting', 'checkModelFiles', 'checkFunASRStatus'].includes(method));
+  assert.ok(['getAppVersion', 'getAuthState', 'getSetting', 'checkModelFiles', 'checkFunASRStatus', 'transcribeAudio'].includes(method));
   assert.ok(Array.isArray(args));
   const key = JSON.stringify(`__wordtakerQaProbe_${name}`), operation = JSON.stringify(method), argumentsJson = JSON.stringify(args);
   return `(()=>{ const key=${key}, method=${operation}, args=${argumentsJson}; let probe=globalThis[key]; if(probe && (probe.method!==method || probe.argumentsJson!==JSON.stringify(args))) throw Error('IPC_PROBE_KEY_COLLISION'); if(!probe){ probe={status:'pending',method,argumentsJson:JSON.stringify(args),startedAt:Date.now()}; globalThis[key]=probe; Promise.resolve().then(()=>window.electronAPI[method](...args)).then(value=>{probe.value=value;probe.status='fulfilled';probe.settledAt=Date.now();},()=>{probe.error='IPC_PROBE_REJECTED';probe.status='rejected';probe.settledAt=Date.now();}); } return probe; })()`;
