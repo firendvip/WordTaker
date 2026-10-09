@@ -1,5 +1,16 @@
 name: Accept frozen macOS14 DMG
 on:
+  # GitHub cannot manually dispatch a new workflow absent from the default branch.
+  # Run only this authorized QA branch/path set; never merge into product main to register it.
+  push:
+    branches: [codex/macos14-acceptance]
+    paths:
+      - '.github/workflows/accept-macos14-dmg.yml'
+      - 'scripts/macos-dmg-guard.cjs'
+      - 'scripts/macos-dmg-transport.cjs'
+      - 'scripts/macos-dmg-acceptance.cjs'
+      - 'tests/macOSDmgGuard.test.cjs'
+      - 'tests/macOSDmgWorkflow.test.cjs'
   workflow_dispatch:
     inputs:
       draft_release_id:
@@ -30,8 +41,8 @@ jobs:
         run: node scripts/macos-dmg-transport.cjs "$DRAFT_RELEASE_ID" "$DMG_ASSET_ID"
         env:
           GH_TOKEN: ${{ github.token }}
-          DRAFT_RELEASE_ID: ${{ inputs.draft_release_id }}
-          DMG_ASSET_ID: ${{ inputs.dmg_asset_id }}
+          DRAFT_RELEASE_ID: ${{ inputs.draft_release_id || '408254714' }}
+          DMG_ASSET_ID: ${{ inputs.dmg_asset_id || '625938591' }}
       - name: Accept the actual installed product entry without granting permissions
         run: node scripts/macos-dmg-acceptance.cjs "$QA_ROOT"
         env:

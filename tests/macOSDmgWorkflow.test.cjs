@@ -2,13 +2,18 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const source = () => fs.readFileSync(new URL('../.github/workflows/accept-macos14-dmg.yml', `file://${__filename}`), 'utf8');
-test('only a manually invoked standard macos14 job with contents read is allowed', () => {
+test('only a manual or exact test-branch push invokes the standard read-only macos14 job', () => {
   const text = source();
   assert.match(text, /workflow_dispatch:/);
   assert.match(text, /runs-on: macos-14\s/);
   assert.match(text, /permissions:\s+contents: read/);
-  assert.doesNotMatch(text, /contents: write|macos-14-large|macos-14-xlarge|self-hosted|push:|pull_request:/);
+  assert.doesNotMatch(text, /contents: write|macos-14-large|macos-14-xlarge|self-hosted|pull_request:/);
   assert.match(text, /persist-credentials: false/);
+  assert.match(text, /push:\s+branches: \[codex\/macos14-acceptance\]/);
+  assert.match(text, /paths:\s+- '\.github\/workflows\/accept-macos14-dmg\.yml'/);
+  assert.doesNotMatch(text, /branches: \[(?:main|\*|master)\]|paths:.*\*/);
+  assert.match(text, /DRAFT_RELEASE_ID: \$\{\{ inputs\.draft_release_id \|\| '408254714' \}\}/);
+  assert.match(text, /DMG_ASSET_ID: \$\{\{ inputs\.dmg_asset_id \|\| '625938591' \}\}/);
 });
 test('transports frozen assets before real acceptance without building or installing dependencies', () => {
   const text = source();
