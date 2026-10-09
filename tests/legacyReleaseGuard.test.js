@@ -363,3 +363,52 @@ describe('process-local Windows signature module environment', () => {
     expect(execute).toHaveBeenCalledTimes(1);
   });
 });
+
+describe('byte-preserving Windows checkout environment', () => {
+  const workflow = fs.readFileSync(new URL('../.github/workflows/build-windows.yml', import.meta.url), 'utf8');
+  const checkout = workflow.split('- name: Checkout')[1].split('- name: Setup pnpm')[0];
+  const checkoutEnv = Object.fromEntries([...checkout.matchAll(/^\s+(GIT_CONFIG_(?:COUNT|KEY_0|VALUE_0)):\s*'?([^'\r\n]+)'?\s*$/gm)].map(match => [match[1], match[2].trim()]));
+
+  it('overrides autocrlf only for checkout without changing Git configuration files or other steps', () => {
+    expect(checkoutEnv).toEqual({ GIT_CONFIG_COUNT: '1', GIT_CONFIG_KEY_0: 'core.autocrlf', GIT_CONFIG_VALUE_0: 'false' });
+    expect(workflow.match(/GIT_CONFIG_COUNT:/g)).toHaveLength(1);
+    expect(checkout).not.toMatch(/git config|GITHUB_ENV|checkout-index|reset --hard/);
+    expect(checkout).toContain('fetch-depth: 0');
+  });
+
+  it('preserves actual Git blob bytes and asset fingerprints even when the runner default would produce CRLF', () => {
+    const temporary = fs.mkdtempSync(path.join(os.tmpdir(), 'wordtaker-checkout-bytes-'));
+    const source = path.join(temporary, 'source');
+    const defaults = path.join(temporary, 'fixture-gitconfig');
+    const svg = Buffer.from('<svg>\n<path d="M0 0"/>\n</svg>\n');
+    const binary = Buffer.from([0, 13, 10, 255, 10]);
+    fs.mkdirSync(source);
+    fs.writeFileSync(defaults, '[core]\n\tautocrlf = true\n');
+    fs.writeFileSync(path.join(source, 'icon.svg'), svg);
+    fs.writeFileSync(path.join(source, 'binary.dat'), binary);
+    const env = { ...process.env, GIT_CONFIG_GLOBAL: defaults, GIT_CONFIG_NOSYSTEM: '1' };
+    for (const key of Object.keys(env)) if (/^GIT_CONFIG_(?:COUNT|KEY_|VALUE_|PARAMETERS)/.test(key)) delete env[key];
+    const git = (args, cwd = source, extra = {}) => execFileSync('git', ['-c', 'core.hooksPath=/dev/null', ...args], { cwd, env: { ...env, ...extra }, encoding: 'utf8' }).trim();
+    try {
+      git(['init', '-q']);
+      git(['-c', 'core.autocrlf=false', 'add', 'icon.svg', 'binary.dat']);
+      git(['-c', 'user.name=WordTaker QA Fixture', '-c', 'user.email=qa-fixture@example.invalid', 'commit', '-qm', 'fixture']);
+      const old = path.join(temporary, 'old');
+      const current = path.join(temporary, 'current');
+      git(['clone', '-q', source, old]);
+      expect(fs.readFileSync(path.join(old, 'icon.svg')).equals(svg)).toBe(false);
+      expect(fs.readFileSync(path.join(old, 'icon.svg'), 'utf8')).toBe(svg.toString().replaceAll('\n', '\r\n'));
+      git(['clone', '-q', source, current], source, checkoutEnv);
+      const checkedOut = fs.readFileSync(path.join(current, 'icon.svg'));
+      expect(checkedOut.equals(svg)).toBe(true);
+      expect(crypto.createHash('sha256').update(checkedOut).digest('hex')).toBe(crypto.createHash('sha256').update(svg).digest('hex'));
+      expect(fs.readFileSync(path.join(current, 'binary.dat')).equals(binary)).toBe(true);
+      expect(git(['status', '--porcelain'], current)).toBe('');
+      expect(() => git(['config', '--local', '--get', 'core.autocrlf'], current)).toThrow();
+      expect(fs.readFileSync(defaults, 'utf8')).toBe('[core]\n\tautocrlf = true\n');
+      expect(git(['show', 'HEAD:icon.svg'])).toBe(svg.toString().trim());
+    } finally {
+      fs.rmSync(temporary, { recursive: true, force: true });
+    }
+  });
+});
