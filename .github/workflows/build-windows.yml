@@ -76,6 +76,9 @@ jobs:
       - name: Test Windows SQLite binary discovery
         run: node --test tests/windowsSqliteBinaries.test.cjs
 
+      - name: Test install/runtime acceptance guards
+        run: pnpm exec vitest run tests/installAcceptance.test.js tests/desktopUiFixtures.test.js
+
       # 按目标架构重建原生模块。
       #   - x64：默认架构，沿用历史命令。
       #   - arm64：@electron/rebuild --arch arm64 交叉编译 better-sqlite3；
@@ -332,6 +335,13 @@ jobs:
           }
 
           Write-Host "$expectName PE 断言通过，共校验 $checked 个文件。"
+
+      # 真安装/真实产品入口/正常关闭/卸载，仅在一次性原生 x64 runner 上执行。
+      # 所有数据在 RUNNER_TEMP 内；只对临时安装的 exe 加出站阻断，无生产账号/订单。
+      - name: Accept x64 NSIS install, runtime and uninstall
+        if: ${{ matrix.arch == 'x64' }}
+        timeout-minutes: 10
+        run: node scripts/windows-install-acceptance.cjs
 
       # 计算「本架构」安装包的 SHA256 写入按 arch 命名的校验文件。
       # v1.4.6 加固：只对含本架构 token（-x64- / -arm64-）的 .exe 求和，绝不混入对方架构产物
