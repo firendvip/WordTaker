@@ -1,0 +1,32 @@
+const { test } = require('node:test');
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const source = () => fs.readFileSync(new URL('../.github/workflows/accept-macos14-dmg.yml', `file://${__filename}`), 'utf8');
+test('only a manually invoked standard macos14 job with contents read is allowed', () => {
+  const text = source();
+  assert.match(text, /workflow_dispatch:/);
+  assert.match(text, /runs-on: macos-14\s/);
+  assert.match(text, /permissions:\s+contents: read/);
+  assert.doesNotMatch(text, /contents: write|macos-14-large|macos-14-xlarge|self-hosted|push:|pull_request:/);
+  assert.match(text, /persist-credentials: false/);
+});
+test('transports frozen assets before real acceptance without building or installing dependencies', () => {
+  const text = source();
+  assert.ok(text.indexOf('macos-dmg-transport.cjs') < text.indexOf('macos-dmg-acceptance.cjs'));
+  assert.doesNotMatch(text, /pnpm install|npm install|pip install|build:mac|prepare:python|brew install|npx .*latest|release (?:create|edit|upload)/);
+});
+test('credentials exist only at the read-only transport boundary and evidence excludes packages', () => {
+  const text = source();
+  assert.equal(text.match(/GH_TOKEN:/g)?.length, 1);
+  assert.match(text, /GH_TOKEN: \$\{\{ github.token \}\}/);
+  assert.match(text, /MAC_RUNTIME_ACCEPTANCE\.json/);
+  assert.match(text, /settings\.png/);
+  assert.doesNotMatch(text, /xattr -d|tccutil|spctl --master-disable|security (?:add|delete|unlock)|\.dmg\s*$|\.exe\s*$|path:.*\*/m);
+});
+test('failure cleanup never signals an exited/reused PID or removes a runner home/profile', () => {
+  const text = fs.readFileSync(new URL('../scripts/macos-dmg-acceptance.cjs', `file://${__filename}`), 'utf8');
+  assert.match(text, /if \(child && !cleanExit && child\.exitCode === null && child\.signalCode === null\)/);
+  assert.match(text, /fs\.lstatSync\(install\)\.isDirectory\(\)/);
+  assert.doesNotMatch(text, /fs\.rmSync\((?:legacy|root|os\.homedir\(|process\.env\.HOME)/);
+  assert.doesNotMatch(text, /xattr.*\['-d'|tccutil|--master-disable|requestPermissions\(/);
+});
