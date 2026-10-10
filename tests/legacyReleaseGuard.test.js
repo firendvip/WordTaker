@@ -269,6 +269,15 @@ describe('Windows generated paths and real Git cleanliness', () => {
     expect(command).toHaveBeenCalledWith('git', ['status', '--porcelain']);
     expect(fs.readFileSync(githubOutput, 'utf8')).toBe('allowed=true\n');
   }));
+  it('does not use an inherited outer Git directory for a disposable fixture', () => {
+    const outer = fs.mkdtempSync(path.join(os.tmpdir(), 'wordtaker-outer-git-sentinel-'));
+    const inherited = path.join(outer, 'must-remain-absent.git');
+    vi.stubEnv('GIT_DIR', inherited);
+    try {
+      fixture(({ git }) => expect(git(['status', '--porcelain'])).toBe(''));
+      expect(fs.existsSync(inherited)).toBe(false);
+    } finally { fs.rmSync(outer, { recursive: true, force: true }); }
+  });
 
   it('reproduces the old root outputs and refuses them rather than ignoring or deleting them', () => fixture(({ git, put, command, githubOutput, repo }) => {
     put('sendkeys.obj');
@@ -401,6 +410,7 @@ describe('byte-preserving Windows checkout environment', () => {
     fs.writeFileSync(defaults, '[core]\n\tautocrlf = true\n');
     fs.writeFileSync(path.join(source, 'icon.svg'), svg);
     fs.writeFileSync(path.join(source, 'binary.dat'), binary);
+    vi.stubEnv('GIT_DIR', path.join(temporary, 'outer-test-only.git'));
     const env = { ...process.env, GIT_CONFIG_GLOBAL: defaults, GIT_CONFIG_NOSYSTEM: '1' };
     for (const key of Object.keys(env)) if (/^GIT_CONFIG_(?:COUNT|KEY_|VALUE_|PARAMETERS)/.test(key)) delete env[key];
     const git = (args, cwd = source, extra = {}) => execFileSync('git', ['-c', 'core.hooksPath=/dev/null', ...args], { cwd, env: { ...env, ...extra }, encoding: 'utf8' }).trim();
