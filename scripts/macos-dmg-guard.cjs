@@ -1,6 +1,8 @@
 // Test-only boundaries for the frozen, already built 1.29.5 DMG.
 const assert = require('node:assert/strict');
 const path = require('node:path');
+const fs = require('node:fs');
+const crypto = require('node:crypto');
 const PRODUCT = Object.freeze({
   candidateSha: '1d0b0ac17fffb5da9d0a7550f22aa4ab6956aaae',
   originalMacBuildSha: '1d0b0ac17fffb5da9d0a7550f22aa4ab6956aaae',
@@ -52,6 +54,35 @@ function assertScopedPath(target, parent) {
   assert.ok(relative && relative !== '..' && !relative.startsWith('../') && !path.posix.isAbsolute(relative), 'Refusing broad/out-of-root cleanup');
   return resolved;
 }
+function captureBundleInventory(root) {
+  assert.ok(path.isAbsolute(root), 'Absolute bundle root required');
+  const stat = fs.lstatSync(root);
+  assert.ok(stat.isDirectory() && !stat.isSymbolicLink(), 'Real bundle directory required');
+  const entries = {}, buffer = Buffer.alloc(1024 * 1024);
+  const hashFile = file => {
+    const hash = crypto.createHash('sha256'), fd = fs.openSync(file, 'r');
+    try { let count; while ((count = fs.readSync(fd, buffer, 0, buffer.length, null))) hash.update(buffer.subarray(0, count)); }
+    finally { fs.closeSync(fd); }
+    return hash.digest('hex');
+  };
+  function walk(directory) {
+    for (const name of fs.readdirSync(directory).sort()) {
+      const file = path.join(directory, name), item = fs.lstatSync(file), relative = path.relative(root, file);
+      const mode = item.mode & 0o7777;
+      if (item.isSymbolicLink()) entries[relative] = { type: 'symlink', mode, target: fs.readlinkSync(file) };
+      else if (item.isDirectory()) { entries[relative] = { type: 'directory', mode }; walk(file); }
+      else { assert.ok(item.isFile(), 'Unsupported bundle resource'); entries[relative] = { type: 'file', mode, size: item.size, sha256: hashFile(file) }; }
+    }
+  }
+  walk(root);
+  return { entries, entryCount: Object.keys(entries).length, sha256: crypto.createHash('sha256').update(JSON.stringify(entries)).digest('hex') };
+}
+function compareBundleInventories(before, after) {
+  const added = Object.keys(after.entries).filter(file => !Object.hasOwn(before.entries, file));
+  const removed = Object.keys(before.entries).filter(file => !Object.hasOwn(after.entries, file));
+  const changed = Object.keys(before.entries).filter(file => Object.hasOwn(after.entries, file) && JSON.stringify(before.entries[file]) !== JSON.stringify(after.entries[file]));
+  return { unchanged: !added.length && !removed.length && !changed.length, added, removed, changed };
+}
 function assertUiHealth(value) {
   assert.equal(value.version, PRODUCT.version);
   assert.equal(value.isolated, true);
@@ -84,4 +115,4 @@ async function pollIpcProbe(evaluate, name, method, args = [], options = {}) {
   } while (now() - started < timeout);
   return { ...observed, timedOut: true, elapsedMs: now() - started };
 }
-module.exports = { PRODUCT, assertHost, assertDraftAsset, assertDownloadedDmg, assertFreshHost, assertScopedPath, assertUiHealth, assertWorkerHealth, ipcProbeExpression, pollIpcProbe };
+module.exports = { PRODUCT, assertHost, assertDraftAsset, assertDownloadedDmg, assertFreshHost, assertScopedPath, captureBundleInventory, compareBundleInventories, assertUiHealth, assertWorkerHealth, ipcProbeExpression, pollIpcProbe };

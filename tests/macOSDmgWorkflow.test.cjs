@@ -55,6 +55,22 @@ test('failure cleanup never signals an exited/reused PID or removes a runner hom
   assert.doesNotMatch(text, /sandbox-exec|--no-sandbox|--disable-gpu-sandbox/);
   assert.match(text, /assertNetworkLease\(/);
 });
+test('requires full bundle snapshots and strict post-runtime codesign before removing the installation', () => {
+  const workflow = source();
+  const text = fs.readFileSync(new URL('../scripts/macos-dmg-acceptance.cjs', `file://${__filename}`), 'utf8');
+  assert.match(text, /const bundleBefore = captureBundleInventory\(app\)/);
+  assert.ok(text.indexOf('const bundleBefore = captureBundleInventory(app)') < text.indexOf('productionEntry = true'));
+  assert.ok(text.indexOf('const bundleAfter = captureBundleInventory(app)') > text.indexOf('report.cleanExit = true'));
+  assert.match(text, /compareBundleInventories\(bundleBefore, bundleAfter\)/);
+  assert.match(text, /assert\.equal\(report\.bundleIntegrity\.unchanged, true/);
+  assert.match(text, /assert\.equal\(report\.bundleIntegrity\.strictCodesignPassed, true/);
+  assert.match(text, /\['--verify', '--deep', '--strict', '--verbose=4', app\]/);
+  assert.ok(text.indexOf('const seal = spawnSync') < text.indexOf('fs.rmSync(install'));
+  assert.match(text, /\[0, 3\]\.includes\(trust\.status\)/);
+  for (const name of ['BUNDLE_BEFORE_INVENTORY.json', 'BUNDLE_AFTER_INVENTORY.json']) {
+    assert.equal(workflow.split(name).length - 1, 2, 'Both A and B must retain inventories');
+  }
+});
 test('host isolation has an independent watchdog and never overwrites global PF or writes system files', () => {
   const text = fs.readFileSync(new URL('../scripts/macos-host-network.cjs', `file://${__filename}`), 'utf8');
   assert.match(text, /detached: true/); assert.match(text, /20 \* 60000/);

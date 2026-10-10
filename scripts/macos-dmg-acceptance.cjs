@@ -3,7 +3,7 @@
 const assert = require('node:assert/strict');
 const fs = require('node:fs'), path = require('node:path'), os = require('node:os'), net = require('node:net'), crypto = require('node:crypto');
 const { spawn, spawnSync, execFileSync } = require('node:child_process');
-const { PRODUCT, assertHost, assertDownloadedDmg, assertFreshHost, assertScopedPath, assertUiHealth, assertWorkerHealth, pollIpcProbe } = require('./macos-dmg-guard.cjs');
+const { PRODUCT, assertHost, assertDownloadedDmg, assertFreshHost, assertScopedPath, captureBundleInventory, compareBundleInventories, assertUiHealth, assertWorkerHealth, pollIpcProbe } = require('./macos-dmg-guard.cjs');
 const { assertNetworkLease } = require('./macos-host-isolation.cjs');
 const { assertFirstUseReadiness, assertPreparedReadiness, waitForWorkerReadiness } = require('./macos-readiness-policy.cjs');
 const command = (exe, args, options = {}) => execFileSync(exe, args, { encoding: 'utf8', timeout: 30000, ...options }).trim();
@@ -133,6 +133,9 @@ async function run() {
     const asar = path.join(app, 'Contents/Resources/app.asar');
     assert.equal(hash(asar), PRODUCT.asarSha256);
     command('/usr/bin/codesign', ['--verify', '--deep', '--strict', '--verbose=2', app], { timeout: 180000 });
+    const bundleBefore = captureBundleInventory(app);
+    fs.writeFileSync(path.join(root, 'BUNDLE_BEFORE_INVENTORY.json'), JSON.stringify(bundleBefore));
+    report.bundleIntegrity = { beforeSha256: bundleBefore.sha256, beforeEntries: bundleBefore.entryCount, unchanged: false, strictCodesignPassed: false };
     report.installedHashes = { executable: hash(exe), asar: hash(asar) };
     report.installation = true;
     report.installedQuarantine = quarantine(app);
@@ -261,12 +264,24 @@ async function run() {
     await waitFor(() => !processes().some(row => descendants.includes(row.pid) || row.command.includes(`${app}/Contents/`)), 'all tracked bundle/Python processes exited');
     cleanExit = true;
     report.cleanExit = true;
+    report.stage = 'post-runtime-whole-bundle-integrity';
+    const bundleAfter = captureBundleInventory(app);
+    fs.writeFileSync(path.join(root, 'BUNDLE_AFTER_INVENTORY.json'), JSON.stringify(bundleAfter));
+    const seal = spawnSync('/usr/bin/codesign', ['--verify', '--deep', '--strict', '--verbose=4', app], { encoding: 'utf8', timeout: 180000 });
+    report.bundleIntegrity = { ...report.bundleIntegrity, afterSha256: bundleAfter.sha256, afterEntries: bundleAfter.entryCount,
+      ...compareBundleInventories(bundleBefore, bundleAfter), strictCodesignPassed: seal.status === 0,
+      codesign: { status: seal.status, signal: seal.signal, output: String(seal.stderr).trim() } };
+    saveReport();
+    assert.equal(report.bundleIntegrity.unchanged, true, 'Runtime modified sealed bundle resources');
+    assert.equal(report.bundleIntegrity.beforeSha256, report.bundleIntegrity.afterSha256, 'Whole-bundle hash changed');
+    assert.equal(report.bundleIntegrity.strictCodesignPassed, true, 'Runtime damaged the resource seal');
     assert.equal(hash(asar), report.installedHashes.asar);
     assert.equal(hash(exe), report.installedHashes.executable);
     assertDownloadedDmg(fs.statSync(dmg).size, hash(dmg));
     assert.deepEqual(quarantine(dmg), report.quarantineBefore);
     const trust = spawnSync('/usr/sbin/spctl', ['--assess', '--type', 'execute', '--verbose=2', app], { encoding: 'utf8', timeout: 30000 });
     report.trustedGatekeeperAssessment = { status: trust.status, output: String(trust.stderr).trim(), trusted: trust.status === 0 };
+    assert.ok([0, 3].includes(trust.status), 'Unexpected Gatekeeper assessment; invalid resources are not an unsigned rejection');
     report.stage = 'remove-exact-temp-installation';
     assertScopedPath(install, root);
     assert.ok(fs.lstatSync(install).isDirectory() && !fs.lstatSync(install).isSymbolicLink());

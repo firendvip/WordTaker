@@ -20,6 +20,7 @@ on:
       - 'tests/macOSHostIsolation.test.cjs'
       - 'tests/macOSReadinessPolicy.test.cjs'
       - 'tests/macOSModelPreseed.test.cjs'
+      - 'tests/macOSBundleIntegrity.test.cjs'
   workflow_dispatch:
     inputs:
       draft_release_id:
@@ -45,7 +46,7 @@ jobs:
         with:
           node-version: '22'
       - name: Test safety boundaries without product execution
-        run: node --test --experimental-test-coverage tests/macOSDmgGuard.test.cjs tests/macOSDmgWorkflow.test.cjs tests/macOSSignedDmg.test.cjs tests/macOSHostIsolation.test.cjs tests/macOSReadinessPolicy.test.cjs tests/macOSModelPreseed.test.cjs
+        run: node --test --experimental-test-coverage tests/macOSDmgGuard.test.cjs tests/macOSDmgWorkflow.test.cjs tests/macOSSignedDmg.test.cjs tests/macOSHostIsolation.test.cjs tests/macOSReadinessPolicy.test.cjs tests/macOSModelPreseed.test.cjs tests/macOSBundleIntegrity.test.cjs
       - name: Preflight and download only the exact private draft DMG
         id: transport
         run: node scripts/macos-dmg-transport.cjs "$DRAFT_RELEASE_ID" "$DMG_ASSET_ID"
@@ -83,6 +84,8 @@ jobs:
           path: |
             ${{ steps.transport.outputs.root }}/TRANSPORT_RESULT.json
             ${{ steps.transport.outputs.root }}/MAC_RUNTIME_ACCEPTANCE.json
+            ${{ steps.transport.outputs.root }}/BUNDLE_BEFORE_INVENTORY.json
+            ${{ steps.transport.outputs.root }}/BUNDLE_AFTER_INVENTORY.json
             ${{ steps.transport.outputs.root }}/settings.png
             ${{ steps.transport.outputs.root }}/settings-after-model.png
             ${{ steps.transport.outputs.root }}/recorder-before-model.png
@@ -108,6 +111,8 @@ jobs:
             ${{ steps.models.outputs.root }}/TRANSPORT_RESULT.json
             ${{ steps.models.outputs.root }}/MODEL_PREPARATION.json
             ${{ steps.models.outputs.root }}/MAC_RUNTIME_ACCEPTANCE.json
+            ${{ steps.models.outputs.root }}/BUNDLE_BEFORE_INVENTORY.json
+            ${{ steps.models.outputs.root }}/BUNDLE_AFTER_INVENTORY.json
             ${{ steps.models.outputs.root }}/settings.png
             ${{ steps.models.outputs.root }}/settings-after-model.png
             ${{ steps.models.outputs.root }}/recorder-before-model.png
