@@ -12,14 +12,17 @@ function method(name, next, globals = {}) {
   if (start < 0 || end < 0) throw new Error(`Missing ${name}`);
   return vm.runInNewContext(`({${source.slice(start, end)}})`, globals)[name.replace(/^async /, '')];
 }
-function environmentHarness(embedded = true) {
-  const env = { PATH: '/fixture/bin', TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD: '1', TORCH_FORCE_WEIGHTS_ONLY_LOAD: '0' };
+function environmentHarness(embedded = true, platform = 'darwin') {
+  const env = { PATH: '/fixture/bin', TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD: '1', TORCH_FORCE_WEIGHTS_ONLY_LOAD: '0',
+    NUMBA_CACHE_DIR: '/fixture/sealed.app/cache', NUMBA_CACHE_LOCATOR_CLASSES: 'InTreeCacheLocator' };
+  const mkdir = vi.fn();
   const globals = {
-    fs: { existsSync: () => embedded }, path,
-    process: { platform: 'darwin', arch: 'arm64', env },
+    fs: { existsSync: () => embedded, mkdirSync: mkdir }, path,
+    process: { platform, arch: 'arm64', env },
     require: () => ({ app: { getPath: () => '/fixture/data' } }),
   };
   return {
+    mkdir,
     run: method('buildPythonEnvironment', 'findDamoRoot', globals),
     manager: { getEmbeddedPythonPath: () => '/fixture/python', getEmbeddedPythonDir: () => '/fixture/runtime', getEmbeddedSitePackages: () => '/fixture/runtime/site', logger: {} },
   };
@@ -40,6 +43,37 @@ describe('Python subprocess safe environment', () => {
     first.TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD = '1';
     expect(run.call(manager).TORCH_FORCE_WEIGHTS_ONLY_LOAD).toBe('1');
     expect(first).not.toHaveProperty('TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD');
+  });
+});
+
+describe('sealed bundle Numba cache boundary', () => {
+  it.each([[true, 'darwin'], [false, 'darwin'], [true, 'win32'], [false, 'win32']])(
+    'uses private userData cache without in-package fallback (embedded=%s, platform=%s)', (embedded, platform) => {
+      const { run, manager, mkdir } = environmentHarness(embedded, platform);
+      const env = run.call(manager);
+      expect(env.NUMBA_CACHE_DIR).toBe('/fixture/data/cache/numba');
+      expect(env.NUMBA_CACHE_LOCATOR_CLASSES).toBe('UserProvidedCacheLocator');
+      expect(mkdir).toHaveBeenCalledWith('/fixture/data/cache/numba', { recursive: true, mode: 0o700 });
+      expect(env.PYTHONDONTWRITEBYTECODE).toBe('1');
+      expect(env.ELECTRON_USER_DATA).toBe('/fixture/data');
+      if (platform === 'win32') expect(env.WORDTAKER_ONNX_ONLY).toBe('1');
+    },
+  );
+  it('reasserts cache location and fail-closed locator on cached environments', () => {
+    const { run, manager } = environmentHarness();
+    const first = run.call(manager);
+    first.NUMBA_CACHE_DIR = '/fixture/sealed.app/cache';
+    first.NUMBA_CACHE_LOCATOR_CLASSES = 'InTreeCacheLocator';
+    const second = run.call(manager);
+    expect(second).toBe(first);
+    expect(second.NUMBA_CACHE_DIR).toBe('/fixture/data/cache/numba');
+    expect(second.NUMBA_CACHE_LOCATOR_CLASSES).toBe('UserProvidedCacheLocator');
+  });
+  it.each([false, true])('refuses an unwritable external cache instead of falling back into the bundle (cached=%s)', cached => {
+    const { run, manager, mkdir } = environmentHarness();
+    if (cached) run.call(manager);
+    mkdir.mockImplementation(() => { throw new Error('EACCES: private cache'); });
+    expect(() => run.call(manager)).toThrow('EACCES: private cache');
   });
 });
 
