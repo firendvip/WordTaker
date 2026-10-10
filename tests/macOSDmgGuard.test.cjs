@@ -17,7 +17,7 @@ test('new candidate bytes are explicit without pretending the old draft target w
   assert.notEqual(PRODUCT.candidateSha, PRODUCT.draftSourceSha);
   assert.equal(PRODUCT.originalMacBuildSha, PRODUCT.candidateSha);
   assert.equal(PRODUCT.qaBaselineSha, PRODUCT.draftSourceSha);
-  assert.match(PRODUCT.dmgName, /readiness-1d0b0ac1/);
+  assert.match(PRODUCT.dmgName, /sealed-98b7a409/);
   assert.throws(() => assertDraftAsset({ ...draft(), target_commitish: PRODUCT.candidateSha }, asset()));
 });
 for (const [key, value] of [['target_commitish', 'main'], ['tag_name', 'v1.29.5-test'], ['draft', false], ['published_at', '2026-10-10'], ['id', 0]]) {

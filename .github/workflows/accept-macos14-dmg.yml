@@ -54,7 +54,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           WORDTAKER_DMG_URL: ${{ secrets.WORDTAKER_MAC_DMG_ONCE_408254714 }}
           DRAFT_RELEASE_ID: ${{ inputs.draft_release_id || '408254714' }}
-          DMG_ASSET_ID: ${{ inputs.dmg_asset_id || '626459371' }}
+          DMG_ASSET_ID: ${{ inputs.dmg_asset_id || '626599706' }}
       - name: A - Accept true first-use download UI and normal lifecycle
         run: node scripts/macos-host-network.cjs --accept "$QA_ROOT"
         env:

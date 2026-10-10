@@ -4,15 +4,15 @@ const path = require('node:path');
 const fs = require('node:fs');
 const crypto = require('node:crypto');
 const PRODUCT = Object.freeze({
-  candidateSha: '1d0b0ac17fffb5da9d0a7550f22aa4ab6956aaae',
-  originalMacBuildSha: '1d0b0ac17fffb5da9d0a7550f22aa4ab6956aaae',
+  candidateSha: '98b7a4093936fad4d1152f39d0b342f5d79c2d37',
+  originalMacBuildSha: '98b7a4093936fad4d1152f39d0b342f5d79c2d37',
   // The existing unpublished draft is deliberately not retargeted or overwritten.
   draftSourceSha: 'e40149aea4c1dbfa701fb434433e4f8210a82072',
   qaBaselineSha: 'e40149aea4c1dbfa701fb434433e4f8210a82072',
-  assetId: 626459371,
-  version: '1.29.5', dmgName: 'KittyEcho-1.29.5-arm64-readiness-1d0b0ac1.dmg', dmgSize: 635263815,
-  dmgSha256: '993781374ccc99415f26d8676e6ca5e8b38359ed6580271ac682d6c16871c062',
-  asarSha256: 'a8d3aebd12714a629eba9153054a9aa98d03f277de4a84439c64073d89298e07',
+  assetId: 626599706,
+  version: '1.29.5', dmgName: 'KittyEcho-1.29.5-arm64-sealed-98b7a409.dmg', dmgSize: 635266113,
+  dmgSha256: '085ec9593aa767093915f5f3d51a86a3aa2ea5d2ae06c103a8eef5d8cbac4d00',
+  asarSha256: 'b78d1feec1aa53ac7cd6a07920892f52d4b2bcb96b1e559735889466abc35187',
 });
 function assertHost(host) {
   assert.equal(host.platform, 'darwin');

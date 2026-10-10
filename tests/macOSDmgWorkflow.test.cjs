@@ -6,7 +6,7 @@ test('repository metadata uses the real API root without the observed 404 traili
   const { repositoryApiUrl } = require('../scripts/macos-dmg-transport.cjs');
   assert.equal(repositoryApiUrl(''), 'https://api.github.com/repos/firendvip/WordTaker');
   assert.equal(repositoryApiUrl('releases/408254714'), 'https://api.github.com/repos/firendvip/WordTaker/releases/408254714');
-  assert.equal(repositoryApiUrl('releases/assets/626459371'), 'https://api.github.com/repos/firendvip/WordTaker/releases/assets/626459371');
+  assert.equal(repositoryApiUrl('releases/assets/626599706'), 'https://api.github.com/repos/firendvip/WordTaker/releases/assets/626599706');
 });
 test('only a manual or exact test-branch push invokes the standard read-only macos14 job', () => {
   const text = source();
@@ -19,7 +19,7 @@ test('only a manual or exact test-branch push invokes the standard read-only mac
   assert.match(text, /paths:\s+- '\.github\/workflows\/accept-macos14-dmg\.yml'/);
   assert.doesNotMatch(text, /branches: \[(?:main|\*|master)\]|paths:.*\*/);
   assert.match(text, /DRAFT_RELEASE_ID: \$\{\{ inputs\.draft_release_id \|\| '408254714' \}\}/);
-  assert.match(text, /DMG_ASSET_ID: \$\{\{ inputs\.dmg_asset_id \|\| '626459371' \}\}/);
+  assert.match(text, /DMG_ASSET_ID: \$\{\{ inputs\.dmg_asset_id \|\| '626599706' \}\}/);
 });
 test('transports frozen assets before real acceptance without building or installing dependencies', () => {
   const text = source();
@@ -62,6 +62,7 @@ test('requires full bundle snapshots and strict post-runtime codesign before rem
   assert.ok(text.indexOf('const bundleBefore = captureBundleInventory(app)') < text.indexOf('productionEntry = true'));
   assert.ok(text.indexOf('const bundleAfter = captureBundleInventory(app)') > text.indexOf('report.cleanExit = true'));
   assert.match(text, /compareBundleInventories\(bundleBefore, bundleAfter\)/);
+  assert.match(text, /report\.productPackageModified = !report\.bundleIntegrity\.unchanged/);
   assert.match(text, /assert\.equal\(report\.bundleIntegrity\.unchanged, true/);
   assert.match(text, /assert\.equal\(report\.bundleIntegrity\.strictCodesignPassed, true/);
   assert.match(text, /\['--verify', '--deep', '--strict', '--verbose=4', app\]/);

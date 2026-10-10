@@ -271,6 +271,7 @@ async function run() {
     report.bundleIntegrity = { ...report.bundleIntegrity, afterSha256: bundleAfter.sha256, afterEntries: bundleAfter.entryCount,
       ...compareBundleInventories(bundleBefore, bundleAfter), strictCodesignPassed: seal.status === 0,
       codesign: { status: seal.status, signal: seal.signal, output: String(seal.stderr).trim() } };
+    report.productPackageModified = !report.bundleIntegrity.unchanged;
     saveReport();
     assert.equal(report.bundleIntegrity.unchanged, true, 'Runtime modified sealed bundle resources');
     assert.equal(report.bundleIntegrity.beforeSha256, report.bundleIntegrity.afterSha256, 'Whole-bundle hash changed');
