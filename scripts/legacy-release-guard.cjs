@@ -20,6 +20,8 @@ const ALLOWED_CHANGES = new Set([
   'src/helpers/funasrManager.js', 'src/hooks/useModelStatus.js',
   'src/components/RecorderPill.jsx', 'src/index.css',
   'tests/funasrInstallationSingleflight.test.js', 'tests/modelFirstUse.test.jsx',
+  // Explicitly approved sealed-bundle cache repair; no dependency or metadata changes.
+  'tests/funasrPythonSecurity.test.js',
 ]);
 
 function validateRequest(request) {

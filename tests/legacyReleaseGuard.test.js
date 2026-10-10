@@ -159,6 +159,12 @@ describe('legacy export CLI boundaries', () => {
     expect(receipt.publicReleaseCreated).toBe(false);
     expect(test.append).toHaveBeenCalledWith('test-owned-output', 'allowed=true\n');
   });
+  it('allows the approved sealed-bundle cache repair regression without widening runtime scope', () => {
+    const test = cli('--request', ['src/helpers/funasrManager.js', 'tests/funasrPythonSecurity.test.js']);
+    guard.run(test.command);
+    expect(test.append).toHaveBeenCalledWith('test-owned-output', 'allowed=true\n');
+    expect(test.copy).not.toHaveBeenCalled();
+  });
   it('rejects missing ordinary CI, invalid CLI operations and export-dir overwrite', () => {
     const test = cli();
     vi.stubEnv('ORDINARY_CI_RUN_ID', '');

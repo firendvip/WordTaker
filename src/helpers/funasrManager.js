@@ -165,10 +165,16 @@ class FunASRManager {
     // 构建完整的Python环境变量，根据实际使用的Python路径来配置
     const embeddedPythonPath = this.getEmbeddedPythonPath();
     const isUsingEmbedded = fs.existsSync(embeddedPythonPath);
+    const userData = require('electron').app.getPath('userData');
+    const numbaCache = path.join(userData, 'cache', 'numba');
+    // PYTHONDONTWRITEBYTECODE 不阻止 Numba 的 .nbi/.nbc；禁止回退到已封印的包内。
+    fs.mkdirSync(numbaCache, { recursive: true, mode: 0o700 });
     
     // 缓存环境变量，避免重复构建和日志输出
     if (this._cachedPythonEnv && this._lastEmbeddedCheck === isUsingEmbedded) {
       this._cachedPythonEnv.TORCH_FORCE_WEIGHTS_ONLY_LOAD = '1';
+      this._cachedPythonEnv.NUMBA_CACHE_DIR = numbaCache;
+      this._cachedPythonEnv.NUMBA_CACHE_LOCATOR_CLASSES = 'UserProvidedCacheLocator';
       delete this._cachedPythonEnv.TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD;
       return this._cachedPythonEnv;
     }
@@ -180,9 +186,11 @@ class FunASRManager {
       PYTHONIOENCODING: 'utf-8',
       PYTHONUNBUFFERED: '1',
       TORCH_FORCE_WEIGHTS_ONLY_LOAD: '1',
+      NUMBA_CACHE_DIR: numbaCache,
+      NUMBA_CACHE_LOCATOR_CLASSES: 'UserProvidedCacheLocator',
       
       // 设置用户数据目录用于日志
-      ELECTRON_USER_DATA: require('electron').app.getPath('userData')
+      ELECTRON_USER_DATA: userData
     };
     
     if (isUsingEmbedded) {
